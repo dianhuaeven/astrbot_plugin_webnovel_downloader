@@ -20,6 +20,8 @@ def _validate_tool_signature(func):
     for name, annotation in annotations.items():
         if name in ("return", "self"):
             continue
+        if name == "event":
+            continue
         if not _is_supported_annotation(annotation):
             raise ValueError(
                 "LLM 函数工具 {name} 不支持的参数类型：{annotation}".format(
@@ -94,6 +96,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
                 return decorator
 
+            @staticmethod
+            def llm_tool(*_args, **_kwargs):
+                return llm_tool(*_args, **_kwargs)
+
         def register(*_args, **_kwargs):
             def decorator(cls):
                 return cls
@@ -108,6 +114,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
             return decorator
 
+        class DummyEvent(object):
+            def plain_result(self, text):
+                return text
+
         class DummyStarTools(object):
             @staticmethod
             def get_data_dir():
@@ -121,6 +131,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             debug=lambda *args, **kwargs: None,
         )
         astrbot_api.llm_tool = llm_tool
+        astrbot_api_event.AstrMessageEvent = DummyEvent
         astrbot_api_event.filter = DummyFilter
         astrbot_api_star.Context = object
         astrbot_api_star.Star = DummyStar
@@ -134,6 +145,14 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         sys.modules["astrbot.core"] = astrbot_core
         sys.modules["astrbot.core.star"] = astrbot_core_star
         sys.modules["astrbot.core.star.star_tools"] = astrbot_core_star_tools
+
+    async def _invoke_tool(self, tool_callable, *args):
+        event = sys.modules["astrbot.api.event"].AstrMessageEvent()
+        chunks = []
+        async for item in tool_callable(event, *args):
+            chunks.append(item)
+        self.assertTrue(chunks)
+        return chunks[0]
 
     async def test_llm_tools_end_to_end(self):
         chapters_dir = self.base_dir / "chapters"
@@ -219,14 +238,14 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        import_result = json.loads(await self.plugin.novel_import_sources(source_json))
+        import_result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, source_json))
         self.assertEqual(import_result["imported_count"], 1)
 
-        listed_sources = json.loads(await self.plugin.novel_list_sources())
+        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
         self.assertEqual(len(listed_sources), 1)
         self.assertEqual(listed_sources[0]["name"], "测试JSON源")
 
-        search_result = json.loads(await self.plugin.novel_search_books("雪中"))
+        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "雪中"))
         self.assertEqual(search_result["searched_sources"], 1)
         self.assertGreaterEqual(search_result["result_count"], 1)
         self.assertEqual(search_result["results"][0]["title"], "雪中悍刀行")
@@ -236,7 +255,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         preview = json.loads(
-            await self.plugin.novel_fetch_preview(
+            await self._invoke_tool(
+                self.plugin.novel_fetch_preview,
                 (chapters_dir / "1.html").resolve().as_uri(),
                 "",
                 "200",
@@ -245,7 +265,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("第一章 降生", preview["text_preview"])
 
         source_id = listed_sources[0]["source_id"]
-        auto_download_text = await self.plugin.novel_download_book(
+        auto_download_text = await self._invoke_tool(
+            self.plugin.novel_download_book,
             source_id,
             (self.base_dir / "book.html").resolve().as_uri(),
             "雪中悍刀行",
@@ -255,7 +276,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已创建并启动任务", auto_download_text)
         auto_job_id = auto_download_text.splitlines()[0].split(": ", 1)[1]
         await self.plugin._running_tasks[auto_job_id]
-        auto_status = await self.plugin.novel_download_status(auto_job_id)
+        auto_status = await self._invoke_tool(self.plugin.novel_download_status, auto_job_id)
         self.assertIn("状态: assembled", auto_status)
         auto_output_path = self.plugin.manager.output_dir / "雪中悍刀行.txt"
         self.assertTrue(auto_output_path.exists())
@@ -278,7 +299,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ],
             ensure_ascii=False,
         )
-        start_text = await self.plugin.novel_start_download(
+        start_text = await self._invoke_tool(
+            self.plugin.novel_start_download,
             "测试小说",
             toc_json,
             r"<div id='content'>(.*?)</div>",
@@ -293,10 +315,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self.plugin._running_tasks[job_id]
 
-        status_text = await self.plugin.novel_download_status(job_id)
+        status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
         self.assertIn("状态: assembled", status_text)
 
-        assembled_text = await self.plugin.novel_assemble_book(job_id, "false")
+        assembled_text = await self._invoke_tool(self.plugin.novel_assemble_book, job_id, "false")
         self.assertIn("状态: assembled", assembled_text)
 
         output_path = self.plugin.manager.output_dir / "测试小说.txt"

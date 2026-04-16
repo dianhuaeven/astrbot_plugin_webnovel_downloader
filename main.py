@@ -4,8 +4,10 @@ import asyncio
 import json
 import logging
 from typing import Any, Callable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-from astrbot.api.event import filter
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.star.star_tools import StarTools
 
@@ -115,8 +117,8 @@ class JsonlNovelDownloaderPlugin(Star):
 
     @compat_llm_tool(name="novel_fetch_preview")
     async def novel_fetch_preview(
-        self, url: str, encoding: str = "", max_chars: str = ""
-    ) -> str:
+        self, event: AstrMessageEvent, url: str, encoding: str = "", max_chars: str = ""
+    ):
         """
         抓取网页预览，帮助分析目录页或章节页结构。
 
@@ -132,24 +134,25 @@ class JsonlNovelDownloaderPlugin(Star):
             encoding,
             limit,
         )
-        return json.dumps(preview, ensure_ascii=False, indent=2)
+        yield event.plain_result(json.dumps(preview, ensure_ascii=False, indent=2))
 
     @compat_llm_tool(name="novel_import_sources")
-    async def novel_import_sources(self, source_json: str) -> str:
+    async def novel_import_sources(self, event: AstrMessageEvent, source_json: str):
         """
         导入 Legado/阅读风格书源 JSON。
 
         Args:
             source_json(string): 单个书源对象、书源数组，或带 sources 字段的 JSON 字符串。
         """
+        source_json = await self._load_text_argument(source_json)
         result = await run_blocking(
             self.source_registry.import_sources_from_text,
             source_json,
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
 
     @compat_llm_tool(name="novel_list_sources")
-    async def novel_list_sources(self, enabled_only: str = "") -> str:
+    async def novel_list_sources(self, event: AstrMessageEvent, enabled_only: str = ""):
         """
         列出已导入书源。
 
@@ -160,10 +163,12 @@ class JsonlNovelDownloaderPlugin(Star):
             self.source_registry.list_sources,
             self._parse_bool(enabled_only, False),
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
 
     @compat_llm_tool(name="novel_enable_source")
-    async def novel_enable_source(self, source_id: str, enabled: str = "true") -> str:
+    async def novel_enable_source(
+        self, event: AstrMessageEvent, source_id: str, enabled: str = "true"
+    ):
         """
         启用或禁用一个书源。
 
@@ -176,10 +181,10 @@ class JsonlNovelDownloaderPlugin(Star):
             source_id,
             self._parse_bool(enabled, True),
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
 
     @compat_llm_tool(name="novel_remove_source")
-    async def novel_remove_source(self, source_id: str) -> str:
+    async def novel_remove_source(self, event: AstrMessageEvent, source_id: str):
         """
         删除一个已导入的书源。
 
@@ -187,11 +192,12 @@ class JsonlNovelDownloaderPlugin(Star):
             source_id(string): 书源 ID。
         """
         result = await run_blocking(self.source_registry.remove_source, source_id)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
 
     @compat_llm_tool(name="novel_search_books")
     async def novel_search_books(
         self,
+        event: AstrMessageEvent,
         keyword: str,
         source_ids_json: str = "",
         limit: str = "",
@@ -214,11 +220,12 @@ class JsonlNovelDownloaderPlugin(Star):
             self._parse_optional_int(limit) or 20,
             self._parse_bool(include_disabled, False),
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
 
     @compat_llm_tool(name="novel_download_book")
     async def novel_download_book(
         self,
+        event: AstrMessageEvent,
         source_id: str,
         book_url: str,
         book_name: str = "",
@@ -245,14 +252,15 @@ class JsonlNovelDownloaderPlugin(Star):
         job_id = job_info["job_id"]
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        return self._render_status(status, created=job_info["created"])
+        yield event.plain_result(self._render_status(status, created=job_info["created"]))
 
     @compat_llm_tool(name="novel_resume_book_download")
     async def novel_resume_book_download(
         self,
+        event: AstrMessageEvent,
         job_id: str,
         auto_assemble: str = "true",
-    ) -> str:
+    ):
         """
         恢复一个书源规则下载任务，只补缺失章节。
 
@@ -262,11 +270,12 @@ class JsonlNovelDownloaderPlugin(Star):
         """
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        return self._render_status(status, created=False)
+        yield event.plain_result(self._render_status(status, created=False))
 
     @compat_llm_tool(name="novel_start_download")
     async def novel_start_download(
         self,
+        event: AstrMessageEvent,
         book_name: str,
         toc_json: str,
         content_regex: str,
@@ -275,7 +284,7 @@ class JsonlNovelDownloaderPlugin(Star):
         output_filename: str = "",
         encoding: str = "",
         auto_assemble: str = "true",
-    ) -> str:
+    ):
         """
         创建并启动一个小说下载任务。
 
@@ -305,10 +314,12 @@ class JsonlNovelDownloaderPlugin(Star):
         job_id = job_info["job_id"]
         await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        return self._render_status(status, created=job_info["created"])
+        yield event.plain_result(self._render_status(status, created=job_info["created"]))
 
     @compat_llm_tool(name="novel_resume_download")
-    async def novel_resume_download(self, job_id: str, auto_assemble: str = "true") -> str:
+    async def novel_resume_download(
+        self, event: AstrMessageEvent, job_id: str, auto_assemble: str = "true"
+    ):
         """
         恢复一个已存在的下载任务，只抓取缺失章节。
 
@@ -318,10 +329,10 @@ class JsonlNovelDownloaderPlugin(Star):
         """
         await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        return self._render_status(status, created=False)
+        yield event.plain_result(self._render_status(status, created=False))
 
     @compat_llm_tool(name="novel_download_status")
-    async def novel_download_status(self, job_id: str = "") -> str:
+    async def novel_download_status(self, event: AstrMessageEvent, job_id: str = ""):
         """
         查询任务状态；如果未传 job_id，则返回所有任务概览。
 
@@ -330,17 +341,19 @@ class JsonlNovelDownloaderPlugin(Star):
         """
         if job_id:
             status = self.manager.get_status(job_id)
-            return self._render_status(status, created=False)
+            yield event.plain_result(self._render_status(status, created=False))
+            return
 
         jobs = await run_blocking(self.manager.list_jobs)
         if not jobs:
-            return "当前没有任何下载任务。"
-        return json.dumps(jobs, ensure_ascii=False, indent=2)
+            yield event.plain_result("当前没有任何下载任务。")
+            return
+        yield event.plain_result(json.dumps(jobs, ensure_ascii=False, indent=2))
 
     @compat_llm_tool(name="novel_assemble_book")
     async def novel_assemble_book(
-        self, job_id: str, cleanup_journal: str = ""
-    ) -> str:
+        self, event: AstrMessageEvent, job_id: str, cleanup_journal: str = ""
+    ):
         """
         将一个已下载完成的任务组装成最终 TXT。
 
@@ -356,15 +369,15 @@ class JsonlNovelDownloaderPlugin(Star):
                 self.manager.config.cleanup_journal_after_assemble,
             ),
         )
-        return self._render_status(status, created=False)
+        yield event.plain_result(self._render_status(status, created=False))
 
     @compat_llm_tool(name="novel_list_jobs")
-    async def novel_list_jobs(self) -> str:
+    async def novel_list_jobs(self, event: AstrMessageEvent):
         """
         列出当前插件数据目录下的所有小说下载任务。
         """
         jobs = await run_blocking(self.manager.list_jobs)
-        return json.dumps(jobs, ensure_ascii=False, indent=2)
+        yield event.plain_result(json.dumps(jobs, ensure_ascii=False, indent=2))
 
     @filter.command("novel_jobs")
     async def novel_jobs_command(self, event):
@@ -460,6 +473,36 @@ class JsonlNovelDownloaderPlugin(Star):
         if isinstance(parsed, list):
             return [str(item).strip() for item in parsed if str(item).strip()]
         return [item.strip() for item in text.split(",") if item.strip()]
+
+    async def _load_text_argument(self, value: str) -> str:
+        text = str(value or "").strip()
+        if text.startswith(("http://", "https://", "file://")):
+            return await run_blocking(self._fetch_raw_text, text)
+        return text
+
+    def _fetch_raw_text(self, url: str) -> str:
+        request = Request(
+            url,
+            headers={
+                "User-Agent": self.manager.config.user_agent,
+            },
+        )
+        try:
+            with urlopen(request, timeout=self.manager.config.request_timeout) as response:
+                body = response.read()
+                encoding = (
+                    response.headers.get_content_charset()
+                    or self.manager.config.default_encoding
+                    or "utf-8"
+                )
+        except HTTPError as exc:
+            raise ValueError("HTTP {code}: {reason}".format(code=exc.code, reason=exc.reason)) from exc
+        except URLError as exc:
+            raise ValueError("网络错误: {reason}".format(reason=exc.reason)) from exc
+        try:
+            return body.decode(encoding)
+        except UnicodeDecodeError:
+            return body.decode("utf-8", errors="replace")
 
     def _render_status(self, status: dict[str, Any], created: bool) -> str:
         prefix = "已创建并启动任务" if created else "任务状态"
