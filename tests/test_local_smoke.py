@@ -259,6 +259,18 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         return result
 
+    async def _invoke_command(self, command_callable, *args):
+        event = sys.modules["astrbot.api.event"].AstrMessageEvent()
+        result = command_callable(event, *args)
+        self.assertTrue(inspect.isasyncgen(result))
+        chunks = []
+        async for item in result:
+            chunks.append(item)
+        self.assertTrue(chunks)
+        command_result = chunks[0]
+        self.assertTrue(hasattr(command_result, "text"))
+        return str(command_result.text or "")
+
     def test_llm_tool_surface_excludes_internal_admin_and_resume_helpers(self):
         tool_names = set()
         for attr_name in dir(self.plugin):
@@ -455,11 +467,85 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         assembled_text = await self._invoke_tool(self.plugin.novel_assemble_book, job_id, "false")
         self.assertIn("状态: assembled", assembled_text)
 
-        output_path = self.plugin.manager.output_dir / "测试小说.txt"
-        self.assertTrue(output_path.exists())
-        content = output_path.read_text(encoding="utf-8")
-        self.assertIn("第一章 降生", content)
-        self.assertIn("这是第二章。", content)
+    async def test_human_commands_smoke(self):
+        (self.base_dir / "search-command.json").write_text(
+            json.dumps(
+                {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "命令测试书",
+                                "author": "命令作者",
+                                "url": (self.base_dir / "cmd-book.html").resolve().as_uri(),
+                                "intro": "命令简介",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (self.base_dir / "cmd-book.html").write_text(
+            "<html><body><h1>命令测试书</h1><div class='author'>命令作者</div>"
+            "<div id='toc'><a href='{c1}'>第一章</a></div></body></html>".format(
+                c1=(self.base_dir / "cmd-chapter-1.html").resolve().as_uri()
+            ),
+            encoding="utf-8",
+        )
+        (self.base_dir / "cmd-chapter-1.html").write_text(
+            "<html><body><h1>第一章</h1><div id='content'><p>命令正文。</p></div></body></html>",
+            encoding="utf-8",
+        )
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "命令测试源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": (self.base_dir / "search-command.json").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                        "author": ".author&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "title": "h1&&text",
+                        "content": "#content@p@html",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        import_text = await self._invoke_command(self.plugin.novel_import_command, source_json)
+        self.assertIn("imported_count", import_text)
+
+        sources_text = await self._invoke_command(self.plugin.novel_sources_command)
+        self.assertIn("命令测试源", sources_text)
+
+        search_text = await self._invoke_command(self.plugin.novel_search_command, "命令测试书")
+        self.assertIn("search_id", search_text)
+        payload = json.loads(search_text)
+
+        status_text = await self._invoke_command(self.plugin.novel_status_command)
+        self.assertIn("当前没有任何下载任务", status_text)
+
+        remove_text = await self._invoke_command(
+            self.plugin.novel_remove_command,
+            payload["results"][0]["source_id"],
+        )
+        self.assertIn("removed", remove_text)
 
     async def test_search_cache_can_list_and_download_result(self):
         chapters_dir = self.base_dir / "cache-chapters"

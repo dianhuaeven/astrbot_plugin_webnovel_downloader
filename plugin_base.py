@@ -325,28 +325,6 @@ class JsonlNovelDownloaderPluginBase(Star):
             self._parse_non_negative_int(offset, 0),
         )
 
-    async def render_novel_jobs_command_text(self) -> str:
-        jobs = await run_blocking(self.manager.list_jobs)
-        if not jobs:
-            return "当前没有任何下载任务。"
-        lines = []
-        for item in jobs:
-            lines.append(
-                f"{item.get('job_id')} | {item.get('state')} | "
-                f"{item.get('completed_chapters', 0)}/{item.get('total_chapters', 0)}"
-            )
-        return "\n".join(lines)
-
-    async def render_novel_sources_command_text(self) -> str:
-        sources = await run_blocking(self.source_registry.list_sources, False)
-        if not sources:
-            return "当前没有已导入书源。"
-        lines = []
-        for item in sources:
-            state = "on" if item.get("enabled") else "off"
-            lines.append(f"{item.get('source_id')} | {state} | {item.get('name')}")
-        return "\n".join(lines)
-
     async def _ensure_job_running(self, job_id: str, auto_assemble: bool) -> None:
         existing = self._running_tasks.get(job_id)
         if existing and not existing.done():

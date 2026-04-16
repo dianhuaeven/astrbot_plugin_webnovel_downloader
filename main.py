@@ -288,11 +288,117 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
 
     @filter.command("novel_jobs")
     async def novel_jobs_command(self, event):
-        yield event.plain_result(await self.render_novel_jobs_command_text())
+        yield event.plain_result(await self.handle_novel_list_jobs())
 
     @filter.command("novel_sources")
     async def novel_sources_command(self, event):
-        yield event.plain_result(await self.render_novel_sources_command_text())
+        yield event.plain_result(await self.handle_novel_list_sources())
+
+    @filter.command("novel_import")
+    async def novel_import_command(self, event, source_json: str):
+        yield event.plain_result(await self.handle_novel_import_sources(source_json))
+
+    @filter.command("novel_import_clean")
+    async def novel_import_clean_command(self, event, repo_json: str, repo_name: str = ""):
+        yield event.plain_result(await self.handle_novel_import_clean_rules(repo_json, repo_name))
+
+    @filter.command("novel_clean_rules")
+    async def novel_clean_rules_command(self, event, limit: str = "", offset: str = ""):
+        yield event.plain_result(await self.handle_novel_list_clean_rules(limit, offset))
+
+    @filter.command("novel_search")
+    async def novel_search_command(
+        self,
+        event,
+        keyword: str,
+        source_ids_json: str = "",
+        limit: str = "",
+        include_disabled: str = "",
+    ):
+        yield event.plain_result(
+            await self.handle_novel_search_books(
+                keyword,
+                source_ids_json,
+                limit,
+                include_disabled,
+            )
+        )
+
+    @filter.command("novel_searches")
+    async def novel_searches_command(self, event, limit: str = "", offset: str = ""):
+        yield event.plain_result(await self.handle_novel_list_searches(limit, offset))
+
+    @filter.command("novel_search_results")
+    async def novel_search_results_command(
+        self,
+        event,
+        search_id: str,
+        limit: str = "",
+        offset: str = "",
+    ):
+        yield event.plain_result(await self.handle_novel_get_search_results(search_id, limit, offset))
+
+    @filter.command("novel_download_result")
+    async def novel_download_result_command(
+        self,
+        event,
+        search_id: str,
+        result_index: str,
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ):
+        yield event.plain_result(
+            await self.handle_novel_download_search_result(
+                search_id,
+                result_index,
+                output_filename,
+                auto_assemble,
+            )
+        )
+
+    @filter.command("novel_download")
+    async def novel_download_command(
+        self,
+        event,
+        source_id: str,
+        book_url: str,
+        book_name: str = "",
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ):
+        yield event.plain_result(
+            await self.handle_novel_download_book(
+                source_id,
+                book_url,
+                book_name,
+                output_filename,
+                auto_assemble,
+            )
+        )
+
+    @filter.command("novel_status")
+    async def novel_status_command(
+        self,
+        event,
+        job_id: str = "",
+        limit: str = "",
+        offset: str = "",
+    ):
+        yield event.plain_result(await self.handle_novel_download_status(job_id, limit, offset))
+
+    @filter.command("novel_remove")
+    async def novel_remove_command(self, event, source_id: str):
+        yield event.plain_result(await self.handle_novel_remove_source(source_id))
+
+    @filter.command("novel_preview")
+    async def novel_preview_command(
+        self,
+        event,
+        url: str,
+        encoding: str = "",
+        max_chars: str = "",
+    ):
+        yield event.plain_result(await self.handle_novel_fetch_preview(url, encoding, max_chars))
 
 
 __all__ = ["ExtractionRules", "JsonlNovelDownloaderPlugin"]
