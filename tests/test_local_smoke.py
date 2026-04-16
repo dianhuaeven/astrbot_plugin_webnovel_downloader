@@ -547,6 +547,65 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("removed", remove_text)
 
+    def test_plugin_bootstraps_sources_and_clean_rules_from_config(self):
+        source_path = self.base_dir / "bootstrap-source.json"
+        clean_path = self.base_dir / "bootstrap-clean.json"
+        source_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "bookSourceName": "配置书源",
+                        "bookSourceUrl": "https://example.com",
+                        "searchUrl": "https://example.com/search?q={{key}}",
+                        "ruleSearch": {
+                            "bookList": "data.items",
+                            "name": "title",
+                            "bookUrl": "url",
+                        },
+                        "ruleBookInfo": {"name": "h1&&text"},
+                        "ruleToc": {
+                            "chapterList": "#toc a",
+                            "chapterName": "text",
+                            "chapterUrl": "@href",
+                        },
+                        "ruleContent": {"content": "#content&&text"},
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        clean_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "配置净化规则",
+                        "pattern": "广告",
+                        "replacement": "",
+                        "isEnabled": True,
+                        "scopeContent": True,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        plugin = self.module.JsonlNovelDownloaderPlugin(
+            context=object(),
+            config={
+                "book_sources": [str(source_path)],
+                "clean_rule_sources": [str(clean_path)],
+            },
+        )
+
+        sources = plugin.source_registry.list_sources()
+        clean_repos = plugin.clean_rule_store.list_repositories()
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["name"], "配置书源")
+        self.assertEqual(len(clean_repos), 1)
+        self.assertEqual(clean_repos[0]["rule_count"], 1)
+
     async def test_search_cache_can_list_and_download_result(self):
         chapters_dir = self.base_dir / "cache-chapters"
         chapters_dir.mkdir(parents=True, exist_ok=True)

@@ -55,6 +55,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         self.max_tool_preview_items = self.renderer.config.max_tool_preview_items
         self.max_tool_preview_text = self.renderer.config.max_tool_preview_text
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._bootstrap_config_sources()
         logger.info("网文下载器初始化完成")
 
     async def handle_novel_fetch_preview(
@@ -399,6 +400,62 @@ class JsonlNovelDownloaderPluginBase(Star):
         if isinstance(parsed, list):
             return [str(item).strip() for item in parsed if str(item).strip()]
         return [item.strip() for item in text.split(",") if item.strip()]
+
+    def _parse_config_refs(self, value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item or "").strip()]
+        text = str(value or "").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item or "").strip()]
+        parts = [part.strip() for part in text.splitlines() if part.strip()]
+        if parts:
+            return parts
+        return [text]
+
+    def _bootstrap_config_sources(self) -> None:
+        for source_ref in self._parse_config_refs(self.config.get("book_sources")):
+            try:
+                source_text = load_text_argument(
+                    source_ref,
+                    self.manager.config.user_agent,
+                    self.manager.config.request_timeout,
+                    self.manager.config.default_encoding,
+                )
+                result = self.source_registry.import_sources_from_text(source_text)
+                logger.info(
+                    "从配置导入书源成功 source_ref=%s imported_count=%s",
+                    source_ref,
+                    result.get("imported_count", 0),
+                )
+            except Exception as exc:
+                logger.warning("从配置导入书源失败 source_ref=%s error=%s", source_ref, exc)
+
+        for repo_ref in self._parse_config_refs(self.config.get("clean_rule_sources")):
+            try:
+                repo_text = load_text_argument(
+                    repo_ref,
+                    self.manager.config.user_agent,
+                    self.manager.config.request_timeout,
+                    self.manager.config.default_encoding,
+                )
+                record = self.clean_rule_store.import_rules_from_text(
+                    repo_text,
+                    "",
+                    repo_ref,
+                )
+                logger.info(
+                    "从配置导入净化规则成功 repo_ref=%s rule_count=%s",
+                    repo_ref,
+                    record.get("rule_count", 0),
+                )
+            except Exception as exc:
+                logger.warning("从配置导入净化规则失败 repo_ref=%s error=%s", repo_ref, exc)
 
     async def _load_text_argument(self, value: str) -> str:
         return await run_blocking(

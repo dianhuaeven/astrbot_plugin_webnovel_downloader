@@ -53,6 +53,48 @@
     "hint": "函数工具 novel_fetch_preview 默认返回的字符数上限。",
     "default": 4000
   },
+  "max_preview_fetch_chars": {
+    "type": "int",
+    "description": "[工具配置] 单次网页预览返回上限",
+    "hint": "命令或工具调用 novel_fetch_preview 时允许返回的最大字符数上限。",
+    "default": 1800
+  },
+  "max_tool_response_chars": {
+    "type": "int",
+    "description": "[工具配置] 单次工具摘要最大字符数",
+    "hint": "控制函数工具写回给 LLM 的最大摘要体积，过大结果会更多落本地报告。",
+    "default": 2800
+  },
+  "max_tool_preview_items": {
+    "type": "int",
+    "description": "[工具配置] 单次工具内联预览条数",
+    "hint": "列表类工具默认最多在聊天窗口里内联多少条结果。",
+    "default": 8
+  },
+  "max_tool_preview_text": {
+    "type": "int",
+    "description": "[工具配置] 单段文本预览最大长度",
+    "hint": "搜索简介、错误摘要等单段文本在聊天窗口里的最大长度。",
+    "default": 180
+  },
+  "book_sources": {
+    "type": "list",
+    "description": "[启动导入] 启动时自动导入的书源列表",
+    "hint": "每项可填写 URL、文件路径，或原始 JSON 文本。插件启动时会依次导入。",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
+  "clean_rule_sources": {
+    "type": "list",
+    "description": "[启动导入] 启动时自动导入的净化规则列表",
+    "hint": "每项可填写 URL、文件路径，或原始规则文本/JSON。插件启动时会依次导入。",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
   "user_agent": {
     "type": "string",
     "description": "[抓取配置] HTTP User-Agent",
