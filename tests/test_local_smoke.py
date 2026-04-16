@@ -703,6 +703,110 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ["GET命中", "POST命中"],
         )
 
+    async def test_search_supports_json_template_fields_in_result_rules(self):
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "模板字段搜索源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": (self.base_dir / "search-template.json").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": "[*]",
+                        "name": "name",
+                        "author": "author",
+                        "bookUrl": "/detail?bookid={{$.bid}}",
+                        "wordCount": "{{$.words}}字",
+                        "intro": "summary",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+        (self.base_dir / "search-template.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "bid": 1010868264,
+                        "name": "诡秘之主",
+                        "author": "爱潜水的乌贼",
+                        "words": 4465200,
+                        "summary": "蒸汽与机械的浪潮中……",
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主"))
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(
+            result["results"][0]["book_url"],
+            "https://example.com/detail?bookid=1010868264",
+        )
+        self.assertEqual(result["results"][0]["word_count"], "4465200字")
+
+    async def test_search_supports_legado_html_chain_and_index_steps(self):
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "HTML链式搜索源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": (self.base_dir / "search-chain.html").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": ".mybook@.hot_sale",
+                        "name": "p.0@text",
+                        "author": "p.1@text##\\s*\\|.*##",
+                        "kind": "p.1@text##.*\\|\\s*##",
+                        "lastChapter": "p.2@text##连载 \\| 更新：|(\\|)",
+                        "bookUrl": "a.0@href",
+                        "coverUrl": "img@src",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+        (self.base_dir / "search-chain.html").write_text(
+            "<html><body>"
+            "<div class='mybook'>"
+            "<div class='hot_sale'>"
+            "<p>诡秘之主</p>"
+            "<p>爱潜水的乌贼 | 玄幻</p>"
+            "<p>连载 | 更新：第一千二百章</p>"
+            "<a href='/books/1'>详情</a>"
+            "<a href='/books/alt'>备用</a>"
+            "<img src='/covers/1.jpg'/>"
+            "</div>"
+            "</div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主"))
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["successful_sources"], 1)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["results"][0]["title"], "诡秘之主")
+        self.assertIn("爱潜水的乌贼", result["results"][0]["author"])
+        self.assertEqual(result["results"][0]["kind"], "玄幻")
+        self.assertEqual(result["results"][0]["book_url"], "https://example.com/books/1")
+
     async def test_list_jobs_large_result_writes_local_report(self):
         for index in range(12):
             self.plugin.manager.create_job(

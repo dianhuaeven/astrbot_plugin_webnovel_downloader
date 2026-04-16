@@ -43,6 +43,20 @@ class RuleEngineConfig:
 
 
 class RuleEngine:
+    _COMMON_HTML_ATTRS = {
+        "href",
+        "src",
+        "alt",
+        "title",
+        "value",
+        "content",
+        "class",
+        "id",
+        "style",
+        "text",
+        "html",
+    }
+
     def __init__(self, config: RuleEngineConfig):
         self.config = config
         self._cleaner_cache: Dict[str, List[Tuple[str, str]]] = {}
@@ -627,6 +641,12 @@ class RuleEngine:
     def _extract_scalar(self, payload_kind: str, payload: Any, rule_text: str) -> str:
         if not rule_text:
             return ""
+        base_rule, cleaners = self._split_cleaners(str(rule_text or ""))
+        if "{{" in base_rule and "}}" in base_rule:
+            rendered = self._render_rule_template(payload_kind, payload, base_rule)
+            if cleaners:
+                rendered = self._apply_cleaners(rendered, cleaners)
+            return self._normalize_text(rendered)
         values = self._select_many(payload_kind, payload, rule_text)
         if not values:
             return ""
@@ -739,11 +759,13 @@ class RuleEngine:
                 return [node]
             return []
 
-        expression, attr = self._split_html_attr(step)
-        if expression:
-            selected = self._html_select(node, expression)
-        else:
-            selected = [node]
+        expressions, attr = self._split_html_step(step)
+        selected = [node]
+        for expression in expressions:
+            next_selected: List[Any] = []
+            for current in selected:
+                next_selected.extend(self._html_select(current, expression))
+            selected = next_selected
 
         if not attr:
             return selected
@@ -761,26 +783,62 @@ class RuleEngine:
                 values.append(item.attrib.get(attr, ""))
         return values
 
-    def _split_html_attr(self, step: str) -> Tuple[str, str]:
+    def _split_html_step(self, step: str) -> Tuple[List[str], str]:
         if step in ("text", "@text"):
-            return "", "text"
+            return [], "text"
         if step in ("html", "@html"):
-            return "", "html"
-        if step.endswith("@text"):
-            return step[:-5], "text"
-        if step.endswith("@html"):
-            return step[:-5], "html"
-        if "@" in step and not step.lstrip().startswith(("/", ".", "xpath:")):
-            expression, attr = step.rsplit("@", 1)
-            return expression.strip(), attr.strip()
-        return step, ""
+            return [], "html"
+        if step.startswith("@") and len(step) > 1:
+            return [], step[1:].strip()
+
+        parts = [part.strip() for part in str(step or "").split("@") if part.strip()]
+        if not parts:
+            return [], ""
+        attr = ""
+        if len(parts) > 1 and self._is_html_attr_token(parts[-1]):
+            attr = parts[-1]
+            parts = parts[:-1]
+        return parts, attr
+
+    def _is_html_attr_token(self, token: str) -> bool:
+        if token in self._COMMON_HTML_ATTRS:
+            return True
+        if token.startswith(("data-", "aria-")):
+            return True
+        return False
 
     def _html_select(self, node: Any, expression: str) -> List[Any]:
+        index = None
+        selector_expression = expression
+        if not expression.startswith(("xpath:", "//", ".//", "./", "/")):
+            selector_expression, index = self._split_html_index(expression)
         if expression.startswith("xpath:"):
-            return list(node.xpath(expression[len("xpath:") :]))
-        if expression.startswith(("//", ".//", "./", "/")):
-            return list(node.xpath(expression))
-        return list(node.css(expression))
+            selected = list(node.xpath(expression[len("xpath:") :]))
+        elif expression.startswith(("//", ".//", "./", "/")):
+            selected = list(node.xpath(expression))
+        else:
+            selected = list(node.css(selector_expression))
+        if index is None:
+            return selected
+        if not selected:
+            return []
+        if index < 0:
+            index += len(selected)
+        if index < 0 or index >= len(selected):
+            return []
+        return [selected[index]]
+
+    def _split_html_index(self, expression: str) -> Tuple[str, int | None]:
+        match = re.match(r"^(.*)\.(-?\d+)$", expression.strip())
+        if not match:
+            return expression, None
+        base_expression = match.group(1).strip()
+        if not base_expression:
+            return expression, None
+        try:
+            return base_expression, int(match.group(2))
+        except ValueError:
+            return expression, None
 
     def _node_text(self, node: Any) -> str:
         if isinstance(node, str):
@@ -810,5 +868,21 @@ class RuleEngine:
         def replacer(match: re.Match) -> str:
             key = match.group(1).strip()
             return variables.get(key, "")
+
+        return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", replacer, template)
+
+    def _render_rule_template(self, payload_kind: str, payload: Any, template: str) -> str:
+        def replacer(match: re.Match) -> str:
+            expression = match.group(1).strip()
+            if not expression:
+                return ""
+            values = []
+            if payload_kind == "json":
+                values = self._select_json_many(payload, expression)
+            else:
+                values = self._select_html_many(payload, expression)
+            if not values:
+                return ""
+            return self._stringify(values[0])
 
         return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", replacer, template)
