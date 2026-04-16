@@ -80,7 +80,7 @@ class JsonlNovelDownloaderPlugin(Star):
 
     @compat_llm_tool(name="novel_fetch_preview")
     async def novel_fetch_preview(
-        self, url: str, encoding: str = "", max_chars: int = 0
+        self, url: str, encoding: str = "", max_chars: str = ""
     ) -> str:
         """
         抓取网页预览，帮助分析目录页或章节页结构。
@@ -88,13 +88,14 @@ class JsonlNovelDownloaderPlugin(Star):
         Args:
             url(string): 目标网页地址。
             encoding(string): 可选，强制指定编码，例如 utf-8 或 gb18030。
-            max_chars(integer): 最多返回多少字符，填 0 表示使用插件默认值。
+            max_chars(string): 可选，最多返回多少字符；留空或填 0 表示使用插件默认值。
         """
+        limit = self._parse_optional_int(max_chars)
         preview = await asyncio.to_thread(
             self.manager.fetch_preview,
             url,
             encoding,
-            max_chars or None,
+            limit,
         )
         return json.dumps(preview, ensure_ascii=False, indent=2)
 
@@ -232,6 +233,13 @@ class JsonlNovelDownloaderPlugin(Star):
         except Exception as exc:
             self.manager.record_state(job_id, "failed", error=str(exc))
             logger.exception("小说下载任务失败 job_id=%s error=%s", job_id, exc)
+
+    def _parse_optional_int(self, value: str) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        parsed = int(text)
+        return parsed if parsed > 0 else None
 
     def _render_status(self, status: dict[str, Any], created: bool) -> str:
         prefix = "已创建并启动任务" if created else "任务状态"
