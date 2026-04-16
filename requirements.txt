@@ -1,1 +1,2 @@
-# This plugin intentionally uses only the Python standard library.
+jsonpath-ng>=1.7.0
+parsel>=1.9.1
