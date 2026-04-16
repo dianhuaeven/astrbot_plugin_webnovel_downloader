@@ -35,19 +35,46 @@ class SearchService:
         if not normalized_keyword:
             raise ValueError("搜索关键词不能为空")
 
-        sources = self.registry.load_enabled_sources(
+        source_summaries = self.registry.load_enabled_source_summaries(
             source_ids=source_ids,
             include_disabled=include_disabled,
         )
-        if not sources:
+        if not source_summaries:
             return {
                 "keyword": normalized_keyword,
                 "searched_sources": 0,
+                "skipped_sources": [],
                 "successful_sources": 0,
                 "result_count": 0,
                 "results": [],
                 "errors": [],
             }
+
+        searchable_summaries = [item for item in source_summaries if item.get("supports_search")]
+        skipped_sources = [
+            {
+                "source_id": item.get("source_id", ""),
+                "source_name": item.get("name", ""),
+                "reason": "；".join(item.get("issues") or []) or "当前书源不支持 route A 搜索",
+            }
+            for item in source_summaries
+            if not item.get("supports_search")
+        ]
+        if not searchable_summaries:
+            return {
+                "keyword": normalized_keyword,
+                "searched_sources": 0,
+                "skipped_sources": skipped_sources,
+                "successful_sources": 0,
+                "result_count": 0,
+                "results": [],
+                "errors": [],
+            }
+
+        sources = self.registry.load_enabled_sources(
+            source_ids=[item["source_id"] for item in searchable_summaries],
+            include_disabled=include_disabled,
+        )
 
         results: List[Dict[str, Any]] = []
         errors: List[Dict[str, str]] = []
@@ -86,6 +113,7 @@ class SearchService:
         return {
             "keyword": normalized_keyword,
             "searched_sources": len(sources),
+            "skipped_sources": skipped_sources,
             "successful_sources": len(sources) - len(errors),
             "result_count": len(results),
             "results": results[: max(1, limit)],

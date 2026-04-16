@@ -5,10 +5,11 @@ import json
 import re
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 
 REGISTRY_SCHEMA_VERSION = 1
+JS_RULE_MARKERS = ("<js>", "@js:")
 
 
 def _clean_text(value: Any) -> str:
@@ -81,6 +82,38 @@ def normalize_rule_block(value: Any) -> Dict[str, str]:
     return {"__default__": text}
 
 
+def _iter_string_values(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_string_values(item)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_string_values(item)
+
+
+def _contains_js_marker(value: Any) -> bool:
+    for item in _iter_string_values(value):
+        lowered = item.lower()
+        if any(marker in lowered for marker in JS_RULE_MARKERS):
+            return True
+    return False
+
+
+def _looks_like_script_or_login_flow(value: Any) -> bool:
+    text = _clean_text(value).lower()
+    if not text:
+        return False
+    if text.startswith(("http://", "https://")):
+        return True
+    if any(marker in text for marker in JS_RULE_MARKERS):
+        return True
+    return any(marker in text for marker in ("function", "=>", "java.", "eval("))
+
+
 def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
     source_name = _clean_text(
         raw_source.get("bookSourceName")
@@ -128,6 +161,14 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "single_url": bool(raw_source.get("singleUrl", False)),
         "load_with_base_url": bool(raw_source.get("loadWithBaseUrl", False)),
         "enable_js": bool(raw_source.get("enableJs", False)),
+        "has_js_lib": bool(_clean_text(raw_source.get("jsLib"))),
+        "has_login_flow": bool(raw_source.get("loginUi")) or _looks_like_script_or_login_flow(
+            raw_source.get("loginUrl")
+        ),
+        "rule_search_uses_js": _contains_js_marker(raw_source.get("ruleSearch")),
+        "rule_book_info_uses_js": _contains_js_marker(raw_source.get("ruleBookInfo")),
+        "rule_toc_uses_js": _contains_js_marker(raw_source.get("ruleToc")),
+        "rule_content_uses_js": _contains_js_marker(raw_source.get("ruleContent")),
         "last_imported_at": time.time(),
     }
     return normalized
@@ -145,10 +186,14 @@ class SourceSummary:
     book_source_type: int
     single_url: bool
     enable_js: bool
+    has_js_lib: bool
+    has_login_flow: bool
     has_rule_search: bool
     has_rule_book_info: bool
     has_rule_toc: bool
     has_rule_content: bool
+    search_uses_js: bool
+    download_uses_js: bool
     supports_search: bool
     supports_download: bool
     issues: List[str]
@@ -159,18 +204,47 @@ class SourceSummary:
 
 
 def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> SourceSummary:
-    supports_search = bool(normalized.get("search_url")) and bool(normalized.get("rule_search"))
-    supports_download = bool(normalized.get("rule_book_info")) and bool(normalized.get("rule_toc")) and bool(
+    has_required_search = bool(normalized.get("search_url")) and bool(normalized.get("rule_search"))
+    has_required_download = bool(normalized.get("rule_book_info")) and bool(normalized.get("rule_toc")) and bool(
         normalized.get("rule_content")
     )
+    search_uses_js = bool(normalized.get("enable_js")) or bool(normalized.get("rule_search_uses_js"))
+    download_uses_js = bool(normalized.get("enable_js")) or any(
+        (
+            normalized.get("rule_book_info_uses_js"),
+            normalized.get("rule_toc_uses_js"),
+            normalized.get("rule_content_uses_js"),
+        )
+    )
+    supports_search = has_required_search and not search_uses_js
+    supports_download = has_required_download and not download_uses_js
     issues: List[str] = []
-    if normalized.get("single_url") and not supports_search:
+    if normalized.get("single_url") and not has_required_search:
         issues.append("检测到 singleUrl 单链接/RSS 源，当前不支持按书名搜索下载")
     if normalized.get("enable_js"):
-        issues.append("该源启用了 JS 规则，当前路线 A 不支持 JS 执行")
-    if not supports_search:
+        issues.append("该源启用了 enableJs，当前路线 A 不支持 JS 执行")
+    if normalized.get("rule_search_uses_js"):
+        issues.append("ruleSearch 含 JS 规则，当前无法按书名搜索")
+    download_js_blocks = []
+    if normalized.get("rule_book_info_uses_js"):
+        download_js_blocks.append("ruleBookInfo")
+    if normalized.get("rule_toc_uses_js"):
+        download_js_blocks.append("ruleToc")
+    if normalized.get("rule_content_uses_js"):
+        download_js_blocks.append("ruleContent")
+    if download_js_blocks:
+        issues.append(
+            "{blocks} 含 JS 规则，当前无法稳定抓目录/正文并下载 TXT".format(
+                blocks="/".join(download_js_blocks)
+            )
+        )
+    if normalized.get("has_js_lib"):
+        issues.append("检测到 jsLib 脚本库；当前纯 Python 路线不会执行其中的 JS 辅助逻辑")
+    if normalized.get("has_login_flow"):
+        issues.append("检测到 loginUrl/loginUi 登录或脚本流程；当前路线 A 不支持登录态与脚本登录")
+    if not has_required_search:
         issues.append("缺少 searchUrl 或 ruleSearch，无法按书名搜索")
-    if not supports_download:
+    if not has_required_download:
         issues.append("缺少 ruleBookInfo/ruleToc/ruleContent，无法自动抓目录并下载 TXT")
     return SourceSummary(
         source_id=normalized["source_id"],
@@ -183,10 +257,14 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         book_source_type=int(normalized.get("book_source_type", 0) or 0),
         single_url=bool(normalized.get("single_url", False)),
         enable_js=bool(normalized.get("enable_js", False)),
+        has_js_lib=bool(normalized.get("has_js_lib", False)),
+        has_login_flow=bool(normalized.get("has_login_flow", False)),
         has_rule_search=bool(normalized.get("rule_search")),
         has_rule_book_info=bool(normalized.get("rule_book_info")),
         has_rule_toc=bool(normalized.get("rule_toc")),
         has_rule_content=bool(normalized.get("rule_content")),
+        search_uses_js=bool(search_uses_js),
+        download_uses_js=bool(download_uses_js),
         supports_search=supports_search,
         supports_download=supports_download,
         issues=issues,

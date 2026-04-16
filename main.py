@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -71,7 +73,14 @@ class JsonlNovelDownloaderPlugin(Star):
         super().__init__(context)
         self.context = context
         self.config = config or {}
-        plugin_data_dir = StarTools.get_data_dir()
+        plugin_data_dir = Path(StarTools.get_data_dir())
+        self.plugin_data_dir = plugin_data_dir
+        self.reports_dir = self.plugin_data_dir / "reports"
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.max_tool_response_chars = max(800, int(self.config.get("max_tool_response_chars", 2800)))
+        self.max_tool_preview_items = max(1, int(self.config.get("max_tool_preview_items", 8)))
+        self.max_tool_preview_text = max(60, int(self.config.get("max_tool_preview_text", 180)))
+        self.max_preview_fetch_chars = max(300, int(self.config.get("max_preview_fetch_chars", 1800)))
         self.manager = NovelDownloadManager(
             plugin_data_dir,
             RuntimeConfig(
@@ -118,7 +127,7 @@ class JsonlNovelDownloaderPlugin(Star):
     @compat_llm_tool(name="novel_fetch_preview")
     async def novel_fetch_preview(
         self, event: AstrMessageEvent, url: str, encoding: str = "", max_chars: str = ""
-    ):
+    ) -> str:
         """
         抓取网页预览，帮助分析目录页或章节页结构。
 
@@ -127,17 +136,23 @@ class JsonlNovelDownloaderPlugin(Star):
             encoding(string): 可选，强制指定编码，例如 utf-8 或 gb18030。
             max_chars(string): 可选，最多返回多少字符；留空或填 0 表示使用插件默认值。
         """
-        limit = self._parse_optional_int(max_chars)
+        limit = min(
+            self._parse_optional_int(max_chars) or self.max_preview_fetch_chars,
+            self.max_preview_fetch_chars,
+        )
         preview = await run_blocking(
             self.manager.fetch_preview,
             url,
             encoding,
             limit,
         )
-        yield event.plain_result(json.dumps(preview, ensure_ascii=False, indent=2))
+        preview["html_preview"] = self._truncate_text(preview.get("html_preview", ""), limit)
+        preview["text_preview"] = self._truncate_text(preview.get("text_preview", ""), limit)
+        preview["applied_max_chars"] = limit
+        return self._to_json_text(preview)
 
     @compat_llm_tool(name="novel_import_sources")
-    async def novel_import_sources(self, event: AstrMessageEvent, source_json: str):
+    async def novel_import_sources(self, event: AstrMessageEvent, source_json: str) -> str:
         """
         导入 Legado/阅读风格书源 JSON。
 
@@ -149,26 +164,39 @@ class JsonlNovelDownloaderPlugin(Star):
             self.source_registry.import_sources_from_text,
             source_json,
         )
-        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
+        return self._render_import_summary(result)
 
     @compat_llm_tool(name="novel_list_sources")
-    async def novel_list_sources(self, event: AstrMessageEvent, enabled_only: str = ""):
+    async def novel_list_sources(
+        self,
+        event: AstrMessageEvent,
+        enabled_only: str = "",
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
         """
         列出已导入书源。
 
         Args:
             enabled_only(string): 是否只显示启用书源，支持 true/false/1/0/yes/no。
+            limit(string): 可选，本次最多返回多少条预览。
+            offset(string): 可选，从第几条开始返回，支持 0、10、20 这类非负整数。
         """
+        enabled_only_value = self._parse_bool(enabled_only, False)
+        limit_value = self._parse_optional_int(limit) or self.max_tool_preview_items
+        offset_value = self._parse_non_negative_int(offset, 0)
         result = await run_blocking(
             self.source_registry.list_sources,
-            self._parse_bool(enabled_only, False),
+            enabled_only_value,
         )
-        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
+        return self._render_sources_summary(
+            result, enabled_only_value, limit_value, offset_value
+        )
 
     @compat_llm_tool(name="novel_enable_source")
     async def novel_enable_source(
         self, event: AstrMessageEvent, source_id: str, enabled: str = "true"
-    ):
+    ) -> str:
         """
         启用或禁用一个书源。
 
@@ -181,10 +209,10 @@ class JsonlNovelDownloaderPlugin(Star):
             source_id,
             self._parse_bool(enabled, True),
         )
-        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
+        return self._render_source_change_summary("set_enabled", result)
 
     @compat_llm_tool(name="novel_remove_source")
-    async def novel_remove_source(self, event: AstrMessageEvent, source_id: str):
+    async def novel_remove_source(self, event: AstrMessageEvent, source_id: str) -> str:
         """
         删除一个已导入的书源。
 
@@ -192,7 +220,7 @@ class JsonlNovelDownloaderPlugin(Star):
             source_id(string): 书源 ID。
         """
         result = await run_blocking(self.source_registry.remove_source, source_id)
-        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
+        return self._render_source_change_summary("removed", result)
 
     @compat_llm_tool(name="novel_search_books")
     async def novel_search_books(
@@ -220,7 +248,7 @@ class JsonlNovelDownloaderPlugin(Star):
             self._parse_optional_int(limit) or 20,
             self._parse_bool(include_disabled, False),
         )
-        yield event.plain_result(json.dumps(result, ensure_ascii=False, indent=2))
+        return self._render_search_summary(result)
 
     @compat_llm_tool(name="novel_download_book")
     async def novel_download_book(
@@ -252,7 +280,7 @@ class JsonlNovelDownloaderPlugin(Star):
         job_id = job_info["job_id"]
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        yield event.plain_result(self._render_status(status, created=job_info["created"]))
+        return self._render_status(status, created=job_info["created"])
 
     @compat_llm_tool(name="novel_resume_book_download")
     async def novel_resume_book_download(
@@ -260,7 +288,7 @@ class JsonlNovelDownloaderPlugin(Star):
         event: AstrMessageEvent,
         job_id: str,
         auto_assemble: str = "true",
-    ):
+    ) -> str:
         """
         恢复一个书源规则下载任务，只补缺失章节。
 
@@ -270,7 +298,7 @@ class JsonlNovelDownloaderPlugin(Star):
         """
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        yield event.plain_result(self._render_status(status, created=False))
+        return self._render_status(status, created=False)
 
     @compat_llm_tool(name="novel_start_download")
     async def novel_start_download(
@@ -284,7 +312,7 @@ class JsonlNovelDownloaderPlugin(Star):
         output_filename: str = "",
         encoding: str = "",
         auto_assemble: str = "true",
-    ):
+    ) -> str:
         """
         创建并启动一个小说下载任务。
 
@@ -314,12 +342,12 @@ class JsonlNovelDownloaderPlugin(Star):
         job_id = job_info["job_id"]
         await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        yield event.plain_result(self._render_status(status, created=job_info["created"]))
+        return self._render_status(status, created=job_info["created"])
 
     @compat_llm_tool(name="novel_resume_download")
     async def novel_resume_download(
         self, event: AstrMessageEvent, job_id: str, auto_assemble: str = "true"
-    ):
+    ) -> str:
         """
         恢复一个已存在的下载任务，只抓取缺失章节。
 
@@ -329,31 +357,41 @@ class JsonlNovelDownloaderPlugin(Star):
         """
         await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
-        yield event.plain_result(self._render_status(status, created=False))
+        return self._render_status(status, created=False)
 
     @compat_llm_tool(name="novel_download_status")
-    async def novel_download_status(self, event: AstrMessageEvent, job_id: str = ""):
+    async def novel_download_status(
+        self,
+        event: AstrMessageEvent,
+        job_id: str = "",
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
         """
         查询任务状态；如果未传 job_id，则返回所有任务概览。
 
         Args:
             job_id(string): 可选，任务 ID。
+            limit(string): 可选，当未传 job_id 时，本次最多返回多少条任务预览。
+            offset(string): 可选，当未传 job_id 时，从第几条任务开始返回。
         """
         if job_id:
             status = self.manager.get_status(job_id)
-            yield event.plain_result(self._render_status(status, created=False))
-            return
+            return self._render_status(status, created=False)
 
         jobs = await run_blocking(self.manager.list_jobs)
         if not jobs:
-            yield event.plain_result("当前没有任何下载任务。")
-            return
-        yield event.plain_result(json.dumps(jobs, ensure_ascii=False, indent=2))
+            return "当前没有任何下载任务。"
+        return self._render_jobs_summary(
+            jobs,
+            self._parse_optional_int(limit) or self.max_tool_preview_items,
+            self._parse_non_negative_int(offset, 0),
+        )
 
     @compat_llm_tool(name="novel_assemble_book")
     async def novel_assemble_book(
         self, event: AstrMessageEvent, job_id: str, cleanup_journal: str = ""
-    ):
+    ) -> str:
         """
         将一个已下载完成的任务组装成最终 TXT。
 
@@ -369,15 +407,21 @@ class JsonlNovelDownloaderPlugin(Star):
                 self.manager.config.cleanup_journal_after_assemble,
             ),
         )
-        yield event.plain_result(self._render_status(status, created=False))
+        return self._render_status(status, created=False)
 
     @compat_llm_tool(name="novel_list_jobs")
-    async def novel_list_jobs(self, event: AstrMessageEvent):
+    async def novel_list_jobs(
+        self, event: AstrMessageEvent, limit: str = "", offset: str = ""
+    ) -> str:
         """
         列出当前插件数据目录下的所有小说下载任务。
         """
         jobs = await run_blocking(self.manager.list_jobs)
-        yield event.plain_result(json.dumps(jobs, ensure_ascii=False, indent=2))
+        return self._render_jobs_summary(
+            jobs,
+            self._parse_optional_int(limit) or self.max_tool_preview_items,
+            self._parse_non_negative_int(offset, 0),
+        )
 
     @filter.command("novel_jobs")
     async def novel_jobs_command(self, event):
@@ -452,6 +496,13 @@ class JsonlNovelDownloaderPlugin(Star):
         parsed = int(text)
         return parsed if parsed > 0 else None
 
+    def _parse_non_negative_int(self, value: str, default: int = 0) -> int:
+        text = str(value or "").strip()
+        if not text:
+            return default
+        parsed = int(text)
+        return parsed if parsed >= 0 else default
+
     def _parse_bool(self, value: str, default: bool) -> bool:
         text = str(value or "").strip().lower()
         if not text:
@@ -525,6 +576,308 @@ class JsonlNovelDownloaderPlugin(Star):
         if tips:
             return "{base}。提示：{tips}".format(base=message, tips="；".join(tips))
         return message
+
+    def _to_json_text(self, payload: Any) -> str:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    def _truncate_text(self, value: Any, limit: int | None = None) -> str:
+        text = str(value or "")
+        max_length = limit or self.max_tool_preview_text
+        if len(text) <= max_length:
+            return text
+        return text[: max(1, max_length - 1)] + "…"
+
+    def _write_json_report(self, prefix: str, payload: Any) -> str:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        report_path = self.reports_dir / "{prefix}-{timestamp}-{ms}.json".format(
+            prefix=prefix,
+            timestamp=timestamp,
+            ms=int(time.time() * 1000) % 1000,
+        )
+        with open(report_path, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        return str(report_path)
+
+    def _compact_source(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_id": item.get("source_id", ""),
+            "name": item.get("name", ""),
+            "enabled": bool(item.get("enabled", False)),
+            "search_uses_js": bool(item.get("search_uses_js", False)),
+            "download_uses_js": bool(item.get("download_uses_js", False)),
+            "has_js_lib": bool(item.get("has_js_lib", False)),
+            "has_login_flow": bool(item.get("has_login_flow", False)),
+            "supports_search": bool(item.get("supports_search", False)),
+            "supports_download": bool(item.get("supports_download", False)),
+            "group": self._truncate_text(item.get("group", ""), 60),
+            "search_url": self._truncate_text(item.get("search_url", ""), 120),
+            "issues": [self._truncate_text(issue, 80) for issue in list(item.get("issues") or [])[:3]],
+        }
+
+    def _compact_search_result(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_id": item.get("source_id", ""),
+            "source_name": item.get("source_name", ""),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "book_url": item.get("book_url", ""),
+            "kind": self._truncate_text(item.get("kind", ""), 40),
+            "last_chapter": self._truncate_text(item.get("last_chapter", ""), 60),
+            "word_count": item.get("word_count", ""),
+            "intro": self._truncate_text(item.get("intro", ""), self.max_tool_preview_text),
+        }
+
+    def _compact_search_notice(self, item: dict[str, Any], message_key: str) -> dict[str, Any]:
+        return {
+            "source_id": item.get("source_id", ""),
+            "source_name": item.get("source_name", ""),
+            message_key: self._truncate_text(item.get(message_key, ""), self.max_tool_preview_text),
+        }
+
+    def _compact_job(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "job_id": item.get("job_id", ""),
+            "book_name": item.get("book_name", ""),
+            "state": item.get("state", ""),
+            "completed_chapters": item.get("completed_chapters", 0),
+            "total_chapters": item.get("total_chapters", 0),
+            "output_path": item.get("output_path", ""),
+            "journal_path": item.get("journal_path", ""),
+        }
+
+    def _render_source_change_summary(self, action: str, source: dict[str, Any]) -> str:
+        summary = {
+            "action": action,
+            "registry_path": str(self.source_registry.registry_path),
+            "source": self._compact_source(source),
+        }
+        return self._to_json_text(summary)
+
+    def _render_import_summary(self, result: dict[str, Any]) -> str:
+        sources = list(result.get("sources") or [])
+        warnings = list(result.get("warnings") or [])
+        source_preview_count = min(self.max_tool_preview_items, len(sources))
+        warning_preview_count = min(self.max_tool_preview_items, len(warnings))
+        report_path = ""
+
+        while True:
+            summary = {
+                "imported_count": result.get("imported_count", 0),
+                "supported_search_count": result.get("supported_search_count", 0),
+                "supported_download_count": result.get("supported_download_count", 0),
+                "warning_count": len(warnings),
+                "source_count": len(sources),
+                "registry_path": str(self.source_registry.registry_path),
+                "raw_dir": str(self.source_registry.raw_dir),
+                "normalized_dir": str(self.source_registry.normalized_dir),
+                "sources_preview": [self._compact_source(item) for item in sources[:source_preview_count]],
+                "warnings_preview": [
+                    self._truncate_text(item, self.max_tool_preview_text)
+                    for item in warnings[:warning_preview_count]
+                ],
+                "remaining_source_count": max(0, len(sources) - source_preview_count),
+                "remaining_warning_count": max(0, len(warnings) - warning_preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self._to_json_text(summary)
+            if len(text) <= self.max_tool_response_chars:
+                if (
+                    len(sources) > source_preview_count
+                    or len(warnings) > warning_preview_count
+                ) and not report_path:
+                    report_path = self._write_json_report("import-sources", result)
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report("import-sources", result)
+                continue
+            if warning_preview_count > 0:
+                warning_preview_count -= 1
+                continue
+            if source_preview_count > 1:
+                source_preview_count -= 1
+                continue
+            return text
+
+    def _render_sources_summary(
+        self,
+        sources: list[dict[str, Any]],
+        enabled_only: bool,
+        limit: int,
+        offset: int,
+    ) -> str:
+        total = len(sources)
+        sliced = sources[offset : offset + limit]
+        preview_count = min(self.max_tool_preview_items, len(sliced))
+        report_path = ""
+
+        while True:
+            summary = {
+                "total_count": total,
+                "enabled_only": enabled_only,
+                "enabled_count": sum(1 for item in sources if item.get("enabled")),
+                "disabled_count": sum(1 for item in sources if not item.get("enabled")),
+                "offset": offset,
+                "limit": limit,
+                "returned_count": len(sliced),
+                "requested_count": len(sliced),
+                "previewed_count": preview_count,
+                "has_more": offset + len(sliced) < total,
+                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+                "registry_path": str(self.source_registry.registry_path),
+                "sources": [self._compact_source(item) for item in sliced[:preview_count]],
+                "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self._to_json_text(summary)
+            if len(text) <= self.max_tool_response_chars:
+                if len(sliced) > preview_count and not report_path:
+                    report_path = self._write_json_report(
+                        "list-sources",
+                        {
+                            "total_count": total,
+                            "enabled_only": enabled_only,
+                            "offset": offset,
+                            "limit": limit,
+                            "requested_count": len(sliced),
+                            "registry_path": str(self.source_registry.registry_path),
+                            "sources": sliced,
+                        },
+                    )
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report(
+                    "list-sources",
+                    {
+                        "total_count": total,
+                        "enabled_only": enabled_only,
+                        "offset": offset,
+                        "limit": limit,
+                        "requested_count": len(sliced),
+                        "registry_path": str(self.source_registry.registry_path),
+                        "sources": sliced,
+                    },
+                )
+                continue
+            if preview_count > 1:
+                preview_count -= 1
+                continue
+            return text
+
+    def _render_search_summary(self, result: dict[str, Any]) -> str:
+        results = list(result.get("results") or [])
+        skipped_sources = list(result.get("skipped_sources") or [])
+        errors = list(result.get("errors") or [])
+        result_preview_count = min(self.max_tool_preview_items, len(results))
+        skipped_preview_count = min(self.max_tool_preview_items, len(skipped_sources))
+        error_preview_count = min(self.max_tool_preview_items, len(errors))
+        report_path = ""
+
+        while True:
+            compact = {
+                "keyword": result.get("keyword", ""),
+                "searched_sources": result.get("searched_sources", 0),
+                "successful_sources": result.get("successful_sources", 0),
+                "result_count": len(results),
+                "skipped_source_count": len(skipped_sources),
+                "error_count": len(errors),
+                "results": [self._compact_search_result(item) for item in results[:result_preview_count]],
+                "skipped_sources": [
+                    self._compact_search_notice(item, "reason")
+                    for item in skipped_sources[:skipped_preview_count]
+                ],
+                "errors": [
+                    self._compact_search_notice(item, "error") for item in errors[:error_preview_count]
+                ],
+                "remaining_result_count": max(0, len(results) - result_preview_count),
+                "remaining_skipped_count": max(0, len(skipped_sources) - skipped_preview_count),
+                "remaining_error_count": max(0, len(errors) - error_preview_count),
+            }
+            if report_path:
+                compact["report_path"] = report_path
+            text = self._to_json_text(compact)
+            if len(text) <= self.max_tool_response_chars:
+                if (
+                    len(results) > result_preview_count
+                    or len(skipped_sources) > skipped_preview_count
+                    or len(errors) > error_preview_count
+                ) and not report_path:
+                    report_path = self._write_json_report("search-books", result)
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report("search-books", result)
+                continue
+            if error_preview_count > 0:
+                error_preview_count -= 1
+                continue
+            if skipped_preview_count > 0:
+                skipped_preview_count -= 1
+                continue
+            if result_preview_count > 1:
+                result_preview_count -= 1
+                continue
+            return text
+
+    def _render_jobs_summary(self, jobs: list[dict[str, Any]], limit: int, offset: int) -> str:
+        total = len(jobs)
+        sliced = jobs[offset : offset + limit]
+        preview_count = min(self.max_tool_preview_items, len(sliced))
+        report_path = ""
+
+        while True:
+            summary = {
+                "total_count": total,
+                "offset": offset,
+                "limit": limit,
+                "returned_count": len(sliced),
+                "requested_count": len(sliced),
+                "previewed_count": preview_count,
+                "has_more": offset + len(sliced) < total,
+                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+                "jobs_dir": str(self.manager.jobs_dir),
+                "jobs": [self._compact_job(item) for item in sliced[:preview_count]],
+                "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self._to_json_text(summary)
+            if len(text) <= self.max_tool_response_chars:
+                if len(sliced) > preview_count and not report_path:
+                    report_path = self._write_json_report(
+                        "list-jobs",
+                        {
+                            "total_count": total,
+                            "offset": offset,
+                            "limit": limit,
+                            "requested_count": len(sliced),
+                            "jobs_dir": str(self.manager.jobs_dir),
+                            "jobs": sliced,
+                        },
+                    )
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report(
+                    "list-jobs",
+                    {
+                        "total_count": total,
+                        "offset": offset,
+                        "limit": limit,
+                        "requested_count": len(sliced),
+                        "jobs_dir": str(self.manager.jobs_dir),
+                        "jobs": sliced,
+                    },
+                )
+                continue
+            if preview_count > 1:
+                preview_count -= 1
+                continue
+            return text
 
     def _render_status(self, status: dict[str, Any], created: bool) -> str:
         prefix = "已创建并启动任务" if created else "任务状态"

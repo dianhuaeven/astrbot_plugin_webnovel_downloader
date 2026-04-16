@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import importlib
 import json
 import shutil
@@ -114,9 +115,19 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
             return decorator
 
+        class DummyMessageEventResult(object):
+            def __init__(self):
+                self.chain = []
+                self.text = ""
+
+            def message(self, text):
+                self.text = text
+                self.chain.append(text)
+                return self
+
         class DummyEvent(object):
             def plain_result(self, text):
-                return text
+                return DummyMessageEventResult().message(text)
 
         class DummyStarTools(object):
             @staticmethod
@@ -148,11 +159,21 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
     async def _invoke_tool(self, tool_callable, *args):
         event = sys.modules["astrbot.api.event"].AstrMessageEvent()
-        chunks = []
-        async for item in tool_callable(event, *args):
-            chunks.append(item)
-        self.assertTrue(chunks)
-        return chunks[0]
+        result = tool_callable(event, *args)
+        if inspect.isasyncgen(result):
+            chunks = []
+            async for item in result:
+                chunks.append(item)
+            self.assertTrue(chunks)
+            result = chunks[0]
+        else:
+            result = await result
+        self.assertIsInstance(
+            result,
+            str,
+            "llm_tool 应返回字符串给 LLM，而不是 MessageEventResult/直接发送消息对象",
+        )
+        return result
 
     async def test_llm_tools_end_to_end(self):
         chapters_dir = self.base_dir / "chapters"
@@ -240,10 +261,12 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         import_result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, source_json))
         self.assertEqual(import_result["imported_count"], 1)
+        self.assertTrue(Path(import_result["registry_path"]).exists())
+        self.assertEqual(import_result["source_count"], 1)
 
         listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
-        self.assertEqual(len(listed_sources), 1)
-        self.assertEqual(listed_sources[0]["name"], "测试JSON源")
+        self.assertEqual(listed_sources["total_count"], 1)
+        self.assertEqual(listed_sources["sources"][0]["name"], "测试JSON源")
 
         search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "雪中"))
         self.assertEqual(search_result["searched_sources"], 1)
@@ -264,7 +287,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("第一章 降生", preview["text_preview"])
 
-        source_id = listed_sources[0]["source_id"]
+        source_id = listed_sources["sources"][0]["source_id"]
         auto_download_text = await self._invoke_tool(
             self.plugin.novel_download_book,
             source_id,
@@ -346,12 +369,219 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["imported_count"], 1)
         self.assertEqual(result["supported_search_count"], 0)
         self.assertEqual(result["supported_download_count"], 0)
-        self.assertTrue(result["warnings"])
-        source = result["sources"][0]
+        self.assertGreater(result["warning_count"], 0)
+        self.assertTrue(result["warnings_preview"])
+        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        source = listed_sources["sources"][0]
         self.assertEqual(source["name"], "源仓库(官方纯净)")
         self.assertFalse(source["supports_search"])
         self.assertFalse(source["supports_download"])
         self.assertTrue(source["issues"])
+
+    async def test_js_heavy_source_marks_partial_support_and_skips_search(self):
+        js_heavy_source = json.dumps(
+            [
+                {
+                    "bookSourceName": "番茄脚本源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": "https://example.com/search?q={{key}}",
+                    "jsLib": "function helper() { return 'ok'; }",
+                    "loginUrl": "function login() {}",
+                    "ruleSearch": {
+                        "bookList": "<js>JSON.parse(result)</js>",
+                        "name": "$.title",
+                        "bookUrl": "$.url",
+                    },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "@js:getChapters()",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "content": "<js>return result;</js>",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, js_heavy_source))
+        self.assertEqual(result["imported_count"], 1)
+        self.assertEqual(result["supported_search_count"], 0)
+        self.assertEqual(result["supported_download_count"], 0)
+        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        source = listed_sources["sources"][0]
+        self.assertTrue(source["has_js_lib"])
+        self.assertTrue(source["has_login_flow"])
+        self.assertTrue(source["search_uses_js"])
+        self.assertTrue(source["download_uses_js"])
+        self.assertFalse(source["supports_search"])
+        self.assertFalse(source["supports_download"])
+        self.assertTrue(any("ruleSearch 含 JS 规则" in issue for issue in source["issues"]))
+
+        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "雪中"))
+        self.assertEqual(search_result["searched_sources"], 0)
+        self.assertEqual(len(search_result["skipped_sources"]), 1)
+        self.assertIn("ruleSearch 含 JS 规则", search_result["skipped_sources"][0]["reason"])
+
+    async def test_download_book_rejects_js_only_download_source_before_fetch(self):
+        partial_source = json.dumps(
+            [
+                {
+                    "bookSourceName": "部分可搜不可下",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": "https://example.com/search?q={{key}}",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "bookUrl": "url",
+                    },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "<js>return [];</js>",
+                    },
+                    "ruleContent": {
+                        "content": "div.content&&text",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        import_result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, partial_source))
+        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        source_id = listed_sources["sources"][0]["source_id"]
+        self.assertTrue(listed_sources["sources"][0]["supports_search"])
+        self.assertFalse(listed_sources["sources"][0]["supports_download"])
+
+        with self.assertRaisesRegex(ValueError, "不支持 TXT 下载"):
+            await self._invoke_tool(
+                self.plugin.novel_download_book,
+                source_id,
+                "https://example.com/book/1",
+                "测试书",
+                "",
+                "true",
+            )
+
+    async def test_bulk_import_returns_compact_summary_with_local_registry(self):
+        sources = [
+            {
+                "bookSourceName": "测试源{index}".format(index=index),
+                "bookSourceUrl": "https://example.com/{index}".format(index=index),
+                "searchUrl": "https://example.com/search?q={{key}}&source={index}".format(index=index),
+                "ruleSearch": {
+                    "bookList": "data.items",
+                    "name": "title",
+                    "bookUrl": "url",
+                },
+                "ruleBookInfo": {"name": "h1&&text"},
+                "ruleToc": {
+                    "chapterList": "#toc a",
+                    "chapterName": "text",
+                    "chapterUrl": "@href",
+                },
+                "ruleContent": {"content": "#content&&text"},
+            }
+            for index in range(12)
+        ]
+        result = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_import_sources,
+                json.dumps(sources, ensure_ascii=False),
+            )
+        )
+        self.assertEqual(result["imported_count"], 12)
+        self.assertEqual(result["source_count"], 12)
+        self.assertLessEqual(len(result["sources_preview"]), self.plugin.max_tool_preview_items)
+        self.assertGreater(result["remaining_source_count"], 0)
+        self.assertTrue(Path(result["registry_path"]).exists())
+        self.assertNotIn("sources", result)
+
+        second_page = json.loads(await self._invoke_tool(self.plugin.novel_list_sources, "", "4", "8"))
+        self.assertEqual(second_page["returned_count"], 4)
+        self.assertFalse(second_page["has_more"])
+
+        compact_page = json.loads(await self._invoke_tool(self.plugin.novel_list_sources, "", "12", "0"))
+        self.assertEqual(compact_page["returned_count"], 12)
+        self.assertLessEqual(len(compact_page["sources"]), self.plugin.max_tool_preview_items)
+        self.assertGreater(compact_page["omitted_from_inline_count"], 0)
+        self.assertIn("report_path", compact_page)
+        self.assertTrue(Path(compact_page["report_path"]).exists())
+
+    async def test_search_large_result_writes_local_report(self):
+        items = [
+            {
+                "title": "测试小说{index}".format(index=index),
+                "author": "作者{index}".format(index=index),
+                "url": "https://example.com/book/{index}".format(index=index),
+                "intro": "简介" * 80,
+            }
+            for index in range(12)
+        ]
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "搜索大结果源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": (self.base_dir / "search-many.json").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+        (self.base_dir / "search-many.json").write_text(
+            json.dumps({"data": {"items": items}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "测试", "", "12", "false"))
+        self.assertEqual(result["result_count"], 12)
+        self.assertLessEqual(len(result["results"]), self.plugin.max_tool_preview_items)
+        self.assertIn("report_path", result)
+        self.assertTrue(Path(result["report_path"]).exists())
+
+    async def test_list_jobs_large_result_writes_local_report(self):
+        for index in range(12):
+            self.plugin.manager.create_job(
+                "测试任务{index}".format(index=index),
+                [
+                    {
+                        "title": "第一章",
+                        "url": "file:///tmp/chapter-{index}.html".format(index=index),
+                    }
+                ],
+                self.module.ExtractionRules(content_regex=r"(?s)(.*)"),
+                "",
+                "",
+                "",
+            )
+
+        jobs = json.loads(await self._invoke_tool(self.plugin.novel_list_jobs, "12", "0"))
+        self.assertEqual(jobs["returned_count"], 12)
+        self.assertLessEqual(len(jobs["jobs"]), self.plugin.max_tool_preview_items)
+        self.assertGreater(jobs["omitted_from_inline_count"], 0)
+        self.assertIn("report_path", jobs)
+        self.assertTrue(Path(jobs["report_path"]).exists())
 
 
 if __name__ == "__main__":

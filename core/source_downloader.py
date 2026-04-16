@@ -34,6 +34,15 @@ class SourceDownloadService:
         book_name: str = "",
         output_filename: str = "",
     ) -> Dict[str, Any]:
+        summary = self.registry.get_source_summary(source_id)
+        if not summary.get("supports_download"):
+            issues = "；".join(summary.get("issues") or []) or "当前书源不支持 route A TXT 下载"
+            raise ValueError(
+                "书源 {name} 当前不支持 TXT 下载：{issues}".format(
+                    name=summary.get("name") or source_id,
+                    issues=issues,
+                )
+            )
         source = self.registry.load_normalized_source(source_id)
         plan = self.engine.build_book_download_plan(source, book_url, book_name)
         job = self.manager.create_job(

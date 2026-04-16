@@ -72,6 +72,22 @@ class SourceRegistry:
             sources = [item for item in sources if item.get("enabled")]
         return sources
 
+    def load_enabled_source_summaries(
+        self,
+        source_ids: Optional[Iterable[str]] = None,
+        include_disabled: bool = False,
+    ) -> List[Dict[str, Any]]:
+        registry = self._load_registry()
+        selected_ids = set(source_ids or [])
+        result: List[Dict[str, Any]] = []
+        for source_id, summary in registry["sources"].items():
+            if selected_ids and source_id not in selected_ids:
+                continue
+            if not include_disabled and not summary.get("enabled", False):
+                continue
+            result.append(summary)
+        return result
+
     def get_source_summary(self, source_id: str) -> Dict[str, Any]:
         registry = self._load_registry()
         try:
