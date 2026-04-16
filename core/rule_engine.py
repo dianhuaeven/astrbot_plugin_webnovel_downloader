@@ -40,6 +40,7 @@ class RuleEngineConfig:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     )
+    clean_rule_store: Any = None
 
 
 class RuleEngine:
@@ -155,7 +156,7 @@ class RuleEngine:
         source: Dict[str, Any],
         toc_url: str,
         toc_rule: Dict[str, Any],
-        max_pages: int = 5,
+        max_pages: int = 200,
     ) -> List[Dict[str, Any]]:
         if not toc_rule:
             raise RuleEngineError("书源未提供 rule_toc")
@@ -259,7 +260,7 @@ class RuleEngine:
                 or content_rule.get("name")
                 or "",
             )
-            content = self._extract_scalar(
+            content = self._extract_joined_scalar(
                 payload_kind,
                 payload,
                 content_rule.get("content")
@@ -283,7 +284,10 @@ class RuleEngine:
             current_url = self._make_absolute_url(next_content_url, final_url, source)
 
         merged_content = "\n\n".join([segment for segment in segments if segment.strip()])
+        merged_content = self._apply_rule_content_filters(content_rule, merged_content)
         merged_content = self.apply_content_cleaners(source, merged_content)
+        merged_content = self._remove_duplicate_leading_title(merged_content, chosen_title or fallback_title)
+        merged_content = self._format_chapter_content(merged_content)
         if not merged_content:
             raise RuleEngineError("未解析到正文，请检查 ruleContent")
         return {
@@ -297,6 +301,10 @@ class RuleEngine:
         remote_cleaners = self._load_remote_cleaners(source)
         if remote_cleaners:
             cleaned = self._apply_cleaners(cleaned, remote_cleaners)
+        repo_cleaners = self._load_repo_cleaners(source)
+        if repo_cleaners:
+            cleaned = self._apply_cleaners(cleaned, repo_cleaners)
+        cleaned = self._apply_generic_text_cleaners(cleaned)
         cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
@@ -463,6 +471,15 @@ class RuleEngine:
         cleaners = self._parse_remote_cleaners(text)
         self._cleaner_cache[clean_url] = cleaners
         return cleaners
+
+    def _load_repo_cleaners(self, source: Dict[str, Any]) -> List[Tuple[str, str]]:
+        store = getattr(self.config, "clean_rule_store", None)
+        if store is None:
+            return []
+        try:
+            return list(store.load_applicable_cleaners(source))
+        except Exception:
+            return []
 
     def _parse_remote_cleaners(self, raw_text: str) -> List[Tuple[str, str]]:
         text = raw_text.strip()
@@ -652,6 +669,21 @@ class RuleEngine:
             return ""
         return self._stringify(values[0])
 
+    def _extract_joined_scalar(self, payload_kind: str, payload: Any, rule_text: str) -> str:
+        if not rule_text:
+            return ""
+        base_rule, cleaners = self._split_cleaners(str(rule_text or ""))
+        if "{{" in base_rule and "}}" in base_rule:
+            rendered = self._render_rule_template(payload_kind, payload, base_rule)
+            if cleaners:
+                rendered = self._apply_cleaners(rendered, cleaners)
+            return rendered.strip()
+        values = self._select_many(payload_kind, payload, rule_text)
+        if not values:
+            return ""
+        parts = [self._stringify(value) for value in values]
+        return "\n".join([part for part in parts if part]).strip()
+
     def _select_many(self, payload_kind: str, payload: Any, rule_text: str) -> List[Any]:
         base_rule, cleaners = self._split_cleaners(str(rule_text or ""))
         if payload_kind == "json":
@@ -669,7 +701,29 @@ class RuleEngine:
     def _split_cleaners(self, rule_text: str) -> Tuple[str, List[Tuple[str, str]]]:
         if "##" not in rule_text:
             return rule_text.strip(), []
-        parts = rule_text.split("##")
+        parts: List[str] = []
+        buffer: List[str] = []
+        template_depth = 0
+        index = 0
+        while index < len(rule_text):
+            if rule_text.startswith("{{", index):
+                template_depth += 1
+                buffer.append("{{")
+                index += 2
+                continue
+            if template_depth > 0 and rule_text.startswith("}}", index):
+                template_depth = max(0, template_depth - 1)
+                buffer.append("}}")
+                index += 2
+                continue
+            if template_depth == 0 and rule_text.startswith("##", index):
+                parts.append("".join(buffer))
+                buffer = []
+                index += 2
+                continue
+            buffer.append(rule_text[index])
+            index += 1
+        parts.append("".join(buffer))
         base = parts[0].strip()
         cleaners: List[Tuple[str, str]] = []
         for index in range(1, len(parts), 2):
@@ -686,6 +740,143 @@ class RuleEngine:
             except re.error:
                 continue
         return cleaned.strip()
+
+    def _apply_rule_content_filters(self, content_rule: Dict[str, Any], content: str) -> str:
+        cleaned = str(content or "")
+        if not cleaned:
+            return ""
+        if self._looks_like_html_fragment(cleaned):
+            cleaned = self._html_fragment_to_text(cleaned)
+        extra_cleaners = self._parse_rule_cleaners_field(
+            content_rule.get("replaceRegex")
+            or content_rule.get("replaceSign")
+            or content_rule.get("replace")
+            or ""
+        )
+        if extra_cleaners:
+            cleaned = self._apply_cleaners(cleaned, extra_cleaners)
+        return cleaned.strip()
+
+    def _parse_rule_cleaners_field(self, raw_value: Any) -> List[Tuple[str, str]]:
+        text = str(raw_value or "").strip()
+        if not text:
+            return []
+        _, cleaners = self._split_cleaners(text)
+        if cleaners:
+            return cleaners
+        return [(text, "")]
+
+    def _looks_like_html_fragment(self, value: str) -> bool:
+        return bool(re.search(r"<[a-zA-Z][^>]*>", str(value or "")))
+
+    def _html_fragment_to_text(self, value: str) -> str:
+        text = str(value or "")
+        if not text:
+            return ""
+        text = re.sub(r"(?is)<script\b.*?</script>", "", text)
+        text = re.sub(r"(?is)<style\b.*?</style>", "", text)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</(p|div|section|article|li|tr|h[1-6])\s*>", "\n", text)
+        text = re.sub(r"(?i)<li\b[^>]*>", "\n", text)
+        text = re.sub(r"(?is)<[^>]+>", "", text)
+        text = unescape(text)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n[ \t]+", "\n", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _apply_generic_text_cleaners(self, value: str) -> str:
+        cleaned = str(value or "")
+        if not cleaned:
+            return ""
+        cleaners = [
+            (r"[（(]\s*第[0-9０-９]+\s*/\s*[0-9０-９]+\s*页\s*[)）]", ""),
+            (r"(?im)^\s*.*(?:下一页继续阅读|本章未完，请点击下一页继续阅读).*$", ""),
+            (r"(?im)^\s*.*(?:点击下一页|下一章|上一章)\s*$", ""),
+        ]
+        return self._apply_cleaners(cleaned, cleaners)
+
+    def _remove_duplicate_leading_title(self, content: str, title: str) -> str:
+        text = str(content or "").strip()
+        chapter_title = str(title or "").strip()
+        if not text or not chapter_title:
+            return text
+        lines = text.splitlines()
+        kept: List[str] = []
+        removed_count = 0
+        for line in lines:
+            if line.strip() == chapter_title:
+                removed_count += 1
+                continue
+            kept.append(line)
+        if removed_count == 0:
+            return text
+        if not any(line.strip() for line in kept):
+            return text
+        while kept and not kept[0].strip():
+            kept.pop(0)
+        return "\n".join(kept).strip()
+
+    def _format_chapter_content(self, content: str) -> str:
+        text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return ""
+        raw_lines = [line.strip() for line in text.splitlines()]
+        paragraphs: List[str] = []
+        for line in raw_lines:
+            if not line:
+                continue
+            if paragraphs and self._should_merge_paragraphs(paragraphs[-1], line):
+                paragraphs[-1] = self._merge_paragraph_text(paragraphs[-1], line)
+                continue
+            paragraphs.append(line)
+        formatted = [
+            "{indent}{paragraph}".format(indent="\u3000\u3000", paragraph=paragraph.strip())
+            for paragraph in paragraphs
+            if paragraph.strip()
+        ]
+        return "\n".join(formatted).rstrip()
+
+    def _should_merge_paragraphs(self, previous: str, current: str) -> bool:
+        prev = str(previous or "").strip()
+        curr = str(current or "").strip()
+        if not prev or not curr:
+            return False
+        if self._looks_like_standalone_paragraph(curr):
+            return False
+        if self._ends_with_paragraph_terminal(prev):
+            return False
+        return True
+
+    def _ends_with_paragraph_terminal(self, text: str) -> bool:
+        stripped = str(text or "").rstrip()
+        if not stripped:
+            return False
+        terminals = "。！？!?；;…」』”）》】〕』\"'"
+        return stripped[-1] in terminals
+
+    def _looks_like_standalone_paragraph(self, text: str) -> bool:
+        stripped = str(text or "").strip()
+        if not stripped:
+            return False
+        if re.match(r"^第[0-9零一二三四五六七八九十百千两〇○１２３４５６７８９０]+[章节回部卷篇集幕].*", stripped):
+            return True
+        if stripped.startswith(("注：", "说明：", "PS", "ps", "——", "--")):
+            return True
+        return False
+
+    def _merge_paragraph_text(self, previous: str, current: str) -> str:
+        prev = str(previous or "").rstrip()
+        curr = str(current or "").lstrip()
+        if not prev:
+            return curr
+        if not curr:
+            return prev
+        if prev.endswith(("“", "\"", "'", "‘")):
+            return prev + curr
+        return prev + curr
 
     def _select_json_many(self, payload: Any, rule_text: str) -> List[Any]:
         current: List[Any] = [payload]
@@ -816,8 +1007,10 @@ class RuleEngine:
             selected = list(node.xpath(expression[len("xpath:") :]))
         elif expression.startswith(("//", ".//", "./", "/")):
             selected = list(node.xpath(expression))
+        elif selector_expression.startswith("text."):
+            selected = self._select_html_by_text(node, selector_expression[5:].strip())
         else:
-            selected = list(node.css(selector_expression))
+            selected = list(node.css(self._normalize_css_selector(selector_expression)))
         if index is None:
             return selected
         if not selected:
@@ -839,6 +1032,58 @@ class RuleEngine:
             return base_expression, int(match.group(2))
         except ValueError:
             return expression, None
+
+    def _select_html_by_text(self, node: Any, text_value: str) -> List[Any]:
+        keyword = text_value.strip()
+        if not keyword:
+            return []
+        literal = self._xpath_string_literal(keyword)
+        link_matches = list(
+            node.xpath(
+                ".//*[@href and contains(normalize-space(string(.)), {text})]".format(
+                    text=literal
+                )
+            )
+        )
+        if link_matches:
+            return link_matches
+        return list(node.xpath(".//*[contains(normalize-space(string(.)), {text})]".format(text=literal)))
+
+    def _normalize_css_selector(self, expression: str) -> str:
+        def replace_attr(match: re.Match) -> str:
+            body = match.group(1)
+            for operator in ("~=", "|=", "^=", "$=", "*=", "="):
+                if operator not in body:
+                    continue
+                left, right = body.split(operator, 1)
+                value = right.strip()
+                if not value or value.startswith(("\"", "'")):
+                    return "[{body}]".format(body=body)
+                if re.fullmatch(r"-?\d+(\.\d+)?", value):
+                    return "[{body}]".format(body=body)
+                escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
+                return "[{left}{operator}\"{value}\"]".format(
+                    left=left.rstrip(),
+                    operator=operator,
+                    value=escaped,
+                )
+            return "[{body}]".format(body=body)
+
+        return re.sub(r"\[([^\]]+)\]", replace_attr, expression)
+
+    def _xpath_string_literal(self, value: str) -> str:
+        if "'" not in value:
+            return "'{value}'".format(value=value)
+        if '"' not in value:
+            return '"{value}"'.format(value=value)
+        parts = value.split("'")
+        wrapped: List[str] = []
+        for index, part in enumerate(parts):
+            if part:
+                wrapped.append("'{value}'".format(value=part))
+            if index != len(parts) - 1:
+                wrapped.append('"\'"')
+        return "concat({parts})".format(parts=", ".join(wrapped))
 
     def _node_text(self, node: Any) -> str:
         if isinstance(node, str):
@@ -876,13 +1121,8 @@ class RuleEngine:
             expression = match.group(1).strip()
             if not expression:
                 return ""
-            values = []
-            if payload_kind == "json":
-                values = self._select_json_many(payload, expression)
-            else:
-                values = self._select_html_many(payload, expression)
-            if not values:
-                return ""
-            return self._stringify(values[0])
+            if expression.startswith("@@"):
+                expression = expression[2:].strip()
+            return self._extract_scalar(payload_kind, payload, expression)
 
         return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", replacer, template)

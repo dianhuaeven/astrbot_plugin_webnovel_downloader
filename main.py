@@ -16,6 +16,38 @@ from .plugin_support import compat_llm_tool
     "https://github.com/dianhuaeven/astrbot_plugin_webnovel_downloader",
 )
 class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
+    @compat_llm_tool(name="novel_import_clean_rules")
+    async def novel_import_clean_rules(
+        self,
+        event: AstrMessageEvent,
+        repo_json: str,
+        repo_name: str = "",
+    ) -> str:
+        """
+        导入一个正文净化规则仓库，并在后续下载正文时自动应用。
+
+        Args:
+            repo_json(string): 净化规则 JSON/文本，支持 URL、文件路径或原始内容。
+            repo_name(string): 可选，手动指定这份净化规则仓库的名称。
+        """
+        return await self.handle_novel_import_clean_rules(repo_json, repo_name)
+
+    @compat_llm_tool(name="novel_list_clean_rules")
+    async def novel_list_clean_rules(
+        self,
+        event: AstrMessageEvent,
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        """
+        列出已导入的正文净化规则仓库。
+
+        Args:
+            limit(string): 可选，本次最多返回多少条规则仓库记录。
+            offset(string): 可选，从第几条规则仓库记录开始返回。
+        """
+        return await self.handle_novel_list_clean_rules(limit, offset)
+
     @compat_llm_tool(name="novel_fetch_preview")
     async def novel_fetch_preview(
         self, event: AstrMessageEvent, url: str, encoding: str = "", max_chars: str = ""
@@ -58,19 +90,6 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_list_sources(enabled_only, limit, offset)
 
-    @compat_llm_tool(name="novel_enable_source")
-    async def novel_enable_source(
-        self, event: AstrMessageEvent, source_id: str, enabled: str = "true"
-    ) -> str:
-        """
-        启用或禁用一个书源。
-
-        Args:
-            source_id(string): 书源 ID。
-            enabled(string): 是否启用，支持 true/false/1/0/yes/no。
-        """
-        return await self.handle_novel_enable_source(source_id, enabled)
-
     @compat_llm_tool(name="novel_remove_source")
     async def novel_remove_source(self, event: AstrMessageEvent, source_id: str) -> str:
         """
@@ -106,6 +125,62 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             include_disabled,
         )
 
+    @compat_llm_tool(name="novel_list_searches")
+    async def novel_list_searches(
+        self, event: AstrMessageEvent, limit: str = "", offset: str = ""
+    ) -> str:
+        """
+        列出最近缓存的搜索记录。
+
+        Args:
+            limit(string): 可选，本次最多返回多少条搜索记录。
+            offset(string): 可选，从第几条搜索记录开始返回。
+        """
+        return await self.handle_novel_list_searches(limit, offset)
+
+    @compat_llm_tool(name="novel_get_search_results")
+    async def novel_get_search_results(
+        self,
+        event: AstrMessageEvent,
+        search_id: str,
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        """
+        查看某次缓存搜索的结果列表。
+
+        Args:
+            search_id(string): 搜索缓存 ID，通常来自 novel_search_books 的返回。
+            limit(string): 可选，本次最多返回多少条结果。
+            offset(string): 可选，从第几条结果开始返回。
+        """
+        return await self.handle_novel_get_search_results(search_id, limit, offset)
+
+    @compat_llm_tool(name="novel_download_search_result")
+    async def novel_download_search_result(
+        self,
+        event: AstrMessageEvent,
+        search_id: str,
+        result_index: str,
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ) -> str:
+        """
+        直接基于缓存搜索结果中的某一项发起下载。
+
+        Args:
+            search_id(string): 搜索缓存 ID，通常来自 novel_search_books 的返回。
+            result_index(string): 结果索引，通常来自 novel_search_books 或 novel_get_search_results 返回的 result_index。
+            output_filename(string): 可选，自定义输出 TXT 文件名。
+            auto_assemble(string): 是否自动组装 TXT，支持 true/false/1/0/yes/no。
+        """
+        return await self.handle_novel_download_search_result(
+            search_id,
+            result_index,
+            output_filename,
+            auto_assemble,
+        )
+
     @compat_llm_tool(name="novel_download_book")
     async def novel_download_book(
         self,
@@ -133,22 +208,6 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             output_filename,
             auto_assemble,
         )
-
-    @compat_llm_tool(name="novel_resume_book_download")
-    async def novel_resume_book_download(
-        self,
-        event: AstrMessageEvent,
-        job_id: str,
-        auto_assemble: str = "true",
-    ) -> str:
-        """
-        恢复一个书源规则下载任务，只补缺失章节。
-
-        Args:
-            job_id(string): 任务 ID。
-            auto_assemble(string): 是否自动组装 TXT，支持 true/false/1/0/yes/no。
-        """
-        return await self.handle_novel_resume_book_download(job_id, auto_assemble)
 
     @compat_llm_tool(name="novel_start_download")
     async def novel_start_download(
@@ -186,19 +245,6 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             encoding,
             auto_assemble,
         )
-
-    @compat_llm_tool(name="novel_resume_download")
-    async def novel_resume_download(
-        self, event: AstrMessageEvent, job_id: str, auto_assemble: str = "true"
-    ) -> str:
-        """
-        恢复一个已存在的下载任务，只抓取缺失章节。
-
-        Args:
-            job_id(string): 任务 ID。
-            auto_assemble(string): 是否自动组装，支持 true/false/1/0/yes/no。
-        """
-        return await self.handle_novel_resume_download(job_id, auto_assemble)
 
     @compat_llm_tool(name="novel_download_status")
     async def novel_download_status(

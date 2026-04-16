@@ -46,6 +46,44 @@ class ToolResultRenderer:
         }
         return self.to_json_text(summary)
 
+    def render_clean_rule_import_summary(self, record: dict[str, Any]) -> str:
+        return self.to_json_text(
+            {
+                "repo_id": record.get("repo_id", ""),
+                "name": record.get("name", ""),
+                "source_ref": record.get("source_ref", ""),
+                "imported_at": record.get("imported_at", 0),
+                "rule_count": record.get("rule_count", 0),
+                "enabled_rule_count": record.get("enabled_rule_count", 0),
+                "scoped_rule_count": record.get("scoped_rule_count", 0),
+                "skipped_rule_count": record.get("skipped_rule_count", 0),
+                "path": record.get("path", ""),
+            }
+        )
+
+    def render_clean_rule_list_summary(
+        self,
+        repos: list[dict[str, Any]],
+        limit: int,
+        offset: int,
+    ) -> str:
+        total = len(repos)
+        sliced = repos[offset : offset + limit]
+        preview_count = min(self.config.max_tool_preview_items, len(sliced))
+        return self.to_json_text(
+            {
+                "total_count": total,
+                "offset": offset,
+                "limit": limit,
+                "returned_count": len(sliced),
+                "previewed_count": preview_count,
+                "has_more": offset + len(sliced) < total,
+                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+                "repositories": [self._compact_clean_rule_repo(item) for item in sliced[:preview_count]],
+                "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+            }
+        )
+
     def render_import_summary(self, result: dict[str, Any]) -> str:
         sources = list(result.get("sources") or [])
         warnings = list(result.get("warnings") or [])
@@ -161,6 +199,13 @@ class ToolResultRenderer:
             return text
 
     def render_search_summary(self, result: dict[str, Any]) -> str:
+        return self.render_search_summary_with_cache(result, {})
+
+    def render_search_summary_with_cache(
+        self,
+        result: dict[str, Any],
+        cache_record: dict[str, Any],
+    ) -> str:
         results = list(result.get("results") or [])
         skipped_sources = list(result.get("skipped_sources") or [])
         errors = list(result.get("errors") or [])
@@ -172,12 +217,17 @@ class ToolResultRenderer:
         while True:
             compact = {
                 "keyword": result.get("keyword", ""),
+                "search_id": cache_record.get("search_id", ""),
+                "search_path": cache_record.get("path", ""),
                 "searched_sources": result.get("searched_sources", 0),
                 "successful_sources": result.get("successful_sources", 0),
                 "result_count": len(results),
                 "skipped_source_count": len(skipped_sources),
                 "error_count": len(errors),
-                "results": [self._compact_search_result(item) for item in results[:result_preview_count]],
+                "results": [
+                    self._compact_search_result(item, index)
+                    for index, item in enumerate(results[:result_preview_count])
+                ],
                 "skipped_sources": [
                     self._compact_search_notice(item, "reason")
                     for item in skipped_sources[:skipped_preview_count]
@@ -214,6 +264,59 @@ class ToolResultRenderer:
                 result_preview_count -= 1
                 continue
             return text
+
+    def render_search_cache_list_summary(
+        self,
+        searches: list[dict[str, Any]],
+        limit: int,
+        offset: int,
+    ) -> str:
+        total = len(searches)
+        sliced = searches[offset : offset + limit]
+        preview_count = min(self.config.max_tool_preview_items, len(sliced))
+        payload = {
+            "total_count": total,
+            "offset": offset,
+            "limit": limit,
+            "returned_count": len(sliced),
+            "previewed_count": preview_count,
+            "has_more": offset + len(sliced) < total,
+            "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+            "searches": [self._compact_search_record(item) for item in sliced[:preview_count]],
+            "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+        }
+        return self.to_json_text(payload)
+
+    def render_cached_search_results(
+        self,
+        cached_payload: dict[str, Any],
+        limit: int,
+        offset: int,
+    ) -> str:
+        record = dict(cached_payload.get("record") or {})
+        result = dict(cached_payload.get("result") or {})
+        results = list(result.get("results") or [])
+        sliced = results[offset : offset + limit]
+        preview_count = min(self.config.max_tool_preview_items, len(sliced))
+        payload = {
+            "search_id": record.get("search_id", ""),
+            "keyword": record.get("keyword", result.get("keyword", "")),
+            "created_at": record.get("created_at", 0),
+            "search_path": record.get("path", ""),
+            "total_result_count": len(results),
+            "offset": offset,
+            "limit": limit,
+            "returned_count": len(sliced),
+            "previewed_count": preview_count,
+            "has_more": offset + len(sliced) < len(results),
+            "next_offset": offset + len(sliced) if offset + len(sliced) < len(results) else None,
+            "results": [
+                self._compact_search_result(item, offset + index)
+                for index, item in enumerate(sliced[:preview_count])
+            ],
+            "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+        }
+        return self.to_json_text(payload)
 
     def render_jobs_summary(self, jobs: list[dict[str, Any]], limit: int, offset: int) -> str:
         total = len(jobs)
@@ -318,8 +421,8 @@ class ToolResultRenderer:
             "issues": [self.truncate_text(issue, 80) for issue in list(item.get("issues") or [])[:3]],
         }
 
-    def _compact_search_result(self, item: dict[str, Any]) -> dict[str, Any]:
-        return {
+    def _compact_search_result(self, item: dict[str, Any], result_index: int | None = None) -> dict[str, Any]:
+        compact = {
             "source_id": item.get("source_id", ""),
             "source_name": item.get("source_name", ""),
             "title": item.get("title", ""),
@@ -329,6 +432,21 @@ class ToolResultRenderer:
             "last_chapter": self.truncate_text(item.get("last_chapter", ""), 60),
             "word_count": item.get("word_count", ""),
             "intro": self.truncate_text(item.get("intro", ""), self.config.max_tool_preview_text),
+        }
+        if result_index is not None:
+            compact["result_index"] = result_index
+        return compact
+
+    def _compact_search_record(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "search_id": item.get("search_id", ""),
+            "keyword": item.get("keyword", ""),
+            "created_at": item.get("created_at", 0),
+            "searched_sources": item.get("searched_sources", 0),
+            "successful_sources": item.get("successful_sources", 0),
+            "result_count": item.get("result_count", 0),
+            "error_count": item.get("error_count", 0),
+            "search_path": item.get("path", ""),
         }
 
     def _compact_search_notice(self, item: dict[str, Any], message_key: str) -> dict[str, Any]:
@@ -347,4 +465,17 @@ class ToolResultRenderer:
             "total_chapters": item.get("total_chapters", 0),
             "output_path": item.get("output_path", ""),
             "journal_path": item.get("journal_path", ""),
+        }
+
+    def _compact_clean_rule_repo(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "repo_id": item.get("repo_id", ""),
+            "name": item.get("name", ""),
+            "source_ref": self.truncate_text(item.get("source_ref", ""), 120),
+            "imported_at": item.get("imported_at", 0),
+            "rule_count": item.get("rule_count", 0),
+            "enabled_rule_count": item.get("enabled_rule_count", 0),
+            "scoped_rule_count": item.get("scoped_rule_count", 0),
+            "skipped_rule_count": item.get("skipped_rule_count", 0),
+            "path": item.get("path", ""),
         }

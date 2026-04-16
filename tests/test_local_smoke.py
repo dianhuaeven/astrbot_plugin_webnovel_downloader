@@ -259,6 +259,20 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         return result
 
+    def test_llm_tool_surface_excludes_internal_admin_and_resume_helpers(self):
+        tool_names = set()
+        for attr_name in dir(self.plugin):
+            attr = getattr(self.plugin, attr_name)
+            tool_name = getattr(attr, "__llm_tool_name__", "")
+            if tool_name:
+                tool_names.add(tool_name)
+
+        self.assertNotIn("novel_enable_source", tool_names)
+        self.assertNotIn("novel_resume_book_download", tool_names)
+        self.assertNotIn("novel_resume_download", tool_names)
+        self.assertIn("novel_remove_source", tool_names)
+        self.assertIn("novel_download_status", tool_names)
+
     async def test_llm_tools_end_to_end(self):
         chapters_dir = self.base_dir / "chapters"
         chapters_dir.mkdir(parents=True, exist_ok=True)
@@ -355,11 +369,24 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "雪中"))
         self.assertEqual(search_result["searched_sources"], 1)
         self.assertGreaterEqual(search_result["result_count"], 1)
+        self.assertTrue(search_result["search_id"])
+        self.assertTrue(Path(search_result["search_path"]).exists())
         self.assertEqual(search_result["results"][0]["title"], "雪中悍刀行")
+        self.assertEqual(search_result["results"][0]["result_index"], 0)
         self.assertEqual(
             search_result["results"][0]["book_url"],
             (self.base_dir / "book.html").resolve().as_uri(),
         )
+        cached_results = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_get_search_results,
+                search_result["search_id"],
+                "1",
+                "0",
+            )
+        )
+        self.assertEqual(cached_results["total_result_count"], 1)
+        self.assertEqual(cached_results["results"][0]["result_index"], 0)
 
         preview = json.loads(
             await self._invoke_tool(
@@ -433,6 +460,277 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         content = output_path.read_text(encoding="utf-8")
         self.assertIn("第一章 降生", content)
         self.assertIn("这是第二章。", content)
+
+    async def test_search_cache_can_list_and_download_result(self):
+        chapters_dir = self.base_dir / "cache-chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        (chapters_dir / "1.html").write_text(
+            "<html><body><h1>第一章</h1><div id='content'>缓存下载第一章</div></body></html>",
+            encoding="utf-8",
+        )
+        (chapters_dir / "2.html").write_text(
+            "<html><body><h1>第二章</h1><div id='content'>缓存下载第二章</div></body></html>",
+            encoding="utf-8",
+        )
+        (self.base_dir / "cache-book.html").write_text(
+            "<html><body>"
+            "<h1>缓存小说</h1>"
+            "<div class='author'>缓存作者</div>"
+            "<div id='toc'>"
+            "<a href='{c1}'>第一章</a>"
+            "<a href='{c2}'>第二章</a>"
+            "</div>"
+            "</body></html>".format(
+                c1=(chapters_dir / "1.html").resolve().as_uri(),
+                c2=(chapters_dir / "2.html").resolve().as_uri(),
+            ),
+            encoding="utf-8",
+        )
+        (self.base_dir / "cache-search.json").write_text(
+            json.dumps(
+                {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "缓存小说",
+                                "author": "缓存作者",
+                                "url": (self.base_dir / "cache-book.html").resolve().as_uri(),
+                                "intro": "缓存简介",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "缓存测试源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": (self.base_dir / "cache-search.json").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                        "author": ".author&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "title": "h1&&text",
+                        "content": "#content&&text",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "缓存小说"))
+        search_id = search_result["search_id"]
+        self.assertTrue(search_id)
+        self.assertEqual(search_result["results"][0]["result_index"], 0)
+
+        searches = json.loads(await self._invoke_tool(self.plugin.novel_list_searches, "10", "0"))
+        self.assertEqual(searches["total_count"], 1)
+        self.assertEqual(searches["searches"][0]["search_id"], search_id)
+
+        cached_page = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_get_search_results,
+                search_id,
+                "10",
+                "0",
+            )
+        )
+        self.assertEqual(cached_page["total_result_count"], 1)
+        self.assertEqual(cached_page["results"][0]["title"], "缓存小说")
+
+        download_text = await self._invoke_tool(
+            self.plugin.novel_download_search_result,
+            search_id,
+            "0",
+            "",
+            "true",
+        )
+        self.assertIn("已创建并启动任务", download_text)
+        job_id = download_text.splitlines()[0].split(": ", 1)[1]
+        await self.plugin._running_tasks[job_id]
+        status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
+        self.assertIn("状态: assembled", status_text)
+        output_path = self.plugin.manager.output_dir / "缓存小说.txt"
+        self.assertTrue(output_path.exists())
+        content = output_path.read_text(encoding="utf-8")
+        self.assertIn("缓存下载第一章", content)
+        self.assertIn("缓存下载第二章", content)
+
+    async def test_import_clean_rules_repo_applies_to_downloaded_content(self):
+        chapters_dir = self.base_dir / "clean-repo-chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        (chapters_dir / "1.html").write_text(
+            "<html><body><h1>第一章</h1><div id='content'>正文保留 站点广告 继续保留</div></body></html>",
+            encoding="utf-8",
+        )
+        (self.base_dir / "clean-repo-book.html").write_text(
+            "<html><body>"
+            "<h1>净化仓库测试书</h1>"
+            "<div class='author'>净化作者</div>"
+            "<div id='toc'>"
+            "<a href='{c1}'>第一章</a>"
+            "</div>"
+            "</body></html>".format(
+                c1=(chapters_dir / "1.html").resolve().as_uri(),
+            ),
+            encoding="utf-8",
+        )
+        (self.base_dir / "clean-repo-search.json").write_text(
+            json.dumps(
+                {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "净化仓库测试书",
+                                "author": "净化作者",
+                                "url": (self.base_dir / "clean-repo-book.html").resolve().as_uri(),
+                                "intro": "正文净化测试",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "净化仓库测试源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": (self.base_dir / "clean-repo-search.json").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                        "author": ".author&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "title": "h1&&text",
+                        "content": "#content&&text",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+        clean_repo_json = json.dumps(
+            [
+                {
+                    "name": "移除站点广告",
+                    "group": "test",
+                    "pattern": "站点广告",
+                    "replacement": "",
+                    "isRegex": False,
+                    "scope": "净化仓库测试源",
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        import_result = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_import_clean_rules,
+                clean_repo_json,
+                "测试净化仓库",
+            )
+        )
+        self.assertEqual(import_result["name"], "测试净化仓库")
+        self.assertEqual(import_result["rule_count"], 1)
+        self.assertEqual(import_result["scoped_rule_count"], 1)
+        self.assertTrue(Path(import_result["path"]).exists())
+
+        repo_list = json.loads(await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0"))
+        self.assertEqual(repo_list["total_count"], 1)
+        self.assertEqual(repo_list["repositories"][0]["name"], "测试净化仓库")
+
+        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "净化仓库测试书"))
+        download_text = await self._invoke_tool(
+            self.plugin.novel_download_search_result,
+            search_result["search_id"],
+            "0",
+            "",
+            "true",
+        )
+        self.assertIn("已创建并启动任务", download_text)
+        job_id = download_text.splitlines()[0].split(": ", 1)[1]
+        await self.plugin._running_tasks[job_id]
+        output_path = self.plugin.manager.output_dir / "净化仓库测试书.txt"
+        self.assertTrue(output_path.exists())
+        content = output_path.read_text(encoding="utf-8")
+        self.assertIn("正文保留", content)
+        self.assertIn("继续保留", content)
+        self.assertNotIn("站点广告", content)
+
+    async def test_import_clean_rules_skips_js_and_title_only_rules(self):
+        clean_repo_json = json.dumps(
+            [
+                {
+                    "name": "JS规则",
+                    "pattern": "广告",
+                    "replacement": "@js:return '';",
+                    "isRegex": True,
+                    "scopeContent": True,
+                },
+                {
+                    "name": "标题规则",
+                    "pattern": "第",
+                    "replacement": "",
+                    "isRegex": True,
+                    "scopeTitle": True,
+                    "scopeContent": False,
+                },
+                {
+                    "name": "正文规则",
+                    "pattern": "尾注",
+                    "replacement": "",
+                    "isRegex": False,
+                    "scopeContent": True,
+                },
+            ],
+            ensure_ascii=False,
+        )
+        result = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_import_clean_rules,
+                clean_repo_json,
+                "跳过测试仓库",
+            )
+        )
+        self.assertEqual(result["rule_count"], 1)
+        self.assertEqual(result["skipped_rule_count"], 2)
+
+        repo_list = json.loads(await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0"))
+        self.assertEqual(repo_list["repositories"][0]["rule_count"], 1)
+        self.assertEqual(repo_list["repositories"][0]["skipped_rule_count"], 2)
 
     async def test_import_rss_like_source_marks_unsupported(self):
         rss_like_source = json.dumps(
@@ -640,6 +938,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
         result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "测试", "", "12", "false"))
         self.assertEqual(result["result_count"], 12)
+        self.assertTrue(result["search_id"])
         self.assertLessEqual(len(result["results"]), self.plugin.max_tool_preview_items)
         self.assertIn("report_path", result)
         self.assertTrue(Path(result["report_path"]).exists())
@@ -806,6 +1105,360 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("爱潜水的乌贼", result["results"][0]["author"])
         self.assertEqual(result["results"][0]["kind"], "玄幻")
         self.assertEqual(result["results"][0]["book_url"], "https://example.com/books/1")
+
+    async def test_build_plan_supports_css_attr_value_and_current_node_template(self):
+        toc_path = self.base_dir / "attr-toc.html"
+        chapter_path = self.base_dir / "attr-chapter.html"
+        detail_path = self.base_dir / "attr-detail.html"
+
+        chapter_path.write_text(
+            "<html><body><div id='content'>正文</div></body></html>",
+            encoding="utf-8",
+        )
+        toc_path.write_text(
+            "<html><body><div id='toc'><a href='{chapter}'>第一章</a></div></body></html>".format(
+                chapter=chapter_path.resolve().as_uri()
+            ),
+            encoding="utf-8",
+        )
+        detail_path.write_text(
+            "<html><head>"
+            "<meta property='og:novel:book_name' content='兼容测试书' />"
+            "<meta property='og:novel:author' content='测试作者' />"
+            "<meta property='og:novel:update_time' content='2026-04-17' />"
+            "</head><body>"
+            "<a id='toc-link' href='{toc}'>目录</a>"
+            "</body></html>".format(toc=toc_path.resolve().as_uri()),
+            encoding="utf-8",
+        )
+
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "属性选择器兼容源",
+                    "bookSourceUrl": "https://example.com",
+                    "ruleBookInfo": {
+                        "name": "[property=og:novel:book_name]@content",
+                        "author": "[property=og:novel:author]@content",
+                        "intro": "更新时间：{{@@[property=\"og:novel:update_time\"]@content##-##/}}",
+                        "tocUrl": "#toc-link@href",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        sources = self.plugin.source_registry.list_sources()
+        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        plan = self.plugin.search_service.engine.build_book_download_plan(
+            source,
+            detail_path.resolve().as_uri(),
+            "",
+        )
+
+        self.assertEqual(plan["book_name"], "兼容测试书")
+        self.assertEqual(plan["author"], "测试作者")
+        self.assertIn("2026/04/17", plan["intro"])
+        self.assertEqual(plan["toc"][0]["title"], "第一章")
+
+    async def test_fetch_chapter_content_supports_text_paging_multi_node_and_replace_regex(self):
+        chapter_page_2 = self.base_dir / "chapter-page-2.html"
+        chapter_page_1 = self.base_dir / "chapter-page-1.html"
+
+        chapter_page_2.write_text(
+            "<html><body>"
+            "<div class='chaptercontent'>"
+            "<p>第二页标记 (第2/2页)</p>"
+            "<p>正文B</p>"
+            "</div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        chapter_page_1.write_text(
+            "<html><body>"
+            "<div class='chaptercontent'>"
+            "<p>第一页标记 (第1/2页)</p>"
+            "<p>正文A</p>"
+            "</div>"
+            "<a href='{page2}'>下一页</a>"
+            "</body></html>".format(page2=chapter_page_2.resolve().as_uri()),
+            encoding="utf-8",
+        )
+
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "正文分页兼容源",
+                    "bookSourceUrl": "https://example.com",
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "content": ".chaptercontent@p@html",
+                        "nextContentUrl": "text.下一页@href",
+                        "replaceRegex": "##\\(第\\d+/\\d+页\\)##",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        sources = self.plugin.source_registry.list_sources()
+        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        chapter = self.plugin.search_service.engine.fetch_chapter_content(
+            source,
+            chapter_page_1.resolve().as_uri(),
+            "测试章节",
+        )
+
+        self.assertIn("正文A", chapter["content"])
+        self.assertIn("正文B", chapter["content"])
+        self.assertNotIn("<p>", chapter["content"])
+        self.assertNotIn("(第1/2页)", chapter["content"])
+        self.assertNotIn("(第2/2页)", chapter["content"])
+
+    async def test_fetch_chapter_content_removes_generic_page_markers_without_replace_regex(self):
+        chapter_page_2 = self.base_dir / "chapter-generic-page-2.html"
+        chapter_page_1 = self.base_dir / "chapter-generic-page-1.html"
+
+        chapter_page_2.write_text(
+            "<html><body>"
+            "<div class='chaptercontent'>"
+            "<p>第二段（第2/2页）</p>"
+            "<p>正文B</p>"
+            "</div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        chapter_page_1.write_text(
+            "<html><body>"
+            "<div class='chaptercontent'>"
+            "<p>第一段 (第1/2页)</p>"
+            "<p>正文A</p>"
+            "</div>"
+            "<a href='{page2}'>下一页</a>"
+            "</body></html>".format(page2=chapter_page_2.resolve().as_uri()),
+            encoding="utf-8",
+        )
+
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "正文通用分页清洗源",
+                    "bookSourceUrl": "https://example.com",
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "content": ".chaptercontent@p@html",
+                        "nextContentUrl": "text.下一页@href",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        sources = self.plugin.source_registry.list_sources()
+        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        chapter = self.plugin.search_service.engine.fetch_chapter_content(
+            source,
+            chapter_page_1.resolve().as_uri(),
+            "测试章节",
+        )
+
+        self.assertIn("正文A", chapter["content"])
+        self.assertIn("正文B", chapter["content"])
+        self.assertNotIn("(第1/2页)", chapter["content"])
+        self.assertNotIn("（第2/2页）", chapter["content"])
+
+    async def test_build_plan_follows_more_than_five_toc_pages(self):
+        chapter_pages = []
+        toc_pages = []
+        for index in range(1, 8):
+            chapter_path = self.base_dir / "toc-many-chapter-{index}.html".format(index=index)
+            chapter_path.write_text(
+                "<html><body><div id='content'>正文{index}</div></body></html>".format(index=index),
+                encoding="utf-8",
+            )
+            chapter_pages.append(chapter_path)
+
+        for page_no in range(1, 8):
+            toc_path = self.base_dir / "toc-many-page-{page}.html".format(page=page_no)
+            next_link = ""
+            if page_no < 7:
+                next_link = "<a href='{href}'>下一页</a>".format(
+                    href=(self.base_dir / "toc-many-page-{page}.html".format(page=page_no + 1))
+                    .resolve()
+                    .as_uri()
+                )
+            toc_path.write_text(
+                "<html><body>"
+                "<div id='toc'>"
+                "<a href='{chapter}'>第{index}章</a>"
+                "</div>"
+                "{next_link}"
+                "</body></html>".format(
+                    chapter=chapter_pages[page_no - 1].resolve().as_uri(),
+                    index=page_no,
+                    next_link=next_link,
+                ),
+                encoding="utf-8",
+            )
+            toc_pages.append(toc_path)
+
+        detail_path = self.base_dir / "toc-many-detail.html"
+        detail_path.write_text(
+            "<html><body><h1>多页目录测试书</h1><a id='toc-link' href='{toc}'>目录</a></body></html>".format(
+                toc=toc_pages[0].resolve().as_uri()
+            ),
+            encoding="utf-8",
+        )
+
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "多页目录兼容源",
+                    "bookSourceUrl": "https://example.com",
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                        "tocUrl": "#toc-link@href",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                        "nextTocUrl": "text.下一页@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        sources = self.plugin.source_registry.list_sources()
+        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        plan = self.plugin.search_service.engine.build_book_download_plan(
+            source,
+            detail_path.resolve().as_uri(),
+            "",
+        )
+
+        self.assertEqual(len(plan["toc"]), 7)
+        self.assertEqual(plan["toc"][-1]["title"], "第7章")
+
+    async def test_fetch_chapter_content_removes_duplicate_leading_title(self):
+        chapter_page = self.base_dir / "chapter-duplicate-title.html"
+        chapter_page.write_text(
+            "<html><body>"
+            "<h1>第一章 测试标题</h1>"
+            "<div id='content'>"
+            "<p>第一章 测试标题</p>"
+            "<p>这里是正文第一段。</p>"
+            "<p>第一章 测试标题</p>"
+            "<p>这里是正文第二段。</p>"
+            "</div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "重复标题清洗源",
+                    "bookSourceUrl": "https://example.com",
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "title": "h1&&text",
+                        "content": "#content@p@html",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        sources = self.plugin.source_registry.list_sources()
+        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        chapter = self.plugin.search_service.engine.fetch_chapter_content(
+            source,
+            chapter_page.resolve().as_uri(),
+            "第一章 测试标题",
+        )
+
+        stripped_lines = [line.strip() for line in chapter["content"].splitlines()]
+        self.assertNotIn("第一章 测试标题", stripped_lines)
+        self.assertIn("这里是正文第一段。", chapter["content"])
+        self.assertIn("这里是正文第二段。", chapter["content"])
+        self.assertTrue(chapter["content"].splitlines()[0].startswith("\u3000\u3000"))
+
+    async def test_fetch_chapter_content_formats_chinese_paragraphs_and_merges_broken_page_lines(self):
+        chapter_page = self.base_dir / "chapter-formatting.html"
+        chapter_page.write_text(
+            "<html><body>"
+            "<div id='content'>"
+            "<p>不过我们也是你们的敌人。</p>"
+            "<p>但是</p>"
+            "<p>啊，今天有我在，卡洛普学院遗址的“宝藏”，你们别想抢走了。</p>"
+            "<p>第二段也应该保留。</p>"
+            "</div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "中文排版格式化源",
+                    "bookSourceUrl": "https://example.com",
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content@p@html"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        sources = self.plugin.source_registry.list_sources()
+        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        chapter = self.plugin.search_service.engine.fetch_chapter_content(
+            source,
+            chapter_page.resolve().as_uri(),
+            "测试章节",
+        )
+
+        lines = [line for line in chapter["content"].splitlines() if line.strip()]
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(all(line.startswith("\u3000\u3000") for line in lines))
+        self.assertEqual(lines[0].strip(), "不过我们也是你们的敌人。")
+        self.assertIn("但是啊，今天有我在", lines[1])
+        self.assertNotIn("\n\n", chapter["content"])
+        self.assertEqual(lines[2].strip(), "第二段也应该保留。")
 
     async def test_list_jobs_large_result_writes_local_report(self):
         for index in range(12):

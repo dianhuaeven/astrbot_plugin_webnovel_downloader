@@ -11,6 +11,7 @@ from astrbot.core.star.star_tools import StarTools
 from .core.download_manager import ExtractionRules
 from .plugin_renderer import ToolRenderConfig, ToolResultRenderer
 from .plugin_runtime import build_plugin_runtime
+from .search_cache import SearchCacheStore
 from .plugin_support import logger, run_blocking
 from .text_loader import load_text_argument
 
@@ -23,6 +24,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         self.plugin_data_dir = Path(StarTools.get_data_dir())
         self.reports_dir = self.plugin_data_dir / "reports"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.search_cache = SearchCacheStore(self.plugin_data_dir)
 
         self.max_preview_fetch_chars = max(
             300, int(self.config.get("max_preview_fetch_chars", 1800))
@@ -30,6 +32,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         runtime = build_plugin_runtime(self.plugin_data_dir, self.config)
         self.manager = runtime.manager
         self.source_registry = runtime.source_registry
+        self.clean_rule_store = runtime.clean_rule_store
         self.search_service = runtime.search_service
         self.source_download_service = runtime.source_download_service
         self.renderer = ToolResultRenderer(
@@ -83,6 +86,28 @@ class JsonlNovelDownloaderPluginBase(Star):
         )
         return self.renderer.render_import_summary(result)
 
+    async def handle_novel_import_clean_rules(
+        self,
+        repo_json: str,
+        repo_name: str = "",
+    ) -> str:
+        repo_text = await self._load_text_argument(repo_json)
+        record = await run_blocking(
+            self.clean_rule_store.import_rules_from_text,
+            repo_text,
+            repo_name,
+            repo_json,
+        )
+        return self.renderer.render_clean_rule_import_summary(record)
+
+    async def handle_novel_list_clean_rules(self, limit: str = "", offset: str = "") -> str:
+        repos = await run_blocking(self.clean_rule_store.list_repositories)
+        return self.renderer.render_clean_rule_list_summary(
+            repos,
+            self._parse_optional_int(limit) or self.max_tool_preview_items,
+            self._parse_non_negative_int(offset, 0),
+        )
+
     async def handle_novel_list_sources(
         self,
         enabled_only: str = "",
@@ -123,14 +148,45 @@ class JsonlNovelDownloaderPluginBase(Star):
         include_disabled: str = "",
     ) -> str:
         source_ids = self._parse_string_list(source_ids_json)
+        limit_value = self._parse_optional_int(limit) or 20
+        include_disabled_value = self._parse_bool(include_disabled, False)
         result = await run_blocking(
             self.search_service.search,
             keyword,
             source_ids or None,
-            self._parse_optional_int(limit) or 20,
-            self._parse_bool(include_disabled, False),
+            limit_value,
+            include_disabled_value,
         )
-        return self.renderer.render_search_summary(result)
+        cache_record = await run_blocking(
+            self.search_cache.save_search,
+            keyword,
+            result,
+            source_ids or None,
+            include_disabled_value,
+            limit_value,
+        )
+        return self.renderer.render_search_summary_with_cache(result, cache_record)
+
+    async def handle_novel_list_searches(self, limit: str = "", offset: str = "") -> str:
+        searches = await run_blocking(self.search_cache.list_searches)
+        return self.renderer.render_search_cache_list_summary(
+            searches,
+            self._parse_optional_int(limit) or self.max_tool_preview_items,
+            self._parse_non_negative_int(offset, 0),
+        )
+
+    async def handle_novel_get_search_results(
+        self,
+        search_id: str,
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        payload = await run_blocking(self.search_cache.load_search, search_id)
+        return self.renderer.render_cached_search_results(
+            payload,
+            self._parse_optional_int(limit) or self.max_tool_preview_items,
+            self._parse_non_negative_int(offset, 0),
+        )
 
     async def handle_novel_download_book(
         self,
@@ -151,6 +207,38 @@ class JsonlNovelDownloaderPluginBase(Star):
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
         status = self.manager.get_status(job_id)
         return self.renderer.render_status(status, created=job_info["created"])
+
+    async def handle_novel_download_search_result(
+        self,
+        search_id: str,
+        result_index: str,
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ) -> str:
+        result_index_value = self._parse_non_negative_int(result_index, -1)
+        if result_index_value < 0:
+            raise ValueError("result_index 必须是非负整数")
+        item = await run_blocking(
+            self.search_cache.get_search_result_item,
+            search_id,
+            result_index_value,
+        )
+        source_id = str(item.get("source_id") or "").strip()
+        book_url = str(item.get("book_url") or "").strip()
+        book_name = str(item.get("title") or "").strip()
+        if not source_id:
+            raise ValueError("缓存结果缺少 source_id，无法下载")
+        if not book_url:
+            raise ValueError(
+                "缓存结果缺少 book_url，无法下载；请换一个 result_index 或换书源"
+            )
+        return await self.handle_novel_download_book(
+            source_id,
+            book_url,
+            book_name,
+            output_filename,
+            auto_assemble,
+        )
 
     async def handle_novel_resume_book_download(
         self,

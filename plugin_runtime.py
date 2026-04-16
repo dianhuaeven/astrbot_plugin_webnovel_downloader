@@ -8,12 +8,14 @@ from .core.rule_engine import RuleEngine, RuleEngineConfig
 from .core.search_service import SearchService, SearchServiceConfig
 from .core.source_downloader import SourceDownloadConfig, SourceDownloadService
 from .core.source_registry import SourceRegistry
+from .clean_rule_store import CleanRuleRepositoryStore
 
 
 @dataclass
 class PluginRuntime:
     manager: NovelDownloadManager
     source_registry: SourceRegistry
+    clean_rule_store: CleanRuleRepositoryStore
     search_service: SearchService
     source_download_service: SourceDownloadService
 
@@ -39,10 +41,12 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     )
     manager = NovelDownloadManager(plugin_data_dir, runtime_config)
     source_registry = SourceRegistry(plugin_data_dir)
+    clean_rule_store = CleanRuleRepositoryStore(plugin_data_dir)
     engine = RuleEngine(
         RuleEngineConfig(
             request_timeout=runtime_config.request_timeout,
             user_agent=runtime_config.user_agent,
+            clean_rule_store=clean_rule_store,
         )
     )
     search_service = SearchService(
@@ -63,6 +67,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     return PluginRuntime(
         manager=manager,
         source_registry=source_registry,
+        clean_rule_store=clean_rule_store,
         search_service=search_service,
         source_download_service=source_download_service,
     )
