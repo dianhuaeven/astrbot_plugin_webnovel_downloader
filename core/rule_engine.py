@@ -230,6 +230,8 @@ class RuleEngine:
         if "://" in raw_url:
             return raw_url
         base_url = str(source.get("source_url") or "")
+        if raw_url.startswith("/") and base_url.startswith(("http://", "https://")):
+            return urljoin(base_url, raw_url)
         return urljoin(final_url or base_url, raw_url)
 
     def _extract_scalar(self, payload_kind: str, payload: Any, rule_text: str) -> str:

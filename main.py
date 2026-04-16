@@ -48,6 +48,14 @@ def compat_llm_tool(name: str) -> Callable:
     return decorator
 
 
+async def run_blocking(func: Callable, *args):
+    to_thread = getattr(asyncio, "to_thread", None)
+    if to_thread is not None:
+        return await to_thread(func, *args)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args))
+
+
 @register(
     "astrbot_plugin_webnovel_downloader",
     "OpenAI",
@@ -109,7 +117,7 @@ class JsonlNovelDownloaderPlugin(Star):
             max_chars(string): 可选，最多返回多少字符；留空或填 0 表示使用插件默认值。
         """
         limit = self._parse_optional_int(max_chars)
-        preview = await asyncio.to_thread(
+        preview = await run_blocking(
             self.manager.fetch_preview,
             url,
             encoding,
@@ -125,7 +133,7 @@ class JsonlNovelDownloaderPlugin(Star):
         Args:
             source_json(string): 单个书源对象、书源数组，或带 sources 字段的 JSON 字符串。
         """
-        result = await asyncio.to_thread(
+        result = await run_blocking(
             self.source_registry.import_sources_from_text,
             source_json,
         )
@@ -139,7 +147,7 @@ class JsonlNovelDownloaderPlugin(Star):
         Args:
             enabled_only(string): 是否只显示启用书源，支持 true/false/1/0/yes/no。
         """
-        result = await asyncio.to_thread(
+        result = await run_blocking(
             self.source_registry.list_sources,
             self._parse_bool(enabled_only, False),
         )
@@ -154,7 +162,7 @@ class JsonlNovelDownloaderPlugin(Star):
             source_id(string): 书源 ID。
             enabled(string): 是否启用，支持 true/false/1/0/yes/no。
         """
-        result = await asyncio.to_thread(
+        result = await run_blocking(
             self.source_registry.set_enabled,
             source_id,
             self._parse_bool(enabled, True),
@@ -169,7 +177,7 @@ class JsonlNovelDownloaderPlugin(Star):
         Args:
             source_id(string): 书源 ID。
         """
-        result = await asyncio.to_thread(self.source_registry.remove_source, source_id)
+        result = await run_blocking(self.source_registry.remove_source, source_id)
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     @compat_llm_tool(name="novel_search_books")
@@ -190,7 +198,7 @@ class JsonlNovelDownloaderPlugin(Star):
             include_disabled(string): 是否包含禁用书源，支持 true/false/1/0/yes/no。
         """
         source_ids = self._parse_string_list(source_ids_json)
-        result = await asyncio.to_thread(
+        result = await run_blocking(
             self.search_service.search,
             keyword,
             source_ids or None,
@@ -225,7 +233,7 @@ class JsonlNovelDownloaderPlugin(Star):
             auto_assemble(string): 是否自动组装，支持 true/false/1/0/yes/no。
         """
         toc = json.loads(toc_json)
-        job_info = await asyncio.to_thread(
+        job_info = await run_blocking(
             self.manager.create_job,
             book_name,
             toc,
@@ -267,7 +275,7 @@ class JsonlNovelDownloaderPlugin(Star):
             status = self.manager.get_status(job_id)
             return self._render_status(status, created=False)
 
-        jobs = await asyncio.to_thread(self.manager.list_jobs)
+        jobs = await run_blocking(self.manager.list_jobs)
         if not jobs:
             return "当前没有任何下载任务。"
         return json.dumps(jobs, ensure_ascii=False, indent=2)
@@ -283,7 +291,7 @@ class JsonlNovelDownloaderPlugin(Star):
             job_id(string): 任务 ID。
             cleanup_journal(string): 是否删除 JSONL journal，支持 true/false/1/0/yes/no。
         """
-        status = await asyncio.to_thread(
+        status = await run_blocking(
             self.manager.assemble,
             job_id,
             self._parse_bool(
@@ -298,12 +306,12 @@ class JsonlNovelDownloaderPlugin(Star):
         """
         列出当前插件数据目录下的所有小说下载任务。
         """
-        jobs = await asyncio.to_thread(self.manager.list_jobs)
+        jobs = await run_blocking(self.manager.list_jobs)
         return json.dumps(jobs, ensure_ascii=False, indent=2)
 
     @filter.command("novel_jobs")
     async def novel_jobs_command(self, event):
-        jobs = await asyncio.to_thread(self.manager.list_jobs)
+        jobs = await run_blocking(self.manager.list_jobs)
         if not jobs:
             yield event.plain_result("当前没有任何下载任务。")
             return
@@ -317,7 +325,7 @@ class JsonlNovelDownloaderPlugin(Star):
 
     @filter.command("novel_sources")
     async def novel_sources_command(self, event):
-        sources = await asyncio.to_thread(self.source_registry.list_sources, False)
+        sources = await run_blocking(self.source_registry.list_sources, False)
         if not sources:
             yield event.plain_result("当前没有已导入书源。")
             return
@@ -337,10 +345,10 @@ class JsonlNovelDownloaderPlugin(Star):
 
     async def _run_job(self, job_id: str, auto_assemble: bool) -> None:
         try:
-            await asyncio.to_thread(self.manager.download_missing, job_id)
+            await run_blocking(self.manager.download_missing, job_id)
             should_assemble = auto_assemble
             if should_assemble:
-                await asyncio.to_thread(
+                await run_blocking(
                     self.manager.assemble,
                     job_id,
                     self.manager.config.cleanup_journal_after_assemble,
