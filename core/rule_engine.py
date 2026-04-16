@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from html import unescape
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -22,6 +22,15 @@ except ImportError:
 
 class RuleEngineError(Exception):
     """Raised when the route-A rule engine cannot execute a source."""
+
+
+@dataclass
+class RequestSpec:
+    url: str
+    method: str = "GET"
+    body: bytes | None = None
+    request_encoding: str = "utf-8"
+    headers: Dict[str, str] | None = None
 
 
 @dataclass
@@ -62,9 +71,13 @@ class RuleEngine:
                 "base_url": str(source.get("source_url") or ""),
             },
         )
+        request_spec = self._build_request_spec(source, rendered_url)
         response_text, final_url = self._fetch_text(
-            rendered_url,
-            headers=source.get("headers") or {},
+            request_spec.url,
+            headers=self._merge_headers(source.get("headers") or {}, request_spec.headers or {}),
+            method=request_spec.method,
+            body=request_spec.body,
+            request_encoding=request_spec.request_encoding,
         )
         payload_kind, payload = self._build_payload(response_text, final_url)
         results = self._extract_search_results(
@@ -274,20 +287,38 @@ class RuleEngine:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
-    def _fetch_text(self, url: str, headers: Dict[str, str]) -> Tuple[str, str]:
+    def _fetch_text(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        method: str = "GET",
+        body: bytes | None = None,
+        request_encoding: str = "utf-8",
+    ) -> Tuple[str, str]:
         absolute_url = urljoin(headers.get("Referer", "") or "", url) if "://" not in url else url
+        normalized_url = self._normalize_request_url(
+            absolute_url,
+            request_encoding or "utf-8",
+        )
         request_headers = {
             "User-Agent": self.config.user_agent,
         }
         for key, value in headers.items():
             if value:
                 request_headers[str(key)] = str(value)
+        if body is not None and not self._has_content_type(request_headers):
+            request_headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-        request = Request(absolute_url, headers=request_headers)
+        request = Request(
+            normalized_url,
+            headers=request_headers,
+            data=body,
+            method=(method or "GET").upper(),
+        )
         try:
             with urlopen(request, timeout=self.config.request_timeout) as response:
                 body = response.read()
-                final_url = getattr(response, "url", absolute_url)
+                final_url = getattr(response, "url", normalized_url)
                 encoding = (
                     response.headers.get_content_charset()
                     or self._guess_encoding(body)
@@ -304,6 +335,105 @@ class RuleEngine:
             except UnicodeDecodeError:
                 continue
         return body.decode("utf-8", errors="replace"), final_url
+
+    def _build_request_spec(self, source: Dict[str, Any], rendered_url: str) -> RequestSpec:
+        base_url, options = self._split_request_options(rendered_url)
+        request_encoding = str(
+            options.get("charset")
+            or options.get("encoding")
+            or "utf-8"
+        ).strip() or "utf-8"
+        method = str(options.get("method") or "GET").strip().upper() or "GET"
+        headers = self._normalize_request_headers(options.get("headers"))
+        body = self._encode_request_body(
+            options.get("body") or options.get("data"),
+            request_encoding,
+        )
+        if body is not None and method == "GET":
+            method = "POST"
+        absolute_url = self._make_absolute_url(
+            base_url,
+            str(source.get("source_url") or ""),
+            source,
+        )
+        return RequestSpec(
+            url=absolute_url,
+            method=method,
+            body=body,
+            request_encoding=request_encoding,
+            headers=headers,
+        )
+
+    def _split_request_options(self, raw_text: str) -> Tuple[str, Dict[str, Any]]:
+        text = str(raw_text or "").strip()
+        if not text:
+            return "", {}
+        for index in range(len(text) - 1, -1, -1):
+            if text[index] not in "{[":
+                continue
+            prefix = text[:index].rstrip()
+            if not prefix.endswith(","):
+                continue
+            suffix = text[index:]
+            try:
+                parsed = json.loads(suffix)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return prefix[:-1].rstrip(), parsed
+        return text, {}
+
+    def _normalize_request_headers(self, raw_headers: Any) -> Dict[str, str]:
+        if not isinstance(raw_headers, dict):
+            return {}
+        result: Dict[str, str] = {}
+        for key, value in raw_headers.items():
+            if value is None:
+                continue
+            result[str(key)] = str(value)
+        return result
+
+    def _merge_headers(
+        self,
+        base_headers: Dict[str, str],
+        extra_headers: Dict[str, str],
+    ) -> Dict[str, str]:
+        merged: Dict[str, str] = {}
+        for key, value in base_headers.items():
+            if value:
+                merged[str(key)] = str(value)
+        for key, value in extra_headers.items():
+            if value:
+                merged[str(key)] = str(value)
+        return merged
+
+    def _encode_request_body(
+        self,
+        body: Any,
+        request_encoding: str,
+    ) -> bytes | None:
+        if body is None:
+            return None
+        if isinstance(body, bytes):
+            return body
+        if isinstance(body, (dict, list)):
+            text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+            return text.encode(request_encoding, errors="strict")
+        text = str(body).strip()
+        if not text:
+            return None
+        encoded = quote(text, safe="=&%+/:;?,@[]{}", encoding=request_encoding)
+        return encoded.encode("ascii")
+
+    def _normalize_request_url(self, url: str, request_encoding: str) -> str:
+        split = urlsplit(url)
+        path = quote(split.path or "", safe="/%:@", encoding=request_encoding)
+        query = quote(split.query or "", safe="=&;%:+,/?%@[]", encoding=request_encoding)
+        fragment = quote(split.fragment or "", safe="%:@", encoding=request_encoding)
+        return urlunsplit((split.scheme, split.netloc, path, query, fragment))
+
+    def _has_content_type(self, headers: Dict[str, str]) -> bool:
+        return any(str(key).lower() == "content-type" for key in headers)
 
     def _load_remote_cleaners(self, source: Dict[str, Any]) -> List[Tuple[str, str]]:
         clean_url = str(source.get("clean_rule_url") or "").strip()

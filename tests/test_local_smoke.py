@@ -7,10 +7,13 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, get_args, get_origin
+from urllib.parse import unquote_to_bytes, urlsplit
 
 
 SUPPORTED_TOOL_TYPES = {str}
@@ -156,6 +159,87 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         sys.modules["astrbot.core"] = astrbot_core
         sys.modules["astrbot.core.star"] = astrbot_core_star
         sys.modules["astrbot.core.star.star_tools"] = astrbot_core_star_tools
+
+    def _start_search_server(self):
+        records: dict[str, object] = {
+            "get_keyword": "",
+            "post_keyword": "",
+            "post_method": "",
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def _decode_form_keyword(self, text: str, field_name: str, encoding: str) -> str:
+                for part in text.split("&"):
+                    if "=" not in part:
+                        continue
+                    key, value = part.split("=", 1)
+                    if key != field_name:
+                        continue
+                    return unquote_to_bytes(value.replace("+", " ")).decode(encoding)
+                return ""
+
+            def do_GET(self):
+                parsed = urlsplit(self.path)
+                if parsed.path != "/search-gbk":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                keyword = self._decode_form_keyword(parsed.query, "key", "gbk")
+                records["get_keyword"] = keyword
+                payload = {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "GET命中",
+                                "author": "作者A",
+                                "url": "/books/get-hit",
+                                "intro": keyword,
+                            }
+                        ]
+                    }
+                }
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+            def do_POST(self):
+                if self.path != "/search-post":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                body = self.rfile.read(length).decode("ascii")
+                keyword = self._decode_form_keyword(body, "searchkey", "gbk")
+                records["post_keyword"] = keyword
+                records["post_method"] = self.command
+                payload = {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "POST命中",
+                                "author": "作者B",
+                                "url": "/books/post-hit",
+                                "intro": keyword,
+                            }
+                        ]
+                    }
+                }
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+            def log_message(self, format, *args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        return "http://127.0.0.1:{port}".format(port=server.server_address[1]), records
 
     async def _invoke_tool(self, tool_callable, *args):
         event = sys.modules["astrbot.api.event"].AstrMessageEvent()
@@ -559,6 +643,65 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(result["results"]), self.plugin.max_tool_preview_items)
         self.assertIn("report_path", result)
         self.assertTrue(Path(result["report_path"]).exists())
+
+    async def test_search_supports_legado_request_options_for_get_and_post(self):
+        base_url, records = self._start_search_server()
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "GBK GET 源",
+                    "bookSourceUrl": base_url,
+                    "searchUrl": "/search-gbk?key={{key}}&page={{page}},{\"charset\":\"gbk\"}",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                },
+                {
+                    "bookSourceName": "GBK POST 源",
+                    "bookSourceUrl": base_url,
+                    "searchUrl": "/search-post,{\"method\":\"POST\",\"charset\":\"gbk\",\"body\":\"searchkey={{key}}&searchtype=all\"}",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                },
+            ],
+            ensure_ascii=False,
+        )
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+
+        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主", "", "10", "false"))
+        self.assertEqual(result["searched_sources"], 2)
+        self.assertEqual(result["successful_sources"], 2)
+        self.assertEqual(result["result_count"], 2)
+        self.assertEqual(records["get_keyword"], "诡秘之主")
+        self.assertEqual(records["post_keyword"], "诡秘之主")
+        self.assertEqual(records["post_method"], "POST")
+        self.assertCountEqual(
+            [item["title"] for item in result["results"]],
+            ["GET命中", "POST命中"],
+        )
 
     async def test_list_jobs_large_result_writes_local_report(self):
         for index in range(12):
