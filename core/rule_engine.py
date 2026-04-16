@@ -36,6 +36,7 @@ class RuleEngineConfig:
 class RuleEngine:
     def __init__(self, config: RuleEngineConfig):
         self.config = config
+        self._cleaner_cache: Dict[str, List[Tuple[str, str]]] = {}
 
     def search_books(
         self,
@@ -75,6 +76,204 @@ class RuleEngine:
         )
         return results[: max(1, limit)]
 
+    def build_book_download_plan(
+        self,
+        source: Dict[str, Any],
+        book_url: str,
+        fallback_title: str = "",
+    ) -> Dict[str, Any]:
+        detail_text, detail_final_url = self._fetch_text(book_url, headers=source.get("headers") or {})
+        payload_kind, payload = self._build_payload(detail_text, detail_final_url)
+        book_info_rule = source.get("rule_book_info") or {}
+        toc_rule = source.get("rule_toc") or {}
+
+        title = self._extract_scalar(
+            payload_kind,
+            payload,
+            book_info_rule.get("name")
+            or book_info_rule.get("bookName")
+            or book_info_rule.get("title")
+            or "",
+        ) or fallback_title
+        author = self._extract_scalar(payload_kind, payload, book_info_rule.get("author") or "")
+        intro = self._extract_scalar(
+            payload_kind,
+            payload,
+            book_info_rule.get("intro") or book_info_rule.get("desc") or "",
+        )
+        toc_url = self._extract_scalar(
+            payload_kind,
+            payload,
+            book_info_rule.get("tocUrl")
+            or book_info_rule.get("chapterUrl")
+            or book_info_rule.get("catalogUrl")
+            or book_info_rule.get("listUrl")
+            or "",
+        )
+        toc_page_url = self._make_absolute_url(toc_url, detail_final_url, source) or detail_final_url
+        toc = self.fetch_chapter_list(source, toc_page_url, toc_rule)
+        if not toc:
+            raise RuleEngineError("未解析到目录，请检查 ruleToc")
+        return {
+            "book_url": detail_final_url,
+            "toc_url": toc_page_url,
+            "book_name": title or fallback_title or "未命名小说",
+            "author": author,
+            "intro": intro,
+            "toc": toc,
+        }
+
+    def fetch_chapter_list(
+        self,
+        source: Dict[str, Any],
+        toc_url: str,
+        toc_rule: Dict[str, Any],
+        max_pages: int = 5,
+    ) -> List[Dict[str, Any]]:
+        if not toc_rule:
+            raise RuleEngineError("书源未提供 rule_toc")
+
+        current_url = toc_url
+        visited = set()
+        chapters: List[Dict[str, Any]] = []
+        for _ in range(max_pages):
+            if not current_url or current_url in visited:
+                break
+            visited.add(current_url)
+            page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
+            payload_kind, payload = self._build_payload(page_text, final_url)
+            list_rule = (
+                toc_rule.get("chapterList")
+                or toc_rule.get("list")
+                or toc_rule.get("tocList")
+                or toc_rule.get("__default__")
+                or "$"
+            )
+            items = self._flatten_result_items(self._select_many(payload_kind, payload, list_rule))
+            for item in items:
+                title = self._extract_scalar(
+                    payload_kind,
+                    item,
+                    toc_rule.get("chapterName")
+                    or toc_rule.get("name")
+                    or toc_rule.get("title")
+                    or toc_rule.get("text")
+                    or "",
+                )
+                url = self._extract_scalar(
+                    payload_kind,
+                    item,
+                    toc_rule.get("chapterUrl")
+                    or toc_rule.get("url")
+                    or toc_rule.get("link")
+                    or "",
+                )
+                absolute_url = self._make_absolute_url(url, final_url, source)
+                if not title or not absolute_url:
+                    continue
+                chapters.append(
+                    {
+                        "title": title,
+                        "url": absolute_url,
+                    }
+                )
+
+            next_toc_url = self._extract_scalar(
+                payload_kind,
+                payload,
+                toc_rule.get("nextTocUrl") or toc_rule.get("nextUrl") or "",
+            )
+            current_url = self._make_absolute_url(next_toc_url, final_url, source) if next_toc_url else ""
+
+        deduped: List[Dict[str, Any]] = []
+        seen_urls = set()
+        for chapter in chapters:
+            if chapter["url"] in seen_urls:
+                continue
+            seen_urls.add(chapter["url"])
+            deduped.append(chapter)
+        return [
+            {
+                "index": index,
+                "title": chapter["title"],
+                "url": chapter["url"],
+            }
+            for index, chapter in enumerate(deduped)
+        ]
+
+    def fetch_chapter_content(
+        self,
+        source: Dict[str, Any],
+        chapter_url: str,
+        fallback_title: str = "",
+        max_pages: int = 5,
+    ) -> Dict[str, str]:
+        content_rule = source.get("rule_content") or {}
+        if not content_rule:
+            raise RuleEngineError("书源未提供 rule_content")
+
+        current_url = chapter_url
+        visited = set()
+        segments: List[str] = []
+        chosen_title = fallback_title
+        final_encoding = ""
+
+        for _ in range(max_pages):
+            if not current_url or current_url in visited:
+                break
+            visited.add(current_url)
+            page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
+            payload_kind, payload = self._build_payload(page_text, final_url)
+            title = self._extract_scalar(
+                payload_kind,
+                payload,
+                content_rule.get("title")
+                or content_rule.get("chapterName")
+                or content_rule.get("name")
+                or "",
+            )
+            content = self._extract_scalar(
+                payload_kind,
+                payload,
+                content_rule.get("content")
+                or content_rule.get("text")
+                or content_rule.get("body")
+                or content_rule.get("__default__")
+                or "",
+            )
+            if title:
+                chosen_title = title
+            if content:
+                segments.append(content)
+
+            next_content_url = self._extract_scalar(
+                payload_kind,
+                payload,
+                content_rule.get("nextContentUrl") or content_rule.get("nextUrl") or "",
+            )
+            if not next_content_url:
+                break
+            current_url = self._make_absolute_url(next_content_url, final_url, source)
+
+        merged_content = "\n\n".join([segment for segment in segments if segment.strip()])
+        merged_content = self.apply_content_cleaners(source, merged_content)
+        if not merged_content:
+            raise RuleEngineError("未解析到正文，请检查 ruleContent")
+        return {
+            "title": chosen_title or fallback_title,
+            "content": merged_content,
+            "encoding": final_encoding,
+        }
+
+    def apply_content_cleaners(self, source: Dict[str, Any], content: str) -> str:
+        cleaned = content
+        remote_cleaners = self._load_remote_cleaners(source)
+        if remote_cleaners:
+            cleaned = self._apply_cleaners(cleaned, remote_cleaners)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
     def _fetch_text(self, url: str, headers: Dict[str, str]) -> Tuple[str, str]:
         absolute_url = urljoin(headers.get("Referer", "") or "", url) if "://" not in url else url
         request_headers = {
@@ -105,6 +304,67 @@ class RuleEngine:
             except UnicodeDecodeError:
                 continue
         return body.decode("utf-8", errors="replace"), final_url
+
+    def _load_remote_cleaners(self, source: Dict[str, Any]) -> List[Tuple[str, str]]:
+        clean_url = str(source.get("clean_rule_url") or "").strip()
+        if not clean_url:
+            return []
+        if clean_url in self._cleaner_cache:
+            return self._cleaner_cache[clean_url]
+        try:
+            text, _ = self._fetch_text(clean_url, headers=source.get("headers") or {})
+        except Exception:
+            self._cleaner_cache[clean_url] = []
+            return []
+        cleaners = self._parse_remote_cleaners(text)
+        self._cleaner_cache[clean_url] = cleaners
+        return cleaners
+
+    def _parse_remote_cleaners(self, raw_text: str) -> List[Tuple[str, str]]:
+        text = raw_text.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+
+        cleaners: List[Tuple[str, str]] = []
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    pattern = str(item.get("regex") or item.get("pattern") or "").strip()
+                    replacement = str(item.get("replacement") or item.get("replace") or "")
+                    if pattern:
+                        cleaners.append((pattern, replacement))
+        elif isinstance(parsed, dict):
+            rules = parsed.get("rules") or parsed.get("cleaners")
+            if isinstance(rules, list):
+                for item in rules:
+                    if isinstance(item, dict):
+                        pattern = str(item.get("regex") or item.get("pattern") or "").strip()
+                        replacement = str(item.get("replacement") or item.get("replace") or "")
+                        if pattern:
+                            cleaners.append((pattern, replacement))
+
+        if cleaners:
+            return cleaners
+
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("##"):
+                _, cleaner_list = self._split_cleaners(line)
+                cleaners.extend(cleaner_list)
+                continue
+            if "##" in line:
+                parts = line.split("##", 1)
+                pattern = parts[0].strip()
+                replacement = parts[1] if len(parts) > 1 else ""
+                if pattern:
+                    cleaners.append((pattern, replacement))
+        return cleaners
 
     def _guess_encoding(self, body: bytes) -> str:
         head = body[:4096].decode("ascii", errors="ignore")
@@ -236,7 +496,7 @@ class RuleEngine:
 
     def _extract_scalar(self, payload_kind: str, payload: Any, rule_text: str) -> str:
         if not rule_text:
-            return self._stringify(payload)
+            return ""
         values = self._select_many(payload_kind, payload, rule_text)
         if not values:
             return ""

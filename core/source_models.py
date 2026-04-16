@@ -104,6 +104,12 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "enabled": enabled,
         "search_url": _clean_text(raw_source.get("searchUrl")),
         "explore_url": _clean_text(raw_source.get("exploreUrl")),
+        "clean_rule_url": _clean_text(
+            raw_source.get("cleanRuleUrl")
+            or raw_source.get("ruleCleanUrl")
+            or raw_source.get("defaultRuleUrl")
+            or raw_source.get("cleanUrl")
+        ),
         "book_source_type": raw_source.get("bookSourceType", 0),
         "headers": parse_headers(raw_source.get("header")),
         "rule_search": normalize_rule_block(raw_source.get("ruleSearch")),
@@ -127,6 +133,7 @@ class SourceSummary:
     enabled: bool
     group: str
     search_url: str
+    clean_rule_url: str
     book_source_type: int
     has_rule_search: bool
     has_rule_book_info: bool
@@ -146,6 +153,7 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         enabled=bool(normalized["enabled"]),
         group=normalized.get("group", ""),
         search_url=normalized.get("search_url", ""),
+        clean_rule_url=normalized.get("clean_rule_url", ""),
         book_source_type=int(normalized.get("book_source_type", 0) or 0),
         has_rule_search=bool(normalized.get("rule_search")),
         has_rule_book_info=bool(normalized.get("rule_book_info")),

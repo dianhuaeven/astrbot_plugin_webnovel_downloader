@@ -136,12 +136,45 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         sys.modules["astrbot.core.star.star_tools"] = astrbot_core_star_tools
 
     async def test_llm_tools_end_to_end(self):
+        chapters_dir = self.base_dir / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        (chapters_dir / "1.html").write_text(
+            "<html><head><title>第一章 降生</title></head>"
+            "<body><h1>第一章 降生</h1><div id='content'><p>这是第一章。广告</p></div></body></html>",
+            encoding="utf-8",
+        )
+        (chapters_dir / "2.html").write_text(
+            "<html><head><title>第二章 练剑</title></head>"
+            "<body><h1>第二章 练剑</h1><div id='content'><p>这是第二章。广告尾注</p></div></body></html>",
+            encoding="utf-8",
+        )
+        (self.base_dir / "clean_rules.txt").write_text(
+            "尾注##\n",
+            encoding="utf-8",
+        )
+        (self.base_dir / "book.html").write_text(
+            "<html><head><title>雪中悍刀行</title></head><body>"
+            "<h1>雪中悍刀行</h1>"
+            "<div class='author'>烽火戏诸侯</div>"
+            "<div id='intro'>测试简介</div>"
+            "<div id='toc'>"
+            "<a href='{c1}'>第一章 降生</a>"
+            "<a href='{c2}'>第二章 练剑</a>"
+            "</div>"
+            "</body></html>".format(
+                c1=(chapters_dir / "1.html").resolve().as_uri(),
+                c2=(chapters_dir / "2.html").resolve().as_uri(),
+            ),
+            encoding="utf-8",
+        )
+
         source_json = json.dumps(
             [
                 {
                     "bookSourceName": "测试JSON源",
                     "bookSourceUrl": "https://example.com",
                     "searchUrl": (self.base_dir / "search.json").resolve().as_uri(),
+                    "cleanRuleUrl": (self.base_dir / "clean_rules.txt").resolve().as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -149,6 +182,20 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                         "bookUrl": "url",
                         "intro": "intro",
                     },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                        "author": ".author&&text",
+                        "intro": "#intro&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "title": "h1&&text",
+                        "content": "#content&&text##广告##",
+                    }
                 }
             ],
             ensure_ascii=False,
@@ -161,7 +208,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                             {
                                 "title": "雪中悍刀行",
                                 "author": "烽火戏诸侯",
-                                "url": "/book/xzhdx",
+                                "url": (self.base_dir / "book.html").resolve().as_uri(),
                                 "intro": "测试简介",
                             }
                         ]
@@ -185,20 +232,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(search_result["results"][0]["title"], "雪中悍刀行")
         self.assertEqual(
             search_result["results"][0]["book_url"],
-            "https://example.com/book/xzhdx",
-        )
-
-        chapters_dir = self.base_dir / "chapters"
-        chapters_dir.mkdir(parents=True, exist_ok=True)
-        (chapters_dir / "1.html").write_text(
-            "<html><head><title>第一章 降生</title></head>"
-            "<body><h1>第一章 降生</h1><div id='content'><p>这是第一章。</p></div></body></html>",
-            encoding="utf-8",
-        )
-        (chapters_dir / "2.html").write_text(
-            "<html><head><title>第二章 练剑</title></head>"
-            "<body><h1>第二章 练剑</h1><div id='content'><p>这是第二章。</p></div></body></html>",
-            encoding="utf-8",
+            (self.base_dir / "book.html").resolve().as_uri(),
         )
 
         preview = json.loads(
@@ -209,6 +243,27 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertIn("第一章 降生", preview["text_preview"])
+
+        source_id = listed_sources[0]["source_id"]
+        auto_download_text = await self.plugin.novel_download_book(
+            source_id,
+            (self.base_dir / "book.html").resolve().as_uri(),
+            "雪中悍刀行",
+            "",
+            "true",
+        )
+        self.assertIn("已创建并启动任务", auto_download_text)
+        auto_job_id = auto_download_text.splitlines()[0].split(": ", 1)[1]
+        await self.plugin._running_tasks[auto_job_id]
+        auto_status = await self.plugin.novel_download_status(auto_job_id)
+        self.assertIn("状态: assembled", auto_status)
+        auto_output_path = self.plugin.manager.output_dir / "雪中悍刀行.txt"
+        self.assertTrue(auto_output_path.exists())
+        auto_content = auto_output_path.read_text(encoding="utf-8")
+        self.assertIn("第一章 降生", auto_content)
+        self.assertIn("这是第一章。", auto_content)
+        self.assertNotIn("广告", auto_content)
+        self.assertNotIn("尾注", auto_content)
 
         toc_json = json.dumps(
             [

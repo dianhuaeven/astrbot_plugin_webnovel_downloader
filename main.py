@@ -22,6 +22,7 @@ except ImportError:
 from .core.download_manager import ExtractionRules, NovelDownloadManager, RuntimeConfig
 from .core.rule_engine import RuleEngine, RuleEngineConfig
 from .core.search_service import SearchService, SearchServiceConfig
+from .core.source_downloader import SourceDownloadConfig, SourceDownloadService
 from .core.source_registry import SourceRegistry
 
 
@@ -98,6 +99,14 @@ class JsonlNovelDownloaderPlugin(Star):
                 )
             ),
             SearchServiceConfig(
+                max_workers=max(1, min(8, int(self.config.get("max_workers", 6)))),
+            ),
+        )
+        self.source_download_service = SourceDownloadService(
+            self.source_registry,
+            self.search_service.engine,
+            self.manager,
+            SourceDownloadConfig(
                 max_workers=max(1, min(8, int(self.config.get("max_workers", 6)))),
             ),
         )
@@ -206,6 +215,54 @@ class JsonlNovelDownloaderPlugin(Star):
             self._parse_bool(include_disabled, False),
         )
         return json.dumps(result, ensure_ascii=False, indent=2)
+
+    @compat_llm_tool(name="novel_download_book")
+    async def novel_download_book(
+        self,
+        source_id: str,
+        book_url: str,
+        book_name: str = "",
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ) -> str:
+        """
+        基于已导入书源的规则，从书籍详情页自动抓目录并下载 TXT。
+
+        Args:
+            source_id(string): 书源 ID。
+            book_url(string): 书籍详情页地址，通常来自 novel_search_books 的 book_url。
+            book_name(string): 可选，手动指定书名。
+            output_filename(string): 可选，自定义输出 TXT 文件名。
+            auto_assemble(string): 是否自动组装 TXT，支持 true/false/1/0/yes/no。
+        """
+        job_info = await run_blocking(
+            self.source_download_service.create_book_job,
+            source_id,
+            book_url,
+            book_name,
+            output_filename,
+        )
+        job_id = job_info["job_id"]
+        await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+        status = self.manager.get_status(job_id)
+        return self._render_status(status, created=job_info["created"])
+
+    @compat_llm_tool(name="novel_resume_book_download")
+    async def novel_resume_book_download(
+        self,
+        job_id: str,
+        auto_assemble: str = "true",
+    ) -> str:
+        """
+        恢复一个书源规则下载任务，只补缺失章节。
+
+        Args:
+            job_id(string): 任务 ID。
+            auto_assemble(string): 是否自动组装 TXT，支持 true/false/1/0/yes/no。
+        """
+        await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+        status = self.manager.get_status(job_id)
+        return self._render_status(status, created=False)
 
     @compat_llm_tool(name="novel_start_download")
     async def novel_start_download(
@@ -343,6 +400,13 @@ class JsonlNovelDownloaderPlugin(Star):
         task = asyncio.create_task(self._run_job(job_id, auto_assemble))
         self._running_tasks[job_id] = task
 
+    async def _ensure_rule_job_running(self, job_id: str, auto_assemble: bool) -> None:
+        existing = self._running_tasks.get(job_id)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(self._run_rule_job(job_id, auto_assemble))
+        self._running_tasks[job_id] = task
+
     async def _run_job(self, job_id: str, auto_assemble: bool) -> None:
         try:
             await run_blocking(self.manager.download_missing, job_id)
@@ -356,6 +420,17 @@ class JsonlNovelDownloaderPlugin(Star):
         except Exception as exc:
             self.manager.record_state(job_id, "failed", error=str(exc))
             logger.exception("小说下载任务失败 job_id=%s error=%s", job_id, exc)
+
+    async def _run_rule_job(self, job_id: str, auto_assemble: bool) -> None:
+        try:
+            await run_blocking(
+                self.source_download_service.resume_book_job,
+                job_id,
+                auto_assemble,
+            )
+        except Exception as exc:
+            self.manager.record_state(job_id, "failed", error=str(exc))
+            logger.exception("书源规则下载任务失败 job_id=%s error=%s", job_id, exc)
 
     def _parse_optional_int(self, value: str) -> int | None:
         text = str(value or "").strip()

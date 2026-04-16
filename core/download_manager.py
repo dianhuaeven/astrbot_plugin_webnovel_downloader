@@ -101,6 +101,7 @@ class NovelDownloadManager:
         output_filename: str = "",
         source_url: str = "",
         encoding: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_toc = self._normalize_toc(toc)
         job_id = self._build_job_id(book_name, normalized_toc)
@@ -126,6 +127,7 @@ class NovelDownloadManager:
             "source_url": source_url,
             "encoding": encoding or self.config.default_encoding,
             "output_filename": output_name,
+            "metadata": metadata or {},
             "rules": {
                 "content_regex": rules.content_regex,
                 "title_regex": rules.title_regex,
@@ -151,6 +153,74 @@ class NovelDownloadManager:
             "created": True,
             "status": self.get_status(job_id),
         }
+
+    def load_manifest(self, job_id: str) -> Dict[str, Any]:
+        manifest, _ = self._replay_job(job_id)
+        if not manifest:
+            raise ValueError(f"未找到任务 {job_id}")
+        return manifest
+
+    def get_missing_chapters(self, job_id: str) -> List[Dict[str, Any]]:
+        manifest, replay = self._replay_job(job_id)
+        if not manifest:
+            raise ValueError(f"未找到任务 {job_id}")
+        return [
+            chapter
+            for chapter in manifest["chapters"]
+            if chapter["index"] not in replay["completed_indices"]
+        ]
+
+    def append_downloaded_chapter(
+        self,
+        job_id: str,
+        index: int,
+        title: str,
+        url: str,
+        content: str,
+        encoding: str = "",
+        attempt: int = 1,
+    ) -> None:
+        journal_path = self._journal_path(job_id)
+        if not journal_path.exists():
+            raise ValueError(f"未找到任务 {job_id}")
+        self._append_record(
+            journal_path,
+            {
+                "kind": "chapter",
+                "index": index,
+                "title": title,
+                "url": url,
+                "encoding": encoding,
+                "attempt": attempt,
+                "saved_at": time.time(),
+                "content": content,
+            },
+        )
+
+    def append_download_error(
+        self,
+        job_id: str,
+        index: int,
+        title: str,
+        url: str,
+        error: str,
+        attempt: int = 1,
+    ) -> None:
+        journal_path = self._journal_path(job_id)
+        if not journal_path.exists():
+            raise ValueError(f"未找到任务 {job_id}")
+        self._append_record(
+            journal_path,
+            {
+                "kind": "error",
+                "index": index,
+                "title": title,
+                "url": url,
+                "attempt": attempt,
+                "saved_at": time.time(),
+                "error": error,
+            },
+        )
 
     def download_missing(self, job_id: str) -> Dict[str, Any]:
         manifest, replay = self._replay_job(job_id)
