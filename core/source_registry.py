@@ -28,6 +28,7 @@ class SourceRegistry:
         payload = parse_source_payload(raw_text)
         registry = self._load_registry()
         imported: List[Dict[str, Any]] = []
+        warnings: List[str] = []
 
         for raw_source in payload:
             normalized = normalize_book_source(raw_source)
@@ -43,11 +44,21 @@ class SourceRegistry:
             summary = build_source_summary(normalized, updated_at).to_dict()
             registry["sources"][source_id] = summary
             imported.append(summary)
+            if summary.get("issues"):
+                warnings.append(
+                    "{name}: {issues}".format(
+                        name=summary.get("name", source_id),
+                        issues="；".join(summary.get("issues", [])),
+                    )
+                )
 
         registry["updated_at"] = time.time()
         self._write_json(self.registry_path, registry)
         return {
             "imported_count": len(imported),
+            "supported_search_count": sum(1 for item in imported if item.get("supports_search")),
+            "supported_download_count": sum(1 for item in imported if item.get("supports_download")),
+            "warnings": warnings,
             "sources": imported,
         }
 

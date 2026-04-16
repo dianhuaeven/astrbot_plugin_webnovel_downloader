@@ -327,6 +327,32 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("第一章 降生", content)
         self.assertIn("这是第二章。", content)
 
+    async def test_import_rss_like_source_marks_unsupported(self):
+        rss_like_source = json.dumps(
+            [
+                {
+                    "sourceName": "源仓库(官方纯净)",
+                    "sourceUrl": "http://yckceo.vip",
+                    "singleUrl": True,
+                    "loadWithBaseUrl": True,
+                    "enableJs": True,
+                    "enabled": True,
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, rss_like_source))
+        self.assertEqual(result["imported_count"], 1)
+        self.assertEqual(result["supported_search_count"], 0)
+        self.assertEqual(result["supported_download_count"], 0)
+        self.assertTrue(result["warnings"])
+        source = result["sources"][0]
+        self.assertEqual(source["name"], "源仓库(官方纯净)")
+        self.assertFalse(source["supports_search"])
+        self.assertFalse(source["supports_download"])
+        self.assertTrue(source["issues"])
+
 
 if __name__ == "__main__":
     unittest.main()

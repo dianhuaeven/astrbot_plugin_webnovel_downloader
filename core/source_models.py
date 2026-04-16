@@ -84,6 +84,7 @@ def normalize_rule_block(value: Any) -> Dict[str, str]:
 def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
     source_name = _clean_text(
         raw_source.get("bookSourceName")
+        or raw_source.get("sourceName")
         or raw_source.get("name")
         or raw_source.get("title")
         or "未命名书源"
@@ -100,7 +101,11 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "source_id": source_id,
         "name": source_name,
         "source_url": source_url,
-        "group": _clean_text(raw_source.get("bookSourceGroup") or raw_source.get("group")),
+        "group": _clean_text(
+            raw_source.get("bookSourceGroup")
+            or raw_source.get("sourceGroup")
+            or raw_source.get("group")
+        ),
         "enabled": enabled,
         "search_url": _clean_text(raw_source.get("searchUrl")),
         "explore_url": _clean_text(raw_source.get("exploreUrl")),
@@ -120,6 +125,9 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "respond_time": raw_source.get("respondTime", 0),
         "weight": raw_source.get("weight", 0),
         "login_url": _clean_text(raw_source.get("loginUrl")),
+        "single_url": bool(raw_source.get("singleUrl", False)),
+        "load_with_base_url": bool(raw_source.get("loadWithBaseUrl", False)),
+        "enable_js": bool(raw_source.get("enableJs", False)),
         "last_imported_at": time.time(),
     }
     return normalized
@@ -135,10 +143,15 @@ class SourceSummary:
     search_url: str
     clean_rule_url: str
     book_source_type: int
+    single_url: bool
+    enable_js: bool
     has_rule_search: bool
     has_rule_book_info: bool
     has_rule_toc: bool
     has_rule_content: bool
+    supports_search: bool
+    supports_download: bool
+    issues: List[str]
     updated_at: float
 
     def to_dict(self) -> Dict[str, Any]:
@@ -146,6 +159,19 @@ class SourceSummary:
 
 
 def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> SourceSummary:
+    supports_search = bool(normalized.get("search_url")) and bool(normalized.get("rule_search"))
+    supports_download = bool(normalized.get("rule_book_info")) and bool(normalized.get("rule_toc")) and bool(
+        normalized.get("rule_content")
+    )
+    issues: List[str] = []
+    if normalized.get("single_url") and not supports_search:
+        issues.append("检测到 singleUrl 单链接/RSS 源，当前不支持按书名搜索下载")
+    if normalized.get("enable_js"):
+        issues.append("该源启用了 JS 规则，当前路线 A 不支持 JS 执行")
+    if not supports_search:
+        issues.append("缺少 searchUrl 或 ruleSearch，无法按书名搜索")
+    if not supports_download:
+        issues.append("缺少 ruleBookInfo/ruleToc/ruleContent，无法自动抓目录并下载 TXT")
     return SourceSummary(
         source_id=normalized["source_id"],
         name=normalized["name"],
@@ -155,10 +181,15 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         search_url=normalized.get("search_url", ""),
         clean_rule_url=normalized.get("clean_rule_url", ""),
         book_source_type=int(normalized.get("book_source_type", 0) or 0),
+        single_url=bool(normalized.get("single_url", False)),
+        enable_js=bool(normalized.get("enable_js", False)),
         has_rule_search=bool(normalized.get("rule_search")),
         has_rule_book_info=bool(normalized.get("rule_book_info")),
         has_rule_toc=bool(normalized.get("rule_toc")),
         has_rule_content=bool(normalized.get("rule_content")),
+        supports_search=supports_search,
+        supports_download=supports_download,
+        issues=issues,
         updated_at=updated_at,
     )
 
