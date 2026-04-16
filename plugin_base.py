@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+
+from astrbot.api.star import Star
+from astrbot.core.star.star_tools import StarTools
+
+from .core.download_manager import ExtractionRules
+from .plugin_renderer import ToolRenderConfig, ToolResultRenderer
+from .plugin_runtime import build_plugin_runtime
+from .plugin_support import logger, run_blocking
+from .text_loader import load_text_argument
+
+
+class JsonlNovelDownloaderPluginBase(Star):
+    def __init__(self, context: Any, config: dict | None = None):
+        super().__init__(context)
+        self.context = context
+        self.config = config or {}
+        self.plugin_data_dir = Path(StarTools.get_data_dir())
+        self.reports_dir = self.plugin_data_dir / "reports"
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+
+        self.max_preview_fetch_chars = max(
+            300, int(self.config.get("max_preview_fetch_chars", 1800))
+        )
+        runtime = build_plugin_runtime(self.plugin_data_dir, self.config)
+        self.manager = runtime.manager
+        self.source_registry = runtime.source_registry
+        self.search_service = runtime.search_service
+        self.source_download_service = runtime.source_download_service
+        self.renderer = ToolResultRenderer(
+            self.reports_dir,
+            self.source_registry,
+            self.manager,
+            ToolRenderConfig(
+                max_tool_response_chars=max(
+                    800, int(self.config.get("max_tool_response_chars", 2800))
+                ),
+                max_tool_preview_items=max(
+                    1, int(self.config.get("max_tool_preview_items", 8))
+                ),
+                max_tool_preview_text=max(
+                    60, int(self.config.get("max_tool_preview_text", 180))
+                ),
+            ),
+        )
+        self.max_tool_response_chars = self.renderer.config.max_tool_response_chars
+        self.max_tool_preview_items = self.renderer.config.max_tool_preview_items
+        self.max_tool_preview_text = self.renderer.config.max_tool_preview_text
+        self._running_tasks: dict[str, asyncio.Task] = {}
+        logger.info("网文下载器初始化完成")
+
+    async def handle_novel_fetch_preview(
+        self,
+        url: str,
+        encoding: str = "",
+        max_chars: str = "",
+    ) -> str:
+        limit = min(
+            self._parse_optional_int(max_chars) or self.max_preview_fetch_chars,
+            self.max_preview_fetch_chars,
+        )
+        preview = await run_blocking(
+            self.manager.fetch_preview,
+            url,
+            encoding,
+            limit,
+        )
+        preview["html_preview"] = self.renderer.truncate_text(preview.get("html_preview", ""), limit)
+        preview["text_preview"] = self.renderer.truncate_text(preview.get("text_preview", ""), limit)
+        preview["applied_max_chars"] = limit
+        return self.renderer.to_json_text(preview)
+
+    async def handle_novel_import_sources(self, source_json: str) -> str:
+        source_text = await self._load_text_argument(source_json)
+        result = await run_blocking(
+            self.source_registry.import_sources_from_text,
+            source_text,
+        )
+        return self.renderer.render_import_summary(result)
+
+    async def handle_novel_list_sources(
+        self,
+        enabled_only: str = "",
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        enabled_only_value = self._parse_bool(enabled_only, False)
+        limit_value = self._parse_optional_int(limit) or self.max_tool_preview_items
+        offset_value = self._parse_non_negative_int(offset, 0)
+        result = await run_blocking(
+            self.source_registry.list_sources,
+            enabled_only_value,
+        )
+        return self.renderer.render_sources_summary(
+            result,
+            enabled_only_value,
+            limit_value,
+            offset_value,
+        )
+
+    async def handle_novel_enable_source(self, source_id: str, enabled: str = "true") -> str:
+        result = await run_blocking(
+            self.source_registry.set_enabled,
+            source_id,
+            self._parse_bool(enabled, True),
+        )
+        return self.renderer.render_source_change_summary("set_enabled", result)
+
+    async def handle_novel_remove_source(self, source_id: str) -> str:
+        result = await run_blocking(self.source_registry.remove_source, source_id)
+        return self.renderer.render_source_change_summary("removed", result)
+
+    async def handle_novel_search_books(
+        self,
+        keyword: str,
+        source_ids_json: str = "",
+        limit: str = "",
+        include_disabled: str = "",
+    ) -> str:
+        source_ids = self._parse_string_list(source_ids_json)
+        result = await run_blocking(
+            self.search_service.search,
+            keyword,
+            source_ids or None,
+            self._parse_optional_int(limit) or 20,
+            self._parse_bool(include_disabled, False),
+        )
+        return self.renderer.render_search_summary(result)
+
+    async def handle_novel_download_book(
+        self,
+        source_id: str,
+        book_url: str,
+        book_name: str = "",
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ) -> str:
+        job_info = await run_blocking(
+            self.source_download_service.create_book_job,
+            source_id,
+            book_url,
+            book_name,
+            output_filename,
+        )
+        job_id = job_info["job_id"]
+        await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+        status = self.manager.get_status(job_id)
+        return self.renderer.render_status(status, created=job_info["created"])
+
+    async def handle_novel_resume_book_download(
+        self,
+        job_id: str,
+        auto_assemble: str = "true",
+    ) -> str:
+        await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+        status = self.manager.get_status(job_id)
+        return self.renderer.render_status(status, created=False)
+
+    async def handle_novel_start_download(
+        self,
+        book_name: str,
+        toc_json: str,
+        content_regex: str,
+        title_regex: str = "",
+        source_url: str = "",
+        output_filename: str = "",
+        encoding: str = "",
+        auto_assemble: str = "true",
+    ) -> str:
+        toc = json.loads(toc_json)
+        job_info = await run_blocking(
+            self.manager.create_job,
+            book_name,
+            toc,
+            ExtractionRules(
+                content_regex=content_regex,
+                title_regex=title_regex,
+            ),
+            output_filename,
+            source_url,
+            encoding,
+        )
+        job_id = job_info["job_id"]
+        await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
+        status = self.manager.get_status(job_id)
+        return self.renderer.render_status(status, created=job_info["created"])
+
+    async def handle_novel_resume_download(
+        self,
+        job_id: str,
+        auto_assemble: str = "true",
+    ) -> str:
+        await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
+        status = self.manager.get_status(job_id)
+        return self.renderer.render_status(status, created=False)
+
+    async def handle_novel_download_status(
+        self,
+        job_id: str = "",
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        if job_id:
+            status = self.manager.get_status(job_id)
+            return self.renderer.render_status(status, created=False)
+
+        jobs = await run_blocking(self.manager.list_jobs)
+        if not jobs:
+            return "当前没有任何下载任务。"
+        return self.renderer.render_jobs_summary(
+            jobs,
+            self._parse_optional_int(limit) or self.max_tool_preview_items,
+            self._parse_non_negative_int(offset, 0),
+        )
+
+    async def handle_novel_assemble_book(self, job_id: str, cleanup_journal: str = "") -> str:
+        status = await run_blocking(
+            self.manager.assemble,
+            job_id,
+            self._parse_bool(
+                cleanup_journal,
+                self.manager.config.cleanup_journal_after_assemble,
+            ),
+        )
+        return self.renderer.render_status(status, created=False)
+
+    async def handle_novel_list_jobs(self, limit: str = "", offset: str = "") -> str:
+        jobs = await run_blocking(self.manager.list_jobs)
+        return self.renderer.render_jobs_summary(
+            jobs,
+            self._parse_optional_int(limit) or self.max_tool_preview_items,
+            self._parse_non_negative_int(offset, 0),
+        )
+
+    async def render_novel_jobs_command_text(self) -> str:
+        jobs = await run_blocking(self.manager.list_jobs)
+        if not jobs:
+            return "当前没有任何下载任务。"
+        lines = []
+        for item in jobs:
+            lines.append(
+                f"{item.get('job_id')} | {item.get('state')} | "
+                f"{item.get('completed_chapters', 0)}/{item.get('total_chapters', 0)}"
+            )
+        return "\n".join(lines)
+
+    async def render_novel_sources_command_text(self) -> str:
+        sources = await run_blocking(self.source_registry.list_sources, False)
+        if not sources:
+            return "当前没有已导入书源。"
+        lines = []
+        for item in sources:
+            state = "on" if item.get("enabled") else "off"
+            lines.append(f"{item.get('source_id')} | {state} | {item.get('name')}")
+        return "\n".join(lines)
+
+    async def _ensure_job_running(self, job_id: str, auto_assemble: bool) -> None:
+        existing = self._running_tasks.get(job_id)
+        if existing and not existing.done():
+            return
+
+        task = asyncio.create_task(self._run_job(job_id, auto_assemble))
+        self._running_tasks[job_id] = task
+
+    async def _ensure_rule_job_running(self, job_id: str, auto_assemble: bool) -> None:
+        existing = self._running_tasks.get(job_id)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(self._run_rule_job(job_id, auto_assemble))
+        self._running_tasks[job_id] = task
+
+    async def _run_job(self, job_id: str, auto_assemble: bool) -> None:
+        try:
+            await run_blocking(self.manager.download_missing, job_id)
+            if auto_assemble:
+                await run_blocking(
+                    self.manager.assemble,
+                    job_id,
+                    self.manager.config.cleanup_journal_after_assemble,
+                )
+        except Exception as exc:
+            self.manager.record_state(job_id, "failed", error=str(exc))
+            logger.exception("小说下载任务失败 job_id=%s error=%s", job_id, exc)
+
+    async def _run_rule_job(self, job_id: str, auto_assemble: bool) -> None:
+        try:
+            await run_blocking(
+                self.source_download_service.resume_book_job,
+                job_id,
+                auto_assemble,
+            )
+        except Exception as exc:
+            self.manager.record_state(job_id, "failed", error=str(exc))
+            logger.exception("书源规则下载任务失败 job_id=%s error=%s", job_id, exc)
+
+    def _parse_optional_int(self, value: str) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        parsed = int(text)
+        return parsed if parsed > 0 else None
+
+    def _parse_non_negative_int(self, value: str, default: int = 0) -> int:
+        text = str(value or "").strip()
+        if not text:
+            return default
+        parsed = int(text)
+        return parsed if parsed >= 0 else default
+
+    def _parse_bool(self, value: str, default: bool) -> bool:
+        text = str(value or "").strip().lower()
+        if not text:
+            return default
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        raise ValueError("布尔参数仅支持 true/false/1/0/yes/no")
+
+    def _parse_string_list(self, value: str) -> list[str]:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [item.strip() for item in text.split(",") if item.strip()]
+
+    async def _load_text_argument(self, value: str) -> str:
+        return await run_blocking(
+            load_text_argument,
+            value,
+            self.manager.config.user_agent,
+            self.manager.config.request_timeout,
+            self.manager.config.default_encoding,
+        )

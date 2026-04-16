@@ -1,0 +1,350 @@
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ToolRenderConfig:
+    max_tool_response_chars: int = 2800
+    max_tool_preview_items: int = 8
+    max_tool_preview_text: int = 180
+
+
+class ToolResultRenderer:
+    def __init__(
+        self,
+        reports_dir: str | Path,
+        source_registry: Any,
+        manager: Any,
+        config: ToolRenderConfig,
+    ):
+        self.reports_dir = Path(reports_dir)
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.source_registry = source_registry
+        self.manager = manager
+        self.config = config
+
+    def to_json_text(self, payload: Any) -> str:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    def truncate_text(self, value: Any, limit: int | None = None) -> str:
+        text = str(value or "")
+        max_length = limit or self.config.max_tool_preview_text
+        if len(text) <= max_length:
+            return text
+        return text[: max(1, max_length - 1)] + "…"
+
+    def render_source_change_summary(self, action: str, source: dict[str, Any]) -> str:
+        summary = {
+            "action": action,
+            "registry_path": str(self.source_registry.registry_path),
+            "source": self._compact_source(source),
+        }
+        return self.to_json_text(summary)
+
+    def render_import_summary(self, result: dict[str, Any]) -> str:
+        sources = list(result.get("sources") or [])
+        warnings = list(result.get("warnings") or [])
+        source_preview_count = min(self.config.max_tool_preview_items, len(sources))
+        warning_preview_count = min(self.config.max_tool_preview_items, len(warnings))
+        report_path = ""
+
+        while True:
+            summary = {
+                "imported_count": result.get("imported_count", 0),
+                "supported_search_count": result.get("supported_search_count", 0),
+                "supported_download_count": result.get("supported_download_count", 0),
+                "warning_count": len(warnings),
+                "source_count": len(sources),
+                "registry_path": str(self.source_registry.registry_path),
+                "raw_dir": str(self.source_registry.raw_dir),
+                "normalized_dir": str(self.source_registry.normalized_dir),
+                "sources_preview": [self._compact_source(item) for item in sources[:source_preview_count]],
+                "warnings_preview": [
+                    self.truncate_text(item, self.config.max_tool_preview_text)
+                    for item in warnings[:warning_preview_count]
+                ],
+                "remaining_source_count": max(0, len(sources) - source_preview_count),
+                "remaining_warning_count": max(0, len(warnings) - warning_preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self.to_json_text(summary)
+            if len(text) <= self.config.max_tool_response_chars:
+                if (
+                    len(sources) > source_preview_count
+                    or len(warnings) > warning_preview_count
+                ) and not report_path:
+                    report_path = self._write_json_report("import-sources", result)
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report("import-sources", result)
+                continue
+            if warning_preview_count > 0:
+                warning_preview_count -= 1
+                continue
+            if source_preview_count > 1:
+                source_preview_count -= 1
+                continue
+            return text
+
+    def render_sources_summary(
+        self,
+        sources: list[dict[str, Any]],
+        enabled_only: bool,
+        limit: int,
+        offset: int,
+    ) -> str:
+        total = len(sources)
+        sliced = sources[offset : offset + limit]
+        preview_count = min(self.config.max_tool_preview_items, len(sliced))
+        report_path = ""
+
+        while True:
+            summary = {
+                "total_count": total,
+                "enabled_only": enabled_only,
+                "enabled_count": sum(1 for item in sources if item.get("enabled")),
+                "disabled_count": sum(1 for item in sources if not item.get("enabled")),
+                "offset": offset,
+                "limit": limit,
+                "returned_count": len(sliced),
+                "requested_count": len(sliced),
+                "previewed_count": preview_count,
+                "has_more": offset + len(sliced) < total,
+                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+                "registry_path": str(self.source_registry.registry_path),
+                "sources": [self._compact_source(item) for item in sliced[:preview_count]],
+                "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self.to_json_text(summary)
+            if len(text) <= self.config.max_tool_response_chars:
+                if len(sliced) > preview_count and not report_path:
+                    report_path = self._write_json_report(
+                        "list-sources",
+                        {
+                            "total_count": total,
+                            "enabled_only": enabled_only,
+                            "offset": offset,
+                            "limit": limit,
+                            "requested_count": len(sliced),
+                            "registry_path": str(self.source_registry.registry_path),
+                            "sources": sliced,
+                        },
+                    )
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report(
+                    "list-sources",
+                    {
+                        "total_count": total,
+                        "enabled_only": enabled_only,
+                        "offset": offset,
+                        "limit": limit,
+                        "requested_count": len(sliced),
+                        "registry_path": str(self.source_registry.registry_path),
+                        "sources": sliced,
+                    },
+                )
+                continue
+            if preview_count > 1:
+                preview_count -= 1
+                continue
+            return text
+
+    def render_search_summary(self, result: dict[str, Any]) -> str:
+        results = list(result.get("results") or [])
+        skipped_sources = list(result.get("skipped_sources") or [])
+        errors = list(result.get("errors") or [])
+        result_preview_count = min(self.config.max_tool_preview_items, len(results))
+        skipped_preview_count = min(self.config.max_tool_preview_items, len(skipped_sources))
+        error_preview_count = min(self.config.max_tool_preview_items, len(errors))
+        report_path = ""
+
+        while True:
+            compact = {
+                "keyword": result.get("keyword", ""),
+                "searched_sources": result.get("searched_sources", 0),
+                "successful_sources": result.get("successful_sources", 0),
+                "result_count": len(results),
+                "skipped_source_count": len(skipped_sources),
+                "error_count": len(errors),
+                "results": [self._compact_search_result(item) for item in results[:result_preview_count]],
+                "skipped_sources": [
+                    self._compact_search_notice(item, "reason")
+                    for item in skipped_sources[:skipped_preview_count]
+                ],
+                "errors": [
+                    self._compact_search_notice(item, "error") for item in errors[:error_preview_count]
+                ],
+                "remaining_result_count": max(0, len(results) - result_preview_count),
+                "remaining_skipped_count": max(0, len(skipped_sources) - skipped_preview_count),
+                "remaining_error_count": max(0, len(errors) - error_preview_count),
+            }
+            if report_path:
+                compact["report_path"] = report_path
+            text = self.to_json_text(compact)
+            if len(text) <= self.config.max_tool_response_chars:
+                if (
+                    len(results) > result_preview_count
+                    or len(skipped_sources) > skipped_preview_count
+                    or len(errors) > error_preview_count
+                ) and not report_path:
+                    report_path = self._write_json_report("search-books", result)
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report("search-books", result)
+                continue
+            if error_preview_count > 0:
+                error_preview_count -= 1
+                continue
+            if skipped_preview_count > 0:
+                skipped_preview_count -= 1
+                continue
+            if result_preview_count > 1:
+                result_preview_count -= 1
+                continue
+            return text
+
+    def render_jobs_summary(self, jobs: list[dict[str, Any]], limit: int, offset: int) -> str:
+        total = len(jobs)
+        sliced = jobs[offset : offset + limit]
+        preview_count = min(self.config.max_tool_preview_items, len(sliced))
+        report_path = ""
+
+        while True:
+            summary = {
+                "total_count": total,
+                "offset": offset,
+                "limit": limit,
+                "returned_count": len(sliced),
+                "requested_count": len(sliced),
+                "previewed_count": preview_count,
+                "has_more": offset + len(sliced) < total,
+                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+                "jobs_dir": str(self.manager.jobs_dir),
+                "jobs": [self._compact_job(item) for item in sliced[:preview_count]],
+                "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self.to_json_text(summary)
+            if len(text) <= self.config.max_tool_response_chars:
+                if len(sliced) > preview_count and not report_path:
+                    report_path = self._write_json_report(
+                        "list-jobs",
+                        {
+                            "total_count": total,
+                            "offset": offset,
+                            "limit": limit,
+                            "requested_count": len(sliced),
+                            "jobs_dir": str(self.manager.jobs_dir),
+                            "jobs": sliced,
+                        },
+                    )
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report(
+                    "list-jobs",
+                    {
+                        "total_count": total,
+                        "offset": offset,
+                        "limit": limit,
+                        "requested_count": len(sliced),
+                        "jobs_dir": str(self.manager.jobs_dir),
+                        "jobs": sliced,
+                    },
+                )
+                continue
+            if preview_count > 1:
+                preview_count -= 1
+                continue
+            return text
+
+    def render_status(self, status: dict[str, Any], created: bool) -> str:
+        prefix = "已创建并启动任务" if created else "任务状态"
+        lines = [
+            f"{prefix}: {status['job_id']}",
+            f"书名: {status['book_name']}",
+            f"状态: {status['state']}",
+            f"进度: {status['completed_chapters']}/{status['total_chapters']}",
+            f"输出: {status['output_path']}",
+            f"Journal: {status['journal_path']}",
+        ]
+        if status.get("latest_errors"):
+            first_error = status["latest_errors"][0]
+            lines.append(
+                f"最近错误: index={first_error['index']} {first_error['title']} -> {first_error['error']}"
+            )
+        if status.get("corrupt_lines"):
+            lines.append(f"警告: journal 中检测到 {status['corrupt_lines']} 行损坏记录")
+        return "\n".join(lines)
+
+    def _write_json_report(self, prefix: str, payload: Any) -> str:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        report_path = self.reports_dir / "{prefix}-{timestamp}-{ms}.json".format(
+            prefix=prefix,
+            timestamp=timestamp,
+            ms=int(time.time() * 1000) % 1000,
+        )
+        with open(report_path, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        return str(report_path)
+
+    def _compact_source(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_id": item.get("source_id", ""),
+            "name": item.get("name", ""),
+            "enabled": bool(item.get("enabled", False)),
+            "search_uses_js": bool(item.get("search_uses_js", False)),
+            "download_uses_js": bool(item.get("download_uses_js", False)),
+            "has_js_lib": bool(item.get("has_js_lib", False)),
+            "has_login_flow": bool(item.get("has_login_flow", False)),
+            "supports_search": bool(item.get("supports_search", False)),
+            "supports_download": bool(item.get("supports_download", False)),
+            "group": self.truncate_text(item.get("group", ""), 60),
+            "search_url": self.truncate_text(item.get("search_url", ""), 120),
+            "issues": [self.truncate_text(issue, 80) for issue in list(item.get("issues") or [])[:3]],
+        }
+
+    def _compact_search_result(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_id": item.get("source_id", ""),
+            "source_name": item.get("source_name", ""),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "book_url": item.get("book_url", ""),
+            "kind": self.truncate_text(item.get("kind", ""), 40),
+            "last_chapter": self.truncate_text(item.get("last_chapter", ""), 60),
+            "word_count": item.get("word_count", ""),
+            "intro": self.truncate_text(item.get("intro", ""), self.config.max_tool_preview_text),
+        }
+
+    def _compact_search_notice(self, item: dict[str, Any], message_key: str) -> dict[str, Any]:
+        return {
+            "source_id": item.get("source_id", ""),
+            "source_name": item.get("source_name", ""),
+            message_key: self.truncate_text(item.get(message_key, ""), self.config.max_tool_preview_text),
+        }
+
+    def _compact_job(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "job_id": item.get("job_id", ""),
+            "book_name": item.get("book_name", ""),
+            "state": item.get("state", ""),
+            "completed_chapters": item.get("completed_chapters", 0),
+            "total_chapters": item.get("total_chapters", 0),
+            "output_path": item.get("output_path", ""),
+            "journal_path": item.get("journal_path", ""),
+        }
