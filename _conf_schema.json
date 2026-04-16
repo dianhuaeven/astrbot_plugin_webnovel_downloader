@@ -1,0 +1,62 @@
+{
+  "max_workers": {
+    "type": "int",
+    "description": "[下载配置] 最大并发线程数",
+    "hint": "同时抓取多少个章节。网站较脆弱时建议调小。",
+    "default": 6
+  },
+  "request_timeout": {
+    "type": "float",
+    "description": "[下载配置] 单次请求超时（秒）",
+    "hint": "章节页面超过该时长未返回即视为失败，进入重试。",
+    "default": 20.0
+  },
+  "max_retries": {
+    "type": "int",
+    "description": "[下载配置] 单章最大重试次数",
+    "hint": "网络波动或目标站短暂异常时，单章最多重试多少次。",
+    "default": 3
+  },
+  "retry_backoff": {
+    "type": "float",
+    "description": "[下载配置] 重试退避倍率",
+    "hint": "失败重试的等待时间倍率，数值越大越保守。",
+    "default": 1.6
+  },
+  "journal_fsync": {
+    "type": "bool",
+    "description": "[稳定性] 每次写入后强制落盘",
+    "hint": "开启后更抗掉电，但会明显降低速度。普通 SSD 场景通常可关闭。",
+    "default": false
+  },
+  "auto_assemble": {
+    "type": "bool",
+    "description": "[流程配置] 下载完成后自动组装 TXT",
+    "hint": "开启后，后台任务抓完所有章节会自动生成最终 TXT。",
+    "default": true
+  },
+  "cleanup_journal_after_assemble": {
+    "type": "bool",
+    "description": "[流程配置] 组装完成后删除 JSONL 日志",
+    "hint": "默认保留，便于审计和再次组装；开启后会删除 journal 节省空间。",
+    "default": false
+  },
+  "default_encoding": {
+    "type": "string",
+    "description": "[抓取配置] 默认网页编码",
+    "hint": "留空时自动猜测；常见值如 utf-8、gb18030、gbk。",
+    "default": ""
+  },
+  "preview_chars": {
+    "type": "int",
+    "description": "[工具配置] 网页预览最大字符数",
+    "hint": "函数工具 novel_fetch_preview 默认返回的字符数上限。",
+    "default": 4000
+  },
+  "user_agent": {
+    "type": "string",
+    "description": "[抓取配置] HTTP User-Agent",
+    "hint": "访问目标书站时携带的 User-Agent。",
+    "default": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+  }
+}
