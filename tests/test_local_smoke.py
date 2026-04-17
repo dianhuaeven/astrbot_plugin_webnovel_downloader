@@ -89,6 +89,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         astrbot_core_star_tools = types.ModuleType("astrbot.core.star.star_tools")
 
         class DummyStar(object):
+            name = "astrbot_plugin_webnovel_downloader"
+
             def __init__(self, context):
                 self.context = context
 
@@ -134,7 +136,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         class DummyStarTools(object):
             @staticmethod
-            def get_data_dir():
+            def get_data_dir(plugin_name=None):
+                if not plugin_name:
+                    raise ValueError("无法获取插件名称")
                 return str(self.base_dir / "plugin_data")
 
         astrbot_api.logger = types.SimpleNamespace(
@@ -284,6 +288,11 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("novel_resume_download", tool_names)
         self.assertIn("novel_remove_source", tool_names)
         self.assertIn("novel_download_status", tool_names)
+
+    def test_plugin_init_uses_explicit_plugin_name_for_data_dir(self):
+        expected = self.base_dir / "plugin_data"
+        self.assertEqual(self.plugin.plugin_data_dir, expected)
+        self.assertTrue(expected.exists())
 
     async def test_llm_tools_end_to_end(self):
         chapters_dir = self.base_dir / "chapters"

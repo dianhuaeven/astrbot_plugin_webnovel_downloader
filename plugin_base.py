@@ -16,12 +16,15 @@ from .plugin_support import logger, run_blocking
 from .text_loader import load_text_argument
 
 
+PLUGIN_NAME = "astrbot_plugin_webnovel_downloader"
+
+
 class JsonlNovelDownloaderPluginBase(Star):
     def __init__(self, context: Any, config: dict | None = None):
         super().__init__(context)
         self.context = context
         self.config = config or {}
-        self.plugin_data_dir = Path(StarTools.get_data_dir())
+        self.plugin_data_dir = self._resolve_plugin_data_dir()
         self.reports_dir = self.plugin_data_dir / "reports"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.search_cache = SearchCacheStore(self.plugin_data_dir)
@@ -57,6 +60,26 @@ class JsonlNovelDownloaderPluginBase(Star):
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._bootstrap_config_sources()
         logger.info("网文下载器初始化完成")
+
+    def _resolve_plugin_data_dir(self) -> Path:
+        plugin_name = str(getattr(self, "name", "") or PLUGIN_NAME).strip() or PLUGIN_NAME
+        get_data_dir = getattr(StarTools, "get_data_dir", None)
+        if callable(get_data_dir):
+            try:
+                return Path(get_data_dir(plugin_name))
+            except TypeError:
+                return Path(get_data_dir())
+            except ValueError:
+                logger.warning(
+                    "StarTools.get_data_dir 无法自动解析插件名称，回退到固定插件名: %s",
+                    plugin_name,
+                )
+
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+        data_dir = Path(get_astrbot_data_path()) / "plugin_data" / plugin_name
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir.resolve()
 
     async def handle_novel_fetch_preview(
         self,
