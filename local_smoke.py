@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-workers", type=int, default=6, help="并发数")
     parser.add_argument("--request-timeout", type=float, default=20.0, help="请求超时秒数")
     parser.add_argument(
+        "--use-env-proxy",
+        action="store_true",
+        help="沿用当前进程的 http_proxy/https_proxy/no_proxy 环境变量",
+    )
+    parser.add_argument(
         "--max-tool-response-chars",
         type=int,
         default=2800,
@@ -92,6 +97,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         {
             "max_workers": args.max_workers,
             "request_timeout": args.request_timeout,
+            "use_env_proxy": bool(args.use_env_proxy),
         },
     )
     reports_dir = data_dir / "reports"
@@ -116,6 +122,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
             runtime.manager.config.user_agent,
             runtime.manager.config.request_timeout,
             runtime.manager.config.default_encoding,
+            runtime.manager.config.use_env_proxy,
         )
         import_result = runtime.source_registry.import_sources_from_text(source_text)
         payload["import"] = json.loads(renderer.render_import_summary(import_result))

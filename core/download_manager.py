@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from ..http_utils import open_url
 
 
 SCHEMA_VERSION = 1
@@ -56,6 +58,7 @@ class ExtractionRules:
 class RuntimeConfig:
     max_workers: int = 6
     request_timeout: float = 20.0
+    use_env_proxy: bool = False
     max_retries: int = 3
     retry_backoff: float = 1.6
     journal_fsync: bool = False
@@ -502,7 +505,11 @@ class NovelDownloadManager:
             },
         )
         try:
-            with urlopen(request, timeout=self.config.request_timeout) as response:
+            with open_url(
+                request,
+                self.config.request_timeout,
+                use_env_proxy=self.config.use_env_proxy,
+            ) as response:
                 body = response.read()
                 guessed = (
                     encoding

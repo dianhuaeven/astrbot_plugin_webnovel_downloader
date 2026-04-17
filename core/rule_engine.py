@@ -7,7 +7,9 @@ from html import unescape
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from ..http_utils import open_url
 
 try:
     from jsonpath_ng.ext import parse as parse_jsonpath
@@ -40,6 +42,7 @@ class RuleEngineConfig:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     )
+    use_env_proxy: bool = False
     clean_rule_store: Any = None
 
 
@@ -338,7 +341,11 @@ class RuleEngine:
             method=(method or "GET").upper(),
         )
         try:
-            with urlopen(request, timeout=self.config.request_timeout) as response:
+            with open_url(
+                request,
+                self.config.request_timeout,
+                use_env_proxy=self.config.use_env_proxy,
+            ) as response:
                 body = response.read()
                 final_url = getattr(response, "url", normalized_url)
                 encoding = (

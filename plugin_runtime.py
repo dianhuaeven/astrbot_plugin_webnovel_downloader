@@ -28,6 +28,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     runtime_config = RuntimeConfig(
         max_workers=int(settings.get("max_workers", 6)),
         request_timeout=float(settings.get("request_timeout", 20.0)),
+        use_env_proxy=bool(settings.get("use_env_proxy", False)),
         max_retries=int(settings.get("max_retries", 3)),
         retry_backoff=float(settings.get("retry_backoff", 1.6)),
         journal_fsync=bool(settings.get("journal_fsync", False)),
@@ -46,6 +47,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         RuleEngineConfig(
             request_timeout=runtime_config.request_timeout,
             user_agent=runtime_config.user_agent,
+            use_env_proxy=runtime_config.use_env_proxy,
             clean_rule_store=clean_rule_store,
         )
     )

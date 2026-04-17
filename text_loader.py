@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from .http_utils import open_url
 
 
 def load_text_argument(
@@ -10,6 +12,7 @@ def load_text_argument(
     user_agent: str,
     request_timeout: float,
     default_encoding: str = "",
+    use_env_proxy: bool = False,
 ) -> str:
     text = str(value or "").strip()
     if not text:
@@ -20,6 +23,7 @@ def load_text_argument(
             user_agent=user_agent,
             request_timeout=request_timeout,
             default_encoding=default_encoding,
+            use_env_proxy=use_env_proxy,
         )
 
     try:
@@ -39,6 +43,7 @@ def fetch_raw_text(
     user_agent: str,
     request_timeout: float,
     default_encoding: str = "",
+    use_env_proxy: bool = False,
 ) -> str:
     request = Request(
         url,
@@ -47,7 +52,7 @@ def fetch_raw_text(
         },
     )
     try:
-        with urlopen(request, timeout=request_timeout) as response:
+        with open_url(request, request_timeout, use_env_proxy=use_env_proxy) as response:
             body = response.read()
             encoding = response.headers.get_content_charset() or default_encoding or "utf-8"
     except HTTPError as exc:

@@ -449,6 +449,7 @@ class JsonlNovelDownloaderPluginBase(Star):
                     self.manager.config.user_agent,
                     self.manager.config.request_timeout,
                     self.manager.config.default_encoding,
+                    self.manager.config.use_env_proxy,
                 )
                 result = self.source_registry.import_sources_from_text(source_text)
                 logger.info(
@@ -466,6 +467,7 @@ class JsonlNovelDownloaderPluginBase(Star):
                     self.manager.config.user_agent,
                     self.manager.config.request_timeout,
                     self.manager.config.default_encoding,
+                    self.manager.config.use_env_proxy,
                 )
                 record = self.clean_rule_store.import_rules_from_text(
                     repo_text,
@@ -487,4 +489,5 @@ class JsonlNovelDownloaderPluginBase(Star):
             self.manager.config.user_agent,
             self.manager.config.request_timeout,
             self.manager.config.default_encoding,
+            self.manager.config.use_env_proxy,
         )

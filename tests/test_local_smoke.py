@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import importlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -293,6 +294,70 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         expected = self.base_dir / "plugin_data"
         self.assertEqual(self.plugin.plugin_data_dir, expected)
         self.assertTrue(expected.exists())
+
+    def test_open_url_ignores_env_proxy_by_default(self):
+        http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
+        called: dict[str, object] = {}
+
+        class DummyOpener(object):
+            def open(self, request, timeout=0):
+                called["request"] = request
+                called["timeout"] = timeout
+                return "opened-without-env-proxy"
+
+        original_build_opener = http_utils.build_opener
+        original_urlopen = http_utils.urlopen
+        original_http_proxy = os.environ.get("http_proxy")
+        os.environ["http_proxy"] = "http://127.0.0.1:7890"
+
+        def fake_build_opener(*handlers):
+            called["handlers"] = handlers
+            return DummyOpener()
+
+        def fail_urlopen(*_args, **_kwargs):
+            raise AssertionError("默认情况下不应直接走 urlopen 环境代理分支")
+
+        http_utils.build_opener = fake_build_opener
+        http_utils.urlopen = fail_urlopen
+        try:
+            result = http_utils.open_url(object(), 12.0, use_env_proxy=False)
+        finally:
+            http_utils.build_opener = original_build_opener
+            http_utils.urlopen = original_urlopen
+            if original_http_proxy is None:
+                os.environ.pop("http_proxy", None)
+            else:
+                os.environ["http_proxy"] = original_http_proxy
+
+        self.assertEqual(result, "opened-without-env-proxy")
+        self.assertEqual(called["timeout"], 12.0)
+        self.assertTrue(called["handlers"])
+
+    def test_open_url_can_use_env_proxy_when_enabled(self):
+        http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
+        called: dict[str, object] = {}
+
+        original_build_opener = http_utils.build_opener
+        original_urlopen = http_utils.urlopen
+
+        def fail_build_opener(*_args, **_kwargs):
+            raise AssertionError("启用 use_env_proxy 后不应构造禁用代理的 opener")
+
+        def fake_urlopen(request, timeout=0):
+            called["request"] = request
+            called["timeout"] = timeout
+            return "opened-with-env-proxy"
+
+        http_utils.build_opener = fail_build_opener
+        http_utils.urlopen = fake_urlopen
+        try:
+            result = http_utils.open_url(object(), 8.5, use_env_proxy=True)
+        finally:
+            http_utils.build_opener = original_build_opener
+            http_utils.urlopen = original_urlopen
+
+        self.assertEqual(result, "opened-with-env-proxy")
+        self.assertEqual(called["timeout"], 8.5)
 
     async def test_llm_tools_end_to_end(self):
         chapters_dir = self.base_dir / "chapters"

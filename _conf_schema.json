@@ -11,6 +11,12 @@
     "hint": "章节页面超过该时长未返回即视为失败，进入重试。",
     "default": 20.0
   },
+  "use_env_proxy": {
+    "type": "bool",
+    "description": "[抓取配置] 沿用进程代理环境变量",
+    "hint": "是否使用当前进程中的 http_proxy/https_proxy/no_proxy。默认关闭，避免被 AstrBot 全局代理设置影响书源抓取。",
+    "default": false
+  },
   "max_retries": {
     "type": "int",
     "description": "[下载配置] 单章最大重试次数",
