@@ -601,6 +601,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             "true",
         )
         self.assertIn("已创建并启动任务", auto_download_text)
+        self.assertIn("预检: source=", auto_download_text)
         auto_job_id = auto_download_text.splitlines()[0].split(": ", 1)[1]
         await self.plugin._running_tasks[auto_job_id]
         auto_status = await self._invoke_tool(self.plugin.novel_download_status, auto_job_id)
@@ -1687,6 +1688,61 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "",
                 "true",
             )
+        listed_again = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        self.assertEqual(listed_again["sources"][0]["preflight_health_state"], "unsupported")
+
+    async def test_download_book_records_preflight_failure_before_starting_task(self):
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "预检失败源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": "https://example.com/search?q={{key}}",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "bookUrl": "url",
+                    },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "content": "div.content&&text",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        )
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        source_id = listed_sources["sources"][0]["source_id"]
+        original_preflight = self.plugin.source_download_service.preflight_book
+        try:
+            def fake_preflight(*args, **kwargs):
+                raise ValueError("未解析到目录，请检查 ruleToc")
+
+            self.plugin.source_download_service.preflight_book = fake_preflight
+            with self.assertRaisesRegex(ValueError, "未解析到目录"):
+                await self._invoke_tool(
+                    self.plugin.novel_download_book,
+                    source_id,
+                    "https://example.com/book/1",
+                    "测试书",
+                    "",
+                    "true",
+                )
+        finally:
+            self.plugin.source_download_service.preflight_book = original_preflight
+
+        self.assertEqual(self.plugin._running_tasks, {})
+        listed_again = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        self.assertEqual(listed_again["sources"][0]["preflight_health_state"], "broken")
+        self.assertIn("未解析到目录", listed_again["sources"][0]["preflight_health_summary"])
 
     async def test_bulk_import_returns_compact_summary_with_local_registry(self):
         sources = [

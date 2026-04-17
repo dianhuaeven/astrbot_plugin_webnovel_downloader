@@ -34,28 +34,50 @@ class SourceDownloadService:
         book_name: str = "",
         output_filename: str = "",
     ) -> Dict[str, Any]:
-        summary = self.registry.get_source_summary(source_id)
-        if not summary.get("supports_download"):
-            issues = "；".join(summary.get("issues") or []) or "当前书源不支持 route A TXT 下载"
-            raise ValueError(
-                "书源 {name} 当前不支持 TXT 下载：{issues}".format(
-                    name=summary.get("name") or source_id,
-                    issues=issues,
-                )
-            )
+        plan = self.preflight_book(source_id, book_url, book_name)
+        return self.create_job_from_plan(plan, output_filename)
+
+    def preflight_book(
+        self,
+        source_id: str,
+        book_url: str,
+        book_name: str = "",
+    ) -> Dict[str, Any]:
+        summary = self._get_supported_download_summary(source_id)
         source = self.registry.load_normalized_source(source_id)
         plan = self.engine.build_book_download_plan(source, book_url, book_name)
+        toc = list(plan.get("toc") or [])
+        return {
+            "source_id": source_id,
+            "source_name": summary.get("name") or source_id,
+            "source_url": summary.get("source_url", ""),
+            "book_url": plan.get("book_url", book_url),
+            "toc_url": plan.get("toc_url", ""),
+            "book_name": plan.get("book_name") or book_name or "未命名小说",
+            "author": plan.get("author", ""),
+            "intro": plan.get("intro", ""),
+            "toc": toc,
+            "toc_count": len(toc),
+        }
+
+    def create_job_from_plan(
+        self,
+        plan: Dict[str, Any],
+        output_filename: str = "",
+    ) -> Dict[str, Any]:
+        source_id = str(plan.get("source_id") or "").strip()
         job = self.manager.create_job(
-            plan["book_name"],
-            plan["toc"],
+            str(plan.get("book_name") or "").strip() or "未命名小说",
+            list(plan.get("toc") or []),
             ExtractionRules(content_regex=r"(?s)(.*)"),
             output_filename,
-            plan["book_url"],
+            str(plan.get("book_url") or "").strip(),
             metadata={
                 "download_mode": "rule_based",
                 "source_id": source_id,
-                "book_url": plan["book_url"],
-                "toc_url": plan["toc_url"],
+                "source_name": str(plan.get("source_name") or "").strip(),
+                "book_url": str(plan.get("book_url") or "").strip(),
+                "toc_url": str(plan.get("toc_url") or "").strip(),
                 "author": plan.get("author", ""),
                 "intro": plan.get("intro", ""),
             },
@@ -63,8 +85,22 @@ class SourceDownloadService:
         return {
             "job_id": job["job_id"],
             "created": job["created"],
-            "book_name": plan["book_name"],
-            "toc_count": len(plan["toc"]),
+            "source_id": source_id,
+            "source_name": str(plan.get("source_name") or "").strip(),
+            "book_name": str(plan.get("book_name") or "").strip(),
+            "book_url": str(plan.get("book_url") or "").strip(),
+            "toc_url": str(plan.get("toc_url") or "").strip(),
+            "toc_count": int(plan.get("toc_count", len(plan.get("toc") or [])) or 0),
+            "preflight": {
+                "source_id": source_id,
+                "source_name": str(plan.get("source_name") or "").strip(),
+                "book_name": str(plan.get("book_name") or "").strip(),
+                "book_url": str(plan.get("book_url") or "").strip(),
+                "toc_url": str(plan.get("toc_url") or "").strip(),
+                "toc_count": int(plan.get("toc_count", len(plan.get("toc") or [])) or 0),
+                "author": str(plan.get("author") or "").strip(),
+                "intro": str(plan.get("intro") or "").strip(),
+            },
             "status": self.manager.get_status(job["job_id"]),
         }
 
@@ -154,3 +190,15 @@ class SourceDownloadService:
             raise
         except Exception as exc:
             raise RuleEngineError(str(exc))
+
+    def _get_supported_download_summary(self, source_id: str) -> Dict[str, Any]:
+        summary = self.registry.get_source_summary(source_id)
+        if summary.get("supports_download"):
+            return summary
+        issues = "；".join(summary.get("issues") or []) or "当前书源不支持 route A TXT 下载"
+        raise ValueError(
+            "书源 {name} 当前不支持 TXT 下载：{issues}".format(
+                name=summary.get("name") or source_id,
+                issues=issues,
+            )
+        )

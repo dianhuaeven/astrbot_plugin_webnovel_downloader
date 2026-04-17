@@ -253,16 +253,39 @@ class JsonlNovelDownloaderPluginBase(Star):
         output_filename: str = "",
         auto_assemble: str = "true",
     ) -> str:
+        preflight = None
+        try:
+            preflight = await run_blocking(
+                self.source_download_service.preflight_book,
+                source_id,
+                book_url,
+                book_name,
+            )
+        except Exception as exc:
+            await run_blocking(
+                self._record_preflight_failure,
+                source_id,
+                book_url,
+                book_name,
+                str(exc),
+            )
+            raise
+
+        await run_blocking(self._record_preflight_success, preflight)
         job_info = await run_blocking(
-            self.source_download_service.create_book_job,
-            source_id,
-            book_url,
-            book_name,
+            self.source_download_service.create_job_from_plan,
+            preflight,
             output_filename,
         )
         job_id = job_info["job_id"]
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
-        return await self._render_job_status(job_id, created=job_info["created"])
+        status_text = await self._render_job_status(job_id, created=job_info["created"])
+        preflight_summary = "预检: source={source} toc={toc_count} book={book}".format(
+            source=str(preflight.get("source_name") or source_id),
+            toc_count=int(preflight.get("toc_count", 0) or 0),
+            book=str(preflight.get("book_name") or book_name or ""),
+        )
+        return "{status}\n{summary}".format(status=status_text, summary=preflight_summary)
 
     async def handle_novel_download_search_result(
         self,
@@ -424,6 +447,73 @@ class JsonlNovelDownloaderPluginBase(Star):
 
     def _record_failed_state(self, job_id: str, error: str) -> None:
         self.manager.record_state(job_id, "failed", error=error)
+
+    def _record_preflight_success(self, preflight: dict[str, Any]) -> None:
+        source_id = str(preflight.get("source_id") or "").strip()
+        if not source_id:
+            return
+        self.source_health_store.record_success(
+            source_id,
+            "preflight",
+            summary="目录预检成功",
+            metadata={
+                "sample_book_name": str(preflight.get("book_name") or "").strip(),
+                "sample_book_url": str(preflight.get("book_url") or "").strip(),
+                "toc_count": int(preflight.get("toc_count", 0) or 0),
+            },
+        )
+        self.source_health_store.mark_unknown(
+            source_id,
+            "download",
+            summary="已通过目录预检，等待正文下载结果",
+        )
+
+    def _record_preflight_failure(
+        self,
+        source_id: str,
+        book_url: str,
+        book_name: str,
+        error: str,
+    ) -> None:
+        normalized_source_id = str(source_id or "").strip()
+        if not normalized_source_id:
+            return
+        try:
+            summary = self.source_registry.get_source_summary(normalized_source_id)
+        except Exception:
+            summary = {}
+        metadata = {
+            "sample_book_name": str(book_name or "").strip(),
+            "sample_book_url": str(book_url or "").strip(),
+        }
+        if summary and not summary.get("supports_download", False):
+            issues = "；".join(summary.get("issues") or []) or str(error or "").strip()
+            self.source_health_store.mark_unsupported(
+                normalized_source_id,
+                "preflight",
+                summary=issues,
+                metadata=metadata,
+            )
+            self.source_health_store.mark_unsupported(
+                normalized_source_id,
+                "download",
+                summary=issues,
+                metadata=metadata,
+            )
+            return
+        self.source_health_store.record_failure(
+            normalized_source_id,
+            "preflight",
+            error_code="preflight_failed",
+            error_summary=str(error or "").strip(),
+            metadata=metadata,
+        )
+        self.source_health_store.mark_unknown(
+            normalized_source_id,
+            "download",
+            summary="目录预检失败，未进入正文下载",
+            metadata=metadata,
+        )
 
     def _parse_optional_int(self, value: str) -> int | None:
         text = str(value or "").strip()
