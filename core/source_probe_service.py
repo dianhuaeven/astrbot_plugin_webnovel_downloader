@@ -23,11 +23,16 @@ class SourceProbeService:
         registry: Any,
         engine: Any,
         health_store: Any,
+        source_profile_service: Any = None,
         config: SourceProbeServiceConfig | None = None,
     ):
+        if isinstance(source_profile_service, SourceProbeServiceConfig) and config is None:
+            config = source_profile_service
+            source_profile_service = None
         self.registry = registry
         self.engine = engine
         self.health_store = health_store
+        self.source_profile_service = source_profile_service
         self.config = config or SourceProbeServiceConfig()
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._state_lock = threading.Lock()
@@ -151,6 +156,11 @@ class SourceProbeService:
                 summary="书源不存在，未执行下载探测",
             )
             return
+        if self.source_profile_service is not None:
+            try:
+                self.source_profile_service.get(source_id, compile_if_missing=True)
+            except Exception:
+                pass
 
         issues_text = "；".join(summary.get("issues") or []) or "当前书源静态规则不支持探测"
         supports_search = bool(summary.get("supports_search", False))
@@ -243,6 +253,19 @@ class SourceProbeService:
                 "probe_keyword": first_success_keyword,
             },
         )
+        if self.source_profile_service is not None:
+            try:
+                self.source_profile_service.update(
+                    source_id,
+                    {
+                        "search_strategy": {
+                            "last_probe_state": "healthy",
+                            "last_probe_keyword": first_success_keyword,
+                        }
+                    },
+                )
+            except Exception:
+                pass
 
         if not supports_download:
             return
@@ -311,6 +334,19 @@ class SourceProbeService:
                 "toc_count": len(plan.get("toc") or []),
             },
         )
+        if self.source_profile_service is not None:
+            try:
+                self.source_profile_service.update(
+                    source_id,
+                    {
+                        "download_strategy": {
+                            "last_preflight_state": "healthy",
+                            "last_toc_count": len(plan.get("toc") or []),
+                        }
+                    },
+                )
+            except Exception:
+                pass
         self.health_store.mark_unknown(
             source_id,
             "download",

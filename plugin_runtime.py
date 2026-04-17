@@ -7,12 +7,17 @@ from .core.book_resolution_service import BookResolutionService
 from .core.download_manager import NovelDownloadManager, RuntimeConfig
 from .core.download_orchestrator import DownloadOrchestrator
 from .core.extractors import FallbackRuleExtractor
+from .core.extractors import NovelFullLikeExtractor
+from .core.extractors import NovelPubLikeExtractor
+from .core.extractors import ProfiledExtractor
+from .core.extractors import WordpressMadaraLikeExtractor
 from .core.rule_engine import RuleEngine, RuleEngineConfig
 from .core.search_service import SearchService, SearchServiceConfig
 from .core.session_scraper import SessionScraper, SessionScraperConfig
 from .core.source_health_store import SourceHealthStore
 from .core.source_probe_service import SourceProbeService, SourceProbeServiceConfig
 from .core.source_downloader import SourceDownloadConfig, SourceDownloadService
+from .core.source_profiles import SourceProfileService
 from .core.source_registry import SourceRegistry
 from .clean_rule_store import CleanRuleRepositoryStore
 
@@ -23,6 +28,7 @@ class PluginRuntime:
     source_registry: SourceRegistry
     clean_rule_store: CleanRuleRepositoryStore
     source_health_store: SourceHealthStore
+    source_profile_service: SourceProfileService
     source_probe_service: SourceProbeService
     search_service: SearchService
     book_resolution_service: BookResolutionService
@@ -103,6 +109,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     source_registry = SourceRegistry(plugin_data_dir)
     clean_rule_store = CleanRuleRepositoryStore(plugin_data_dir)
     source_health_store = SourceHealthStore(plugin_data_dir / "source_health.json")
+    source_profile_service = SourceProfileService(source_registry)
     download_engine = RuleEngine(
         RuleEngineConfig(
             request_timeout=runtime_config.request_timeout,
@@ -121,8 +128,26 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             scraper=shared_scraper,
         )
     )
-    search_extractor = FallbackRuleExtractor(search_engine)
-    download_extractor = FallbackRuleExtractor(download_engine)
+    search_fallback_extractor = FallbackRuleExtractor(search_engine)
+    download_fallback_extractor = FallbackRuleExtractor(download_engine)
+    template_extractors = {
+        "wordpress_madara_like": WordpressMadaraLikeExtractor(shared_scraper),
+        "template_wordpress_madara_like": WordpressMadaraLikeExtractor(shared_scraper),
+        "novelfull_like": NovelFullLikeExtractor(shared_scraper),
+        "template_novelfull_like": NovelFullLikeExtractor(shared_scraper),
+        "novelpub_like": NovelPubLikeExtractor(shared_scraper),
+        "template_novelpub_like": NovelPubLikeExtractor(shared_scraper),
+    }
+    search_extractor = ProfiledExtractor(
+        fallback_extractor=search_fallback_extractor,
+        profile_service=source_profile_service,
+        template_extractors=template_extractors,
+    )
+    download_extractor = ProfiledExtractor(
+        fallback_extractor=download_fallback_extractor,
+        profile_service=source_profile_service,
+        template_extractors=template_extractors,
+    )
     search_service = SearchService(
         source_registry,
         search_extractor,
@@ -136,7 +161,8 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         source_registry,
         search_extractor,
         source_health_store,
-        SourceProbeServiceConfig(
+        source_profile_service=source_profile_service,
+        config=SourceProbeServiceConfig(
             max_workers=_parse_positive_int(settings, "probe_max_workers", 2),
             probe_keywords=_parse_string_list(
                 settings.get("probe_keywords"),
@@ -166,6 +192,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         source_registry=source_registry,
         clean_rule_store=clean_rule_store,
         source_health_store=source_health_store,
+        source_profile_service=source_profile_service,
         source_probe_service=source_probe_service,
         search_service=search_service,
         book_resolution_service=book_resolution_service,
