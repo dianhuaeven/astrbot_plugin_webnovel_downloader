@@ -19,11 +19,16 @@ class BookResolutionService:
         registry: SourceRegistry,
         search_service: SearchService,
         source_health_store: SourceHealthStore,
+        source_profile_service: Any = None,
         config: Optional[BookResolutionConfig] = None,
     ):
+        if isinstance(source_profile_service, BookResolutionConfig) and config is None:
+            config = source_profile_service
+            source_profile_service = None
         self.registry = registry
         self.search_service = search_service
         self.source_health_store = source_health_store
+        self.source_profile_service = source_profile_service
         self.config = config or BookResolutionConfig()
 
     def resolve(
@@ -91,6 +96,22 @@ class BookResolutionService:
             "skipped_candidates": skipped_candidates,
         }
 
+    def resolve_candidates(
+        self,
+        keyword: str,
+        author: str = "",
+        source_ids: Optional[Iterable[str]] = None,
+        limit: int = 20,
+        include_disabled: bool = False,
+    ) -> Dict[str, Any]:
+        return self.resolve(
+            keyword,
+            author,
+            source_ids,
+            limit,
+            include_disabled,
+        )
+
     def _build_candidate(
         self,
         item: dict[str, Any],
@@ -104,6 +125,8 @@ class BookResolutionService:
         title = str(item.get("title") or "").strip()
         candidate_author = str(item.get("author") or "").strip()
         book_url = str(item.get("book_url") or "").strip()
+        profile = self._safe_get_source_profile(source_id)
+        preferred_extractors = list(profile.get("preferred_extractors") or [])
         supports_download = bool(
             item.get("supports_download", summary.get("supports_download", False))
         )
@@ -127,6 +150,14 @@ class BookResolutionService:
             "source_issues": source_issues[:3],
             "title_match": self._match_title(keyword, title),
             "author_match": self._match_author(author, candidate_author),
+            "template_family": str(profile.get("template_family") or "").strip(),
+            "preferred_extractor": str(preferred_extractors[0] if preferred_extractors else "").strip(),
+            "search_strategy_mode": str(
+                (profile.get("search_strategy") or {}).get("mode") or ""
+            ).strip(),
+            "download_strategy_mode": str(
+                (profile.get("download_strategy") or {}).get("mode") or ""
+            ).strip(),
         }
         for stage in HEALTH_STAGES:
             stage_entry = dict(health.get(stage) or {})
@@ -156,6 +187,7 @@ class BookResolutionService:
             self._author_match_rank(candidate.get("author_match")),
             self._stage_rank(candidate.get("preflight_health_state")),
             self._stage_rank(candidate.get("download_health_state")),
+            self._extractor_rank(candidate.get("preferred_extractor")),
             self._stage_rank(candidate.get("search_health_state")),
             len(list(candidate.get("source_issues") or [])),
             self._normalize_text(candidate.get("title")),
@@ -168,6 +200,14 @@ class BookResolutionService:
             return {}
         try:
             return dict(self.registry.get_source_summary(source_id) or {})
+        except Exception:
+            return {}
+
+    def _safe_get_source_profile(self, source_id: str) -> dict[str, Any]:
+        if self.source_profile_service is None or not source_id:
+            return {}
+        try:
+            return dict(self.source_profile_service.get(source_id, compile_if_missing=True) or {})
         except Exception:
             return {}
 
@@ -233,6 +273,18 @@ class BookResolutionService:
             "broken": 3,
             "unsupported": 4,
         }.get(str(value or ""), 5)
+
+    def _extractor_rank(self, value: Any) -> int:
+        text = str(value or "").strip()
+        if text.startswith("template_"):
+            return 0
+        if text == "fallback_rule":
+            return 1
+        if not text:
+            return 2
+        if "javascript" in text:
+            return 4
+        return 3
 
     def _normalize_text(self, value: Any) -> str:
         return str(value or "").strip().casefold()

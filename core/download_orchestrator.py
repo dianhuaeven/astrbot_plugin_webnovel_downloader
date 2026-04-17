@@ -19,10 +19,12 @@ class DownloadOrchestrator:
         resolver: BookResolutionService,
         source_download_service: SourceDownloadService,
         config: Optional[DownloadOrchestratorConfig] = None,
+        source_profile_service: Any = None,
     ):
         self.resolver = resolver
         self.source_download_service = source_download_service
         self.config = config or DownloadOrchestratorConfig()
+        self.source_profile_service = source_profile_service
 
     def auto_download(
         self,
@@ -91,8 +93,32 @@ class DownloadOrchestrator:
                 continue
 
             preflight_elapsed_ms = round((time.monotonic() - started_at) * 1000.0, 3)
+            sample = {}
             try:
-                job = self.source_download_service.create_job_from_plan(preflight, output_filename)
+                sample = self.source_download_service.sample_book(preflight)
+                self._update_profile_after_sample(source_id, preflight, sample=sample)
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "attempt_index": attempt_index,
+                        "source_id": source_id,
+                        "source_name": str(candidate.get("source_name") or source_id).strip(),
+                        "title": book_name,
+                        "author": str(candidate.get("author") or "").strip(),
+                        "book_url": book_url,
+                        "outcome": "sample_failed",
+                        "error": str(exc),
+                        "elapsed_ms": round((time.monotonic() - started_at) * 1000.0, 3),
+                        "preflight": preflight,
+                    }
+                )
+                self._update_profile_after_sample(source_id, preflight, error=str(exc))
+                continue
+
+            validated_plan = dict(preflight)
+            validated_plan.update(sample)
+            try:
+                job = self.source_download_service.create_job_from_plan(validated_plan, output_filename)
             except Exception as exc:
                 attempts.append(
                     {
@@ -105,18 +131,11 @@ class DownloadOrchestrator:
                         "outcome": "job_create_failed",
                         "error": str(exc),
                         "elapsed_ms": preflight_elapsed_ms,
-                        "preflight": preflight,
+                        "preflight": validated_plan,
+                        "sampled_chapter_count": int(sample.get("sampled_chapter_count", 0) or 0),
                     }
                 )
-                return self._build_result(
-                    "job_create_failed",
-                    resolution,
-                    effective_attempt_limit,
-                    attempts,
-                    dict(candidate),
-                    {},
-                    str(exc),
-                )
+                continue
 
             attempts.append(
                 {
@@ -128,9 +147,10 @@ class DownloadOrchestrator:
                     "book_url": book_url,
                     "outcome": "started",
                     "elapsed_ms": preflight_elapsed_ms,
-                    "preflight": preflight,
+                    "preflight": validated_plan,
                     "job_id": job.get("job_id", ""),
-                    "toc_count": int(preflight.get("toc_count", 0) or 0),
+                    "toc_count": int(validated_plan.get("toc_count", 0) or 0),
+                    "sampled_chapter_count": int(sample.get("sampled_chapter_count", 0) or 0),
                 }
             )
             return self._build_result(
@@ -143,14 +163,23 @@ class DownloadOrchestrator:
                 "",
             )
 
+        failure_reason = ""
+        if attempts:
+            failure_reason = str(attempts[-1].get("error") or "").strip()
+        status = "all_preflight_failed"
+        if any(
+            str(item.get("outcome") or "").strip() in {"sample_failed", "job_create_failed"}
+            for item in attempts
+        ):
+            status = "all_candidates_failed"
         return self._build_result(
-            "all_preflight_failed",
+            status,
             resolution,
             effective_attempt_limit,
             attempts,
             {},
             {},
-            "候选书源都未通过目录预检",
+            failure_reason or "候选书源都未通过自动化验证",
         )
 
     def _build_result(
@@ -180,6 +209,36 @@ class DownloadOrchestrator:
             "attempt_limit": attempt_limit,
             "attempted_count": len(attempts),
             "attempts": attempts,
+            "chosen": selected,
             "selected": selected,
+            "job_info": job,
             "job": job,
         }
+
+    def _update_profile_after_sample(
+        self,
+        source_id: str,
+        preflight: dict[str, Any],
+        sample: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        if self.source_profile_service is None:
+            return
+        normalized_source_id = str(source_id or "").strip()
+        if not normalized_source_id:
+            return
+        patch = {
+            "download_strategy": {
+                "last_sample_state": "failed" if error else "healthy",
+                "last_sample_book_url": str(preflight.get("book_url") or "").strip(),
+                "last_sample_book_name": str(preflight.get("book_name") or "").strip(),
+                "last_sampled_chapter_count": int(
+                    (sample or {}).get("sampled_chapter_count", 0) or 0
+                ),
+                "last_sample_error": str(error or "").strip(),
+            }
+        }
+        try:
+            self.source_profile_service.update(normalized_source_id, patch)
+        except Exception:
+            pass

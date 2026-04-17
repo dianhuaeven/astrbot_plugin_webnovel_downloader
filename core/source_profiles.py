@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 import json
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -46,71 +47,81 @@ class SourceProfileService:
         self.registry = registry
         self.storage_path = Path(storage_path or (self.registry.sources_dir / "source_profiles.json"))
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
 
     def compile(self, source_id: str) -> Dict[str, Any]:
-        summary = self.registry.get_source_summary(source_id)
-        normalized = self.registry.load_normalized_source(source_id)
-        compiled_at = time.time()
-        template_family = self._detect_template_family(summary, normalized)
-        preferred_extractors = self._detect_preferred_extractors(summary, normalized)
-        profile = SourceProfile(
-            source_id=source_id,
-            template_family=template_family,
-            preferred_extractors=preferred_extractors,
-            search_strategy=self._build_search_strategy(summary, normalized, preferred_extractors),
-            download_strategy=self._build_download_strategy(summary, normalized, preferred_extractors),
-            compiled_at=compiled_at,
-            updated_at=compiled_at,
-        ).to_dict()
-        store = self._load_store()
-        store["profiles"][source_id] = profile
-        store["updated_at"] = compiled_at
-        self._write_store(store)
-        return dict(profile)
+        with self._lock:
+            summary = self.registry.get_source_summary(source_id)
+            normalized = self.registry.load_normalized_source(source_id)
+            compiled_at = time.time()
+            template_family = self._detect_template_family(summary, normalized)
+            preferred_extractors = self._detect_preferred_extractors(summary, normalized)
+            profile = SourceProfile(
+                source_id=source_id,
+                template_family=template_family,
+                preferred_extractors=preferred_extractors,
+                search_strategy=self._build_search_strategy(summary, normalized, preferred_extractors),
+                download_strategy=self._build_download_strategy(
+                    summary,
+                    normalized,
+                    preferred_extractors,
+                ),
+                compiled_at=compiled_at,
+                updated_at=compiled_at,
+            ).to_dict()
+            store = self._load_store()
+            store["profiles"][source_id] = profile
+            store["updated_at"] = compiled_at
+            self._write_store(store)
+            return dict(profile)
 
     def update(self, source_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(patch, dict) or not patch:
             raise ValueError("profile patch 必须是非空对象")
 
-        current = self.get(source_id)
-        if current is None:
-            current = self.compile(source_id)
+        with self._lock:
+            current = self.get(source_id)
+            if current is None:
+                current = self.compile(source_id)
 
-        unknown_keys = sorted(set(patch) - (_PROFILE_KEYS - {"source_id", "updated_at"}))
-        if unknown_keys:
-            raise ValueError("profile patch 含未知字段: {keys}".format(keys=", ".join(unknown_keys)))
+            unknown_keys = sorted(set(patch) - (_PROFILE_KEYS - {"source_id", "updated_at"}))
+            if unknown_keys:
+                raise ValueError(
+                    "profile patch 含未知字段: {keys}".format(keys=", ".join(unknown_keys))
+                )
 
-        merged = dict(current)
-        for key, value in patch.items():
-            if key in {"search_strategy", "download_strategy"}:
-                if not isinstance(value, dict):
-                    raise ValueError("{key} 必须是对象".format(key=key))
-                merged[key] = self._merge_dicts(merged.get(key) or {}, value)
-                continue
-            if key == "preferred_extractors":
-                merged[key] = self._normalize_preferred_extractors(value)
-                continue
-            if key == "compiled_at":
-                merged[key] = float(value)
-                continue
-            merged[key] = str(value).strip()
+            merged = dict(current)
+            for key, value in patch.items():
+                if key in {"search_strategy", "download_strategy"}:
+                    if not isinstance(value, dict):
+                        raise ValueError("{key} 必须是对象".format(key=key))
+                    merged[key] = self._merge_dicts(merged.get(key) or {}, value)
+                    continue
+                if key == "preferred_extractors":
+                    merged[key] = self._normalize_preferred_extractors(value)
+                    continue
+                if key == "compiled_at":
+                    merged[key] = float(value)
+                    continue
+                merged[key] = str(value).strip()
 
-        merged["source_id"] = source_id
-        merged["updated_at"] = time.time()
-        store = self._load_store()
-        store["profiles"][source_id] = merged
-        store["updated_at"] = merged["updated_at"]
-        self._write_store(store)
-        return dict(merged)
+            merged["source_id"] = source_id
+            merged["updated_at"] = time.time()
+            store = self._load_store()
+            store["profiles"][source_id] = merged
+            store["updated_at"] = merged["updated_at"]
+            self._write_store(store)
+            return dict(merged)
 
     def get(self, source_id: str, compile_if_missing: bool = False) -> Dict[str, Any] | None:
-        store = self._load_store()
-        profile = store["profiles"].get(source_id)
-        if profile is not None:
-            return dict(profile)
-        if compile_if_missing:
-            return self.compile(source_id)
-        return None
+        with self._lock:
+            store = self._load_store()
+            profile = store["profiles"].get(source_id)
+            if profile is not None:
+                return dict(profile)
+            if compile_if_missing:
+                return self.compile(source_id)
+            return None
 
     def _load_store(self) -> Dict[str, Any]:
         if not self.storage_path.exists():

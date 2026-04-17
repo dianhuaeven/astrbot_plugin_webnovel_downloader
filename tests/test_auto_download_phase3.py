@@ -105,15 +105,20 @@ class _FakeResolutionService(object):
 class _FakeSourceDownloadService(object):
     def __init__(self):
         self.preflight_calls = []
+        self.sample_calls = []
         self.create_job_calls = []
         self._plans = {}
         self._errors = {}
+        self._sample_errors = {}
 
     def add_success(self, source_id, book_url, plan=None):
         self._plans[(source_id, book_url)] = dict(plan or {})
 
     def add_failure(self, source_id, book_url, error):
         self._errors[(source_id, book_url)] = error
+
+    def add_sample_failure(self, source_id, book_url, error):
+        self._sample_errors[(source_id, book_url)] = error
 
     def preflight_book(self, source_id, book_url, book_name=""):
         self.preflight_calls.append(
@@ -150,6 +155,33 @@ class _FakeSourceDownloadService(object):
         plan.setdefault("toc", [{"index": 0, "title": "第一章", "url": book_url + "/1"}])
         plan.setdefault("toc_count", len(plan.get("toc") or []))
         return plan
+
+    def sample_book(self, plan, chapter_count=None, min_content_chars=None):
+        del chapter_count, min_content_chars
+        source_id = str(plan.get("source_id") or "").strip()
+        book_url = str(plan.get("book_url") or "").strip()
+        self.sample_calls.append(
+            {
+                "source_id": source_id,
+                "book_url": book_url,
+            }
+        )
+        error = self._sample_errors.get((source_id, book_url))
+        if error is not None:
+            raise error
+        return {
+            "sampled_chapter_count": 1,
+            "sampled_chapters": [
+                {
+                    "index": 0,
+                    "title": "第一章",
+                    "url": book_url + "/1",
+                    "content_chars": 128,
+                    "elapsed_ms": 5.0,
+                }
+            ],
+            "sample_errors": [],
+        }
 
     def create_job_from_plan(self, plan, output_filename=""):
         self.create_job_calls.append(

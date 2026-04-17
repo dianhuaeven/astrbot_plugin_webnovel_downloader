@@ -197,6 +197,31 @@ class TemplateExtractorTest(unittest.TestCase):
         self.assertIn(("GET", "https://pub.example.com/book/test-book/chapters"), scraper.calls)
         self.assertIn("章节正文", chapter["content"])
 
+    def test_template_content_cleaner_preserves_block_breaks(self):
+        scraper = _FakeScraper(
+            {
+                "https://pub.example.com/book/test-book/chapter-2": """
+                    <div class="chapter-content">
+                      <p>第一段</p><p>第二段</p><br/>第三段
+                    </div>
+                """,
+            }
+        )
+        extractor = NovelPubLikeExtractor(scraper)
+        source = {
+            "source_id": "pub-source",
+            "name": "Pub源",
+            "source_url": "https://pub.example.com",
+        }
+
+        chapter = extractor.fetch_content(
+            source,
+            "https://pub.example.com/book/test-book/chapter-2",
+            "第二章",
+        )
+
+        self.assertEqual(chapter["content"], "第一段\n第二段\n\n第三段")
+
 
 if __name__ == "__main__":
     unittest.main()

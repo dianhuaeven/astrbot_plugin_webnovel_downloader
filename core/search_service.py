@@ -28,10 +28,12 @@ class SearchService:
         registry: SourceRegistry,
         engine: RuleEngine,
         config: Optional[SearchServiceConfig] = None,
+        source_profile_service: Any = None,
     ):
         self.registry = registry
         self.engine = engine
         self.config = config or SearchServiceConfig()
+        self.source_profile_service = source_profile_service
         self._health_lock = threading.Lock()
         health_path = self.config.health_path
         self._health_path = Path(health_path) if health_path else None
@@ -434,9 +436,10 @@ class SearchService:
             summary = dict(summary_by_source_id.get(source_id) or {})
         with self._health_lock:
             entry = dict(self._source_health.get(source_id) or {})
+        profile_rank = self._profile_priority_rank(source_id)
         supports_download_rank = 0 if summary.get("supports_download", False) else 1
         if not entry:
-            return (supports_download_rank, 1, 0, float("inf"), 0.0)
+            return (supports_download_rank, profile_rank, 1, 0, float("inf"), 0.0)
         successes = max(0, int(entry.get("successes", 0) or 0))
         failures = max(0, int(entry.get("failures", 0) or 0))
         timeouts = max(0, int(entry.get("timeouts", 0) or 0))
@@ -446,14 +449,40 @@ class SearchService:
         last_failure_at = float(entry.get("last_failure_at", 0.0) or 0.0)
         if successes > 0:
             penalty = timeouts * 2 + max(0, failures - successes)
-            return (supports_download_rank, 0, penalty, avg_success_ms, -last_success_at)
+            return (
+                supports_download_rank,
+                profile_rank,
+                0,
+                penalty,
+                avg_success_ms,
+                -last_success_at,
+            )
         return (
             supports_download_rank,
+            profile_rank,
             2,
             timeouts * 2 + failures,
             avg_duration_ms,
             last_failure_at,
         )
+
+    def _profile_priority_rank(self, source_id: str) -> int:
+        if self.source_profile_service is None or not source_id:
+            return 1
+        try:
+            profile = dict(self.source_profile_service.get(source_id) or {})
+        except Exception:
+            return 1
+        preferred = str((profile.get("preferred_extractors") or [""])[0] or "").strip()
+        if preferred.startswith("template_"):
+            return 0
+        if preferred == "fallback_rule":
+            return 1
+        if "javascript" in preferred:
+            return 3
+        if not preferred:
+            return 2
+        return 2
 
     def _load_source_health(self) -> dict[str, dict[str, Any]]:
         if self._health_path is None or not self._health_path.exists():
