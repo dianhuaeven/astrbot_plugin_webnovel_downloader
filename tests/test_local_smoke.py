@@ -299,6 +299,30 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ["keyword", "source_ids_json", "limit", "include_disabled"],
         )
 
+    async def test_llm_tool_accepts_runtime_call_without_event_argument(self):
+        recorded = {}
+
+        async def fake_handle(keyword, source_ids_json="", limit="", include_disabled=""):
+            recorded["keyword"] = keyword
+            recorded["source_ids_json"] = source_ids_json
+            recorded["limit"] = limit
+            recorded["include_disabled"] = include_disabled
+            return "ok"
+
+        self.plugin.handle_novel_search_books = fake_handle
+        result = await self.plugin.novel_search_books("瘟疫医生", limit="5")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            recorded,
+            {
+                "keyword": "瘟疫医生",
+                "source_ids_json": "",
+                "limit": "5",
+                "include_disabled": "",
+            },
+        )
+
     def test_plugin_init_uses_explicit_plugin_name_for_data_dir(self):
         expected = self.base_dir / "plugin_data"
         self.assertEqual(self.plugin.plugin_data_dir, expected)
