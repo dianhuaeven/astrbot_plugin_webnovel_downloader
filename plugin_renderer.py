@@ -200,6 +200,81 @@ class ToolResultRenderer:
                 continue
             return text
 
+    def render_probe_enqueue_summary(
+        self,
+        selected_sources: list[dict[str, Any]],
+        requested_source_ids: list[str],
+        ignored_source_ids: list[str],
+        include_disabled: bool,
+        queued_result: dict[str, Any],
+        probe_status: dict[str, Any],
+    ) -> str:
+        selected_preview_count = min(self.config.max_tool_preview_items, len(selected_sources))
+        ignored_preview_count = min(self.config.max_tool_preview_items, len(ignored_source_ids))
+        report_path = ""
+
+        while True:
+            summary = {
+                "requested_source_count": len(requested_source_ids),
+                "selected_source_count": len(selected_sources),
+                "ignored_source_count": len(ignored_source_ids),
+                "include_disabled": include_disabled,
+                "queued_probe_count": int(queued_result.get("queued_count", 0) or 0),
+                "probe_queue_size": int(queued_result.get("queue_size", 0) or 0),
+                "workers_started": bool(probe_status.get("workers_started", False)),
+                "active_probe_count": int(probe_status.get("active_count", 0) or 0),
+                "max_workers": int(probe_status.get("max_workers", 0) or 0),
+                "requested_source_ids": requested_source_ids[:selected_preview_count],
+                "ignored_source_ids": ignored_source_ids[:ignored_preview_count],
+                "sources": [
+                    self._compact_source(item)
+                    for item in selected_sources[:selected_preview_count]
+                ],
+                "remaining_source_count": max(0, len(selected_sources) - selected_preview_count),
+                "remaining_ignored_count": max(0, len(ignored_source_ids) - ignored_preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self.to_json_text(summary)
+            if len(text) <= self.config.max_tool_response_chars:
+                if (
+                    len(selected_sources) > selected_preview_count
+                    or len(ignored_source_ids) > ignored_preview_count
+                ) and not report_path:
+                    report_path = self._write_json_report(
+                        "refresh-sources",
+                        {
+                            "requested_source_ids": requested_source_ids,
+                            "ignored_source_ids": ignored_source_ids,
+                            "selected_sources": selected_sources,
+                            "include_disabled": include_disabled,
+                            "queued_result": queued_result,
+                            "probe_status": probe_status,
+                        },
+                    )
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report(
+                    "refresh-sources",
+                    {
+                        "requested_source_ids": requested_source_ids,
+                        "ignored_source_ids": ignored_source_ids,
+                        "selected_sources": selected_sources,
+                        "include_disabled": include_disabled,
+                        "queued_result": queued_result,
+                        "probe_status": probe_status,
+                    },
+                )
+                continue
+            if ignored_preview_count > 0:
+                ignored_preview_count -= 1
+                continue
+            if selected_preview_count > 1:
+                selected_preview_count -= 1
+                continue
+            return text
+
     def render_search_summary(self, result: dict[str, Any]) -> str:
         return self.render_search_summary_with_cache(result, {})
 

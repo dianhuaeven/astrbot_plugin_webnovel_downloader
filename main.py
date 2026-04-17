@@ -90,6 +90,22 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_list_sources(enabled_only, limit, offset)
 
+    @compat_llm_tool(name="novel_refresh_sources")
+    async def novel_refresh_sources(
+        self,
+        event: AstrMessageEvent,
+        source_ids_json: str = "",
+        include_disabled: str = "",
+    ) -> str:
+        """
+        将指定书源重新加入后台健康探测队列，不等待探测完成。
+
+        Args:
+            source_ids_json(string): 可选，JSON 数组或逗号分隔的书源 ID 列表；留空时刷新全部启用书源。
+            include_disabled(string): 是否包含禁用书源，支持 true/false/1/0/yes/no。
+        """
+        return await self.handle_novel_refresh_sources(source_ids_json, include_disabled)
+
     @compat_llm_tool(name="novel_remove_source")
     async def novel_remove_source(self, event: AstrMessageEvent, source_id: str) -> str:
         """
@@ -367,6 +383,20 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
     @filter.command("novel_sources")
     async def novel_sources_command(self, event):
         yield event.plain_result(await self.handle_novel_list_sources())
+
+    @filter.command("novel_refresh")
+    async def novel_refresh_command(
+        self,
+        event,
+        source_ids_json: str = "",
+        include_disabled: str = "",
+    ):
+        yield event.plain_result(
+            await self.handle_novel_refresh_sources(
+                source_ids_json,
+                include_disabled,
+            )
+        )
 
     @filter.command("novel_import")
     async def novel_import_command(self, event, source_json: str):

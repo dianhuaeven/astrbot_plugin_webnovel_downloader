@@ -58,8 +58,9 @@ novel_status <job_id>
 如果你是让 LLM 调函数工具，推荐流程是：
 
 1. `novel_import_sources`
-2. `novel_download`
-3. `novel_download_status`
+2. `novel_refresh_sources`
+3. `novel_download`
+4. `novel_download_status`
 
 如果你已经知道要下载的 `source_id + book_url`，也可以走调试路径直接调用：
 
@@ -356,6 +357,7 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 - `novel_import <source_json>`
 - `novel_import_clean <repo_json> [repo_name]`
 - `novel_sources [limit] [offset]`
+- `novel_refresh [source_ids_json] [include_disabled]`
 - `novel_clean_rules [limit] [offset]`
 - `novel_search <keyword> [source_ids_json] [limit] [include_disabled]`
 - `novel_auto <keyword> [author] [source_ids_json] [search_limit] [attempt_limit] [output_filename] [auto_assemble] [include_disabled]`
@@ -380,6 +382,7 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 - `novel_import_sources`
 - `novel_import_clean_rules`
 - `novel_list_sources`
+- `novel_refresh_sources`
 - `novel_list_clean_rules`
 - `novel_remove_source`
 - `novel_download`
@@ -398,7 +401,7 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 
 当前最关键的一组能力是：
 
-- 书源管理：`novel_import_sources`、`novel_list_sources`、`novel_remove_source`
+- 书源管理：`novel_import_sources`、`novel_list_sources`、`novel_refresh_sources`、`novel_remove_source`
 - 自动化下载：`novel_download`
 - 状态追踪：`novel_download_status`
 
@@ -410,6 +413,15 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 - `attempts`
 
 这样 LLM 不需要再一个个试书源，重复尝试由 Python 侧自动完成。
+
+`novel_refresh_sources` 会把指定书源重新加入后台健康探测队列，并立即返回：
+
+- `queued_probe_count`
+- `probe_queue_size`
+- `active_probe_count`
+- `sources`
+
+它不会等待探测完成，因此不会把 AstrBot 主链路卡住。
 
 如果你走调试路径，`novel_search_books` 仍然会把整次搜索结果落到本地搜索缓存中，并返回：
 

@@ -173,6 +173,49 @@ class JsonlNovelDownloaderPluginBase(Star):
             offset_value,
         )
 
+    async def handle_novel_refresh_sources(
+        self,
+        source_ids_json: str = "",
+        include_disabled: str = "",
+    ) -> str:
+        requested_source_ids = self._parse_string_list(source_ids_json)
+        include_disabled_value = self._parse_bool(include_disabled, False)
+        selected_sources = await run_blocking(
+            self.source_registry.load_enabled_source_summaries,
+            requested_source_ids or None,
+            include_disabled_value,
+        )
+        selected_source_ids = [
+            str(item.get("source_id") or "").strip()
+            for item in selected_sources
+            if str(item.get("source_id") or "").strip()
+        ]
+        selected_source_id_set = set(selected_source_ids)
+        ignored_source_ids = [
+            source_id
+            for source_id in requested_source_ids
+            if source_id not in selected_source_id_set
+        ]
+        queued_result = {
+            "queued_count": 0,
+            "queue_size": 0,
+        }
+        if selected_source_ids:
+            queued_result = await run_blocking(
+                self.source_probe_service.enqueue_sources,
+                selected_source_ids,
+            )
+        probe_status = await run_blocking(self.source_probe_service.get_status)
+        return await run_blocking(
+            self.renderer.render_probe_enqueue_summary,
+            selected_sources,
+            list(requested_source_ids),
+            ignored_source_ids,
+            include_disabled_value,
+            queued_result,
+            probe_status,
+        )
+
     async def handle_novel_enable_source(self, source_id: str, enabled: str = "true") -> str:
         result = await run_blocking(
             self.source_registry.set_enabled,

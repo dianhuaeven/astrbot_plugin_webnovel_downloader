@@ -299,6 +299,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("novel_assemble_book", tool_names)
         self.assertNotIn("novel_list_jobs", tool_names)
         self.assertIn("novel_download", tool_names)
+        self.assertIn("novel_refresh_sources", tool_names)
         self.assertIn("novel_remove_source", tool_names)
         self.assertIn("novel_download_status", tool_names)
 
@@ -376,6 +377,26 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "output_filename": "",
                 "auto_assemble": "true",
                 "include_disabled": "",
+            },
+        )
+
+    async def test_novel_refresh_sources_accepts_runtime_call_without_event_argument(self):
+        recorded = {}
+
+        async def fake_handle(source_ids_json="", include_disabled=""):
+            recorded["source_ids_json"] = source_ids_json
+            recorded["include_disabled"] = include_disabled
+            return "ok"
+
+        self.plugin.handle_novel_refresh_sources = fake_handle
+        result = await self.plugin.novel_refresh_sources("a,b,c", "true")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            recorded,
+            {
+                "source_ids_json": "a,b,c",
+                "include_disabled": "true",
             },
         )
 
@@ -1504,6 +1525,89 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(imported["queued_probe_count"], 0)
         self.assertEqual(imported["probe_queue_size"], 0)
         self.assertEqual(queued_source_ids, [])
+
+    async def test_refresh_sources_can_queue_selected_sources(self):
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "刷新源A",
+                    "bookSourceUrl": "https://example.com/a",
+                    "searchUrl": "https://example.com/search?q={{key}}&a=1",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "bookUrl": "url",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                },
+                {
+                    "bookSourceName": "刷新源B",
+                    "bookSourceUrl": "https://example.com/b",
+                    "searchUrl": "https://example.com/search?q={{key}}&b=1",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "bookUrl": "url",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                },
+            ],
+            ensure_ascii=False,
+        )
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        listed = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        source_ids = [item["source_id"] for item in listed["sources"]]
+        queued_source_ids = []
+        original_enqueue_sources = self.plugin.source_probe_service.enqueue_sources
+        original_get_status = self.plugin.source_probe_service.get_status
+        try:
+
+            def fake_enqueue_sources(source_ids_to_queue):
+                queued_source_ids.extend(source_ids_to_queue)
+                return {
+                    "queued_count": len(list(source_ids_to_queue)),
+                    "queue_size": 6,
+                }
+
+            def fake_get_status():
+                return {
+                    "workers_started": True,
+                    "queued_count": 6,
+                    "active_count": 1,
+                    "max_workers": 2,
+                }
+
+            self.plugin.source_probe_service.enqueue_sources = fake_enqueue_sources
+            self.plugin.source_probe_service.get_status = fake_get_status
+            result = json.loads(
+                await self._invoke_tool(
+                    self.plugin.novel_refresh_sources,
+                    source_ids[0],
+                    "false",
+                )
+            )
+        finally:
+            self.plugin.source_probe_service.enqueue_sources = original_enqueue_sources
+            self.plugin.source_probe_service.get_status = original_get_status
+
+        self.assertEqual(result["requested_source_count"], 1)
+        self.assertEqual(result["selected_source_count"], 1)
+        self.assertEqual(result["queued_probe_count"], 1)
+        self.assertEqual(result["probe_queue_size"], 6)
+        self.assertEqual(result["active_probe_count"], 1)
+        self.assertEqual(queued_source_ids, [source_ids[0]])
 
     def test_plugin_init_rejects_non_positive_search_request_timeout(self):
         with self.assertRaisesRegex(ValueError, "search_request_timeout.*必须大于 0"):
