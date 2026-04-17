@@ -318,11 +318,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self, **kwargs):
                 called["client_kwargs"] = kwargs
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
+            def close(self):
+                called["closed"] = True
 
             def request(self, **kwargs):
                 called["request_kwargs"] = kwargs
@@ -342,8 +339,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.read(), b"opened-without-env-proxy")
         self.assertEqual(result.headers.get_content_charset(), "utf-8")
         self.assertEqual(result.url, "https://example.com/final")
-        self.assertEqual(called["client_kwargs"]["timeout"], 12.0)
         self.assertEqual(called["request_kwargs"]["method"], "GET")
+        self.assertEqual(called["request_kwargs"]["timeout"], 12.0)
         self.assertFalse(called["client_kwargs"]["trust_env"])
 
     def test_open_url_can_use_env_proxy_when_enabled(self):
@@ -361,11 +358,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self, **kwargs):
                 called["client_kwargs"] = kwargs
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
+            def close(self):
+                called["closed"] = True
 
             def request(self, **kwargs):
                 called["request_kwargs"] = kwargs
@@ -384,8 +378,61 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.read(), b"opened-with-env-proxy")
         self.assertEqual(result.url, "https://example.com/proxied")
-        self.assertEqual(called["client_kwargs"]["timeout"], 8.5)
+        self.assertEqual(called["request_kwargs"]["timeout"], 8.5)
         self.assertTrue(called["client_kwargs"]["trust_env"])
+
+    def test_open_url_reuses_httpx_client_per_proxy_mode(self):
+        http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
+        called = {
+            "client_inits": 0,
+            "request_timeouts": [],
+        }
+
+        class FakeResponse(object):
+            status_code = 200
+            reason_phrase = "OK"
+            headers = {"Content-Type": "text/plain; charset=utf-8"}
+            content = b"reused-client"
+            url = "https://example.com/reused"
+
+        class FakeClient(object):
+            def __init__(self, **kwargs):
+                called["client_inits"] += 1
+                called.setdefault("client_kwargs", []).append(kwargs)
+
+            def close(self):
+                called["closed"] = called.get("closed", 0) + 1
+
+            def request(self, **kwargs):
+                called["request_timeouts"].append(kwargs.get("timeout"))
+                return FakeResponse()
+
+        original_httpx = http_utils.httpx
+        http_utils.httpx = types.SimpleNamespace(Client=FakeClient)
+        try:
+            first = http_utils.open_url(
+                Request("https://example.com/a"),
+                2.0,
+                use_env_proxy=False,
+            )
+            second = http_utils.open_url(
+                Request("https://example.com/b"),
+                4.5,
+                use_env_proxy=False,
+            )
+            third = http_utils.open_url(
+                Request("https://example.com/c"),
+                6.0,
+                use_env_proxy=True,
+            )
+        finally:
+            http_utils.httpx = original_httpx
+
+        self.assertEqual(first.read(), b"reused-client")
+        self.assertEqual(second.read(), b"reused-client")
+        self.assertEqual(third.read(), b"reused-client")
+        self.assertEqual(called["client_inits"], 2)
+        self.assertEqual(called["request_timeouts"], [2.0, 4.5, 6.0])
 
     async def test_llm_tools_end_to_end(self):
         chapters_dir = self.base_dir / "chapters"
@@ -960,6 +1007,136 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["completed_sources"], 1)
         self.assertEqual(result["result_count"], 1)
         self.assertEqual(result["results"][0]["title"], "诡秘之主")
+
+    def test_search_service_prioritizes_healthy_sources_and_stops_after_exact_matches(self):
+        search_module = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.core.search_service"
+        )
+        health_path = self.base_dir / "search-health.json"
+        health_path.write_text(
+            json.dumps(
+                {
+                    "sources": {
+                        "fast": {
+                            "attempts": 8,
+                            "successes": 8,
+                            "failures": 0,
+                            "timeouts": 0,
+                            "avg_duration_ms": 25.0,
+                            "avg_success_ms": 25.0,
+                            "last_success_at": 200.0,
+                            "last_failure_at": 0.0,
+                        },
+                        "slow": {
+                            "attempts": 5,
+                            "successes": 1,
+                            "failures": 4,
+                            "timeouts": 2,
+                            "avg_duration_ms": 1800.0,
+                            "avg_success_ms": 1500.0,
+                            "last_success_at": 100.0,
+                            "last_failure_at": 190.0,
+                        },
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        search_order: list[str] = []
+
+        class FakeRegistry(object):
+            def load_enabled_source_summaries(self, source_ids=None, include_disabled=False):
+                return [
+                    {
+                        "source_id": "slow",
+                        "name": "慢源",
+                        "supports_search": True,
+                    },
+                    {
+                        "source_id": "fast",
+                        "name": "快源",
+                        "supports_search": True,
+                    },
+                    {
+                        "source_id": "unknown",
+                        "name": "未知源",
+                        "supports_search": True,
+                    },
+                ]
+
+            def load_enabled_sources(self, source_ids=None, include_disabled=False):
+                return [
+                    {"source_id": "slow", "name": "慢源"},
+                    {"source_id": "fast", "name": "快源"},
+                    {"source_id": "unknown", "name": "未知源"},
+                ]
+
+        class FakeEngine(object):
+            def search_books(self, source, keyword, limit):
+                search_order.append(source["source_id"])
+                if source["source_id"] == "fast":
+                    return [
+                        {
+                            "source_id": source["source_id"],
+                            "source_name": source["name"],
+                            "title": keyword,
+                            "author": "测试作者",
+                            "book_url": "https://example.com/book",
+                        }
+                    ]
+                raise AssertionError("提前收手后不应继续搜索其他书源")
+
+        service = search_module.SearchService(
+            FakeRegistry(),
+            FakeEngine(),
+            search_module.SearchServiceConfig(
+                max_workers=1,
+                time_budget_seconds=10.0,
+                health_path=health_path,
+            ),
+        )
+
+        result = service.search("诡秘之主", limit=1)
+
+        self.assertEqual(search_order, ["fast"])
+        self.assertTrue(result["partial"])
+        self.assertTrue(result["early_stopped"])
+        self.assertEqual(result["stop_reason"], "exact_match_limit")
+        self.assertEqual(result["candidate_sources"], 3)
+        self.assertEqual(result["searched_sources"], 1)
+        self.assertEqual(result["unsearched_source_count"], 2)
+        self.assertEqual(result["result_count"], 1)
+
+    def test_plugin_runtime_supports_separate_search_timeout_and_workers(self):
+        runtime_module = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.plugin_runtime"
+        )
+        runtime = runtime_module.build_plugin_runtime(
+            self.base_dir / "runtime",
+            {
+                "max_workers": 4,
+                "search_max_workers": 9,
+                "request_timeout": 20.0,
+                "search_request_timeout": 5.0,
+                "search_time_budget": 12.0,
+            },
+        )
+
+        self.assertEqual(runtime.manager.config.max_workers, 4)
+        self.assertEqual(runtime.search_service.config.max_workers, 9)
+        self.assertEqual(runtime.search_service.engine.config.request_timeout, 5.0)
+        self.assertEqual(runtime.source_download_service.engine.config.request_timeout, 20.0)
+        self.assertTrue(
+            str(runtime.search_service.config.health_path).endswith("search_source_health.json")
+        )
+
+    def test_plugin_init_rejects_non_positive_search_request_timeout(self):
+        with self.assertRaisesRegex(ValueError, "search_request_timeout.*必须大于 0"):
+            self.module.JsonlNovelDownloaderPlugin(
+                context=object(),
+                config={"search_request_timeout": 0},
+            )
 
     def test_plugin_init_rejects_non_positive_search_time_budget(self):
         with self.assertRaisesRegex(ValueError, "search_time_budget.*必须大于 0"):

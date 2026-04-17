@@ -33,6 +33,18 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     settings = config or {}
     plugin_data_dir = Path(base_dir)
     plugin_data_dir.mkdir(parents=True, exist_ok=True)
+    search_request_timeout = _parse_positive_float(
+        settings,
+        "search_request_timeout",
+        _parse_positive_float(settings, "request_timeout", 20.0),
+    )
+    search_max_workers = int(settings.get("search_max_workers", settings.get("max_workers", 6)))
+    if search_max_workers <= 0:
+        raise ValueError(
+            "配置项 search_max_workers 必须大于 0，当前值: {value}".format(
+                value=search_max_workers
+            )
+        )
 
     runtime_config = RuntimeConfig(
         max_workers=int(settings.get("max_workers", 6)),
@@ -52,7 +64,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     manager = NovelDownloadManager(plugin_data_dir, runtime_config)
     source_registry = SourceRegistry(plugin_data_dir)
     clean_rule_store = CleanRuleRepositoryStore(plugin_data_dir)
-    engine = RuleEngine(
+    download_engine = RuleEngine(
         RuleEngineConfig(
             request_timeout=runtime_config.request_timeout,
             user_agent=runtime_config.user_agent,
@@ -60,17 +72,26 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             clean_rule_store=clean_rule_store,
         )
     )
+    search_engine = RuleEngine(
+        RuleEngineConfig(
+            request_timeout=search_request_timeout,
+            user_agent=runtime_config.user_agent,
+            use_env_proxy=runtime_config.use_env_proxy,
+            clean_rule_store=clean_rule_store,
+        )
+    )
     search_service = SearchService(
         source_registry,
-        engine,
+        search_engine,
         SearchServiceConfig(
-            max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),
+            max_workers=search_max_workers,
             time_budget_seconds=_parse_positive_float(settings, "search_time_budget", 45.0),
+            health_path=plugin_data_dir / "search_source_health.json",
         ),
     )
     source_download_service = SourceDownloadService(
         source_registry,
-        engine,
+        download_engine,
         manager,
         SourceDownloadConfig(
             max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),

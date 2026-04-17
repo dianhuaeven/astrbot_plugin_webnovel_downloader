@@ -5,16 +5,28 @@
     "hint": "同时抓取多少个章节。网站较脆弱时建议调小。",
     "default": 6
   },
+  "search_max_workers": {
+    "type": "int",
+    "description": "[搜索配置] 最大并发线程数",
+    "hint": "搜索书源时同时并发多少个请求。建议按机器和网络情况逐步调大，例如 12 到 24。",
+    "default": 6
+  },
   "request_timeout": {
     "type": "float",
     "description": "[下载配置] 单次请求超时（秒，必须大于 0）",
     "hint": "章节页面超过该时长未返回即视为失败，进入重试。填 0 或负数会在插件启动时直接报配置错误。",
     "default": 20.0
   },
+  "search_request_timeout": {
+    "type": "float",
+    "description": "[搜索配置] 单个书源搜索请求超时（秒，必须大于 0）",
+    "hint": "只影响搜书阶段；默认跟随 request_timeout。搜索通常可配得比正文下载更短，例如 3 到 6 秒。",
+    "default": 20.0
+  },
   "search_time_budget": {
     "type": "float",
     "description": "[搜索配置] 单次跨书源搜索的总时间预算（秒，必须大于 0）",
-    "hint": "到达这个时间预算后会提前返回当前已拿到的部分结果，避免 AstrBot 工具调用整体超时。",
+    "hint": "到达这个时间预算后会提前返回当前已拿到的部分结果，避免 AstrBot 工具调用整体超时；搜索拿到足够多精确命中后也会提前收手。",
     "default": 45.0
   },
   "use_env_proxy": {

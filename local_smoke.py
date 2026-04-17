@@ -50,10 +50,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-offset", type=int, default=0, help="列书源分页偏移")
     parser.add_argument("--max-workers", type=int, default=6, help="并发数")
     parser.add_argument(
+        "--search-max-workers",
+        type=int,
+        default=6,
+        help="搜书并发数",
+    )
+    parser.add_argument(
         "--request-timeout",
         type=float,
         default=20.0,
         help="请求超时秒数，必须大于 0",
+    )
+    parser.add_argument(
+        "--search-request-timeout",
+        type=float,
+        default=20.0,
+        help="搜书请求超时秒数，必须大于 0",
+    )
+    parser.add_argument(
+        "--search-time-budget",
+        type=float,
+        default=45.0,
+        help="搜书总时间预算秒数，必须大于 0",
     )
     parser.add_argument(
         "--use-env-proxy",
@@ -101,7 +119,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         data_dir,
         {
             "max_workers": args.max_workers,
+            "search_max_workers": args.search_max_workers,
             "request_timeout": args.request_timeout,
+            "search_request_timeout": args.search_request_timeout,
+            "search_time_budget": args.search_time_budget,
             "use_env_proxy": bool(args.use_env_proxy),
         },
     )
