@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import importlib
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -15,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, get_args, get_origin
 from urllib.parse import unquote_to_bytes, urlsplit
+from urllib.request import Request
 
 
 SUPPORTED_TOOL_TYPES = {str}
@@ -299,65 +299,85 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
         called: dict[str, object] = {}
 
-        class DummyOpener(object):
-            def open(self, request, timeout=0):
-                called["request"] = request
-                called["timeout"] = timeout
-                return "opened-without-env-proxy"
+        class FakeResponse(object):
+            status_code = 200
+            reason_phrase = "OK"
+            headers = {"Content-Type": "text/plain; charset=utf-8"}
+            content = b"opened-without-env-proxy"
+            url = "https://example.com/final"
 
-        original_build_opener = http_utils.build_opener
-        original_urlopen = http_utils.urlopen
-        original_http_proxy = os.environ.get("http_proxy")
-        os.environ["http_proxy"] = "http://127.0.0.1:7890"
+        class FakeClient(object):
+            def __init__(self, **kwargs):
+                called["client_kwargs"] = kwargs
 
-        def fake_build_opener(*handlers):
-            called["handlers"] = handlers
-            return DummyOpener()
+            def __enter__(self):
+                return self
 
-        def fail_urlopen(*_args, **_kwargs):
-            raise AssertionError("默认情况下不应直接走 urlopen 环境代理分支")
+            def __exit__(self, exc_type, exc, tb):
+                return False
 
-        http_utils.build_opener = fake_build_opener
-        http_utils.urlopen = fail_urlopen
+            def request(self, **kwargs):
+                called["request_kwargs"] = kwargs
+                return FakeResponse()
+
+        original_httpx = http_utils.httpx
+        http_utils.httpx = types.SimpleNamespace(Client=FakeClient)
         try:
-            result = http_utils.open_url(object(), 12.0, use_env_proxy=False)
+            result = http_utils.open_url(
+                Request("https://example.com/test", headers={"User-Agent": "UA"}),
+                12.0,
+                use_env_proxy=False,
+            )
         finally:
-            http_utils.build_opener = original_build_opener
-            http_utils.urlopen = original_urlopen
-            if original_http_proxy is None:
-                os.environ.pop("http_proxy", None)
-            else:
-                os.environ["http_proxy"] = original_http_proxy
+            http_utils.httpx = original_httpx
 
-        self.assertEqual(result, "opened-without-env-proxy")
-        self.assertEqual(called["timeout"], 12.0)
-        self.assertTrue(called["handlers"])
+        self.assertEqual(result.read(), b"opened-without-env-proxy")
+        self.assertEqual(result.headers.get_content_charset(), "utf-8")
+        self.assertEqual(result.url, "https://example.com/final")
+        self.assertEqual(called["client_kwargs"]["timeout"], 12.0)
+        self.assertEqual(called["request_kwargs"]["method"], "GET")
+        self.assertFalse(called["client_kwargs"]["trust_env"])
 
     def test_open_url_can_use_env_proxy_when_enabled(self):
         http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
         called: dict[str, object] = {}
 
-        original_build_opener = http_utils.build_opener
-        original_urlopen = http_utils.urlopen
+        class FakeResponse(object):
+            status_code = 200
+            reason_phrase = "OK"
+            headers = {"Content-Type": "text/plain; charset=utf-8"}
+            content = b"opened-with-env-proxy"
+            url = "https://example.com/proxied"
 
-        def fail_build_opener(*_args, **_kwargs):
-            raise AssertionError("启用 use_env_proxy 后不应构造禁用代理的 opener")
+        class FakeClient(object):
+            def __init__(self, **kwargs):
+                called["client_kwargs"] = kwargs
 
-        def fake_urlopen(request, timeout=0):
-            called["request"] = request
-            called["timeout"] = timeout
-            return "opened-with-env-proxy"
+            def __enter__(self):
+                return self
 
-        http_utils.build_opener = fail_build_opener
-        http_utils.urlopen = fake_urlopen
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def request(self, **kwargs):
+                called["request_kwargs"] = kwargs
+                return FakeResponse()
+
+        original_httpx = http_utils.httpx
+        http_utils.httpx = types.SimpleNamespace(Client=FakeClient)
         try:
-            result = http_utils.open_url(object(), 8.5, use_env_proxy=True)
+            result = http_utils.open_url(
+                Request("https://example.com/test", headers={"User-Agent": "UA"}),
+                8.5,
+                use_env_proxy=True,
+            )
         finally:
-            http_utils.build_opener = original_build_opener
-            http_utils.urlopen = original_urlopen
+            http_utils.httpx = original_httpx
 
-        self.assertEqual(result, "opened-with-env-proxy")
-        self.assertEqual(called["timeout"], 8.5)
+        self.assertEqual(result.read(), b"opened-with-env-proxy")
+        self.assertEqual(result.url, "https://example.com/proxied")
+        self.assertEqual(called["client_kwargs"]["timeout"], 8.5)
+        self.assertTrue(called["client_kwargs"]["trust_env"])
 
     async def test_llm_tools_end_to_end(self):
         chapters_dir = self.base_dir / "chapters"
