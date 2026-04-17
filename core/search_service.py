@@ -64,6 +64,9 @@ class SearchService:
             }
 
         searchable_summaries = [item for item in source_summaries if item.get("supports_search")]
+        summary_by_source_id = {
+            str(item.get("source_id") or ""): item for item in searchable_summaries
+        }
         skipped_sources = [
             {
                 "source_id": item.get("source_id", ""),
@@ -88,7 +91,10 @@ class SearchService:
             source_ids=[item["source_id"] for item in searchable_summaries],
             include_disabled=include_disabled,
         )
-        sources = sorted(sources, key=self._source_priority_key)
+        sources = sorted(
+            sources,
+            key=lambda item: self._source_priority_key(item, summary_by_source_id),
+        )
 
         results: List[Dict[str, Any]] = []
         errors: List[Dict[str, str]] = []
@@ -207,7 +213,12 @@ class SearchService:
                             )
                         )
                         continue
-                    results.extend(source_results)
+                    results.extend(
+                        self._attach_source_summary_fields(
+                            source_results,
+                            summary_by_source_id.get(str(source.get("source_id") or ""), {}),
+                        )
+                    )
                 for future in done:
                     future_map.pop(future, None)
 
@@ -259,12 +270,29 @@ class SearchService:
         title = str(item.get("title") or "").strip().lower()
         author = str(item.get("author") or "").strip().lower()
         normalized_keyword = keyword.lower()
+        download_rank = 0 if item.get("supports_download") else 1
 
         if title == normalized_keyword:
-            return (0, title, author)
+            return (0, download_rank, title, author)
         if normalized_keyword in title:
-            return (1, title, author)
-        return (2, title, author)
+            return (1, download_rank, title, author)
+        return (2, download_rank, title, author)
+
+    def _attach_source_summary_fields(
+        self,
+        items: List[Dict[str, Any]],
+        summary: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        enriched: List[Dict[str, Any]] = []
+        supports_download = bool(summary.get("supports_download", False))
+        issues = [str(issue).strip() for issue in list(summary.get("issues") or []) if str(issue).strip()]
+        for item in items:
+            current = dict(item)
+            current["supports_download"] = supports_download
+            if issues:
+                current["source_issues"] = issues[:3]
+            enriched.append(current)
+        return enriched
 
     def _dispatch_search_tasks(
         self,
@@ -395,12 +423,20 @@ class SearchService:
             return round(value, 3)
         return round(((current * (sample_count - 1)) + value) / sample_count, 3)
 
-    def _source_priority_key(self, source: Dict[str, Any]) -> tuple:
+    def _source_priority_key(
+        self,
+        source: Dict[str, Any],
+        summary_by_source_id: Dict[str, Dict[str, Any]] | None = None,
+    ) -> tuple:
         source_id = str(source.get("source_id") or "").strip()
+        summary = {}
+        if summary_by_source_id is not None:
+            summary = dict(summary_by_source_id.get(source_id) or {})
         with self._health_lock:
             entry = dict(self._source_health.get(source_id) or {})
+        supports_download_rank = 0 if summary.get("supports_download", False) else 1
         if not entry:
-            return (1, 0, float("inf"), 0.0)
+            return (supports_download_rank, 1, 0, float("inf"), 0.0)
         successes = max(0, int(entry.get("successes", 0) or 0))
         failures = max(0, int(entry.get("failures", 0) or 0))
         timeouts = max(0, int(entry.get("timeouts", 0) or 0))
@@ -410,8 +446,14 @@ class SearchService:
         last_failure_at = float(entry.get("last_failure_at", 0.0) or 0.0)
         if successes > 0:
             penalty = timeouts * 2 + max(0, failures - successes)
-            return (0, penalty, avg_success_ms, -last_success_at)
-        return (2, timeouts * 2 + failures, avg_duration_ms, last_failure_at)
+            return (supports_download_rank, 0, penalty, avg_success_ms, -last_success_at)
+        return (
+            supports_download_rank,
+            2,
+            timeouts * 2 + failures,
+            avg_duration_ms,
+            last_failure_at,
+        )
 
     def _load_source_health(self) -> dict[str, dict[str, Any]]:
         if self._health_path is None or not self._health_path.exists():
