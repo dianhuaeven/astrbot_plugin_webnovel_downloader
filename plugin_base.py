@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +62,11 @@ class JsonlNovelDownloaderPluginBase(Star):
         self.max_tool_preview_items = self.renderer.config.max_tool_preview_items
         self.max_tool_preview_text = self.renderer.config.max_tool_preview_text
         self._running_tasks: dict[str, asyncio.Task] = {}
-        self._bootstrap_config_sources()
+        self._bootstrap_state_path = self.plugin_data_dir / "bootstrap_state.json"
+        self._bootstrap_thread: threading.Thread | None = None
+        self._bootstrap_done = threading.Event()
+        self._bootstrap_done.set()
+        self._schedule_bootstrap_config_sources()
         logger.info("网文下载器初始化完成")
 
     def _resolve_plugin_data_dir(self) -> Path:
@@ -441,46 +449,288 @@ class JsonlNovelDownloaderPluginBase(Star):
             return parts
         return [text]
 
-    def _bootstrap_config_sources(self) -> None:
-        for source_ref in self._parse_config_refs(self.config.get("book_sources")):
-            try:
-                source_text = load_text_argument(
-                    source_ref,
-                    self.manager.config.user_agent,
-                    self.manager.config.request_timeout,
-                    self.manager.config.default_encoding,
-                    self.manager.config.use_env_proxy,
-                )
-                result = self.source_registry.import_sources_from_text(source_text)
-                logger.info(
-                    "从配置导入书源成功 source_ref=%s imported_count=%s",
-                    source_ref,
-                    result.get("imported_count", 0),
-                )
-            except Exception as exc:
-                logger.warning("从配置导入书源失败 source_ref=%s error=%s", source_ref, exc)
+    def _schedule_bootstrap_config_sources(self) -> None:
+        source_refs = self._filter_bootstrap_refs(
+            self._parse_config_refs(self.config.get("book_sources")),
+            "book_sources",
+        )
+        repo_refs = self._filter_bootstrap_refs(
+            self._parse_config_refs(self.config.get("clean_rule_sources")),
+            "clean_rule_sources",
+        )
+        if not source_refs and not repo_refs:
+            return
 
-        for repo_ref in self._parse_config_refs(self.config.get("clean_rule_sources")):
+        self._bootstrap_done.clear()
+        self._bootstrap_thread = threading.Thread(
+            target=self._bootstrap_config_sources,
+            args=(source_refs, repo_refs),
+            name="{name}-bootstrap".format(name=PLUGIN_NAME),
+            daemon=True,
+        )
+        self._bootstrap_thread.start()
+        logger.info(
+            "已在后台启动配置导入 pending_source_count=%s pending_clean_rule_count=%s",
+            len(source_refs),
+            len(repo_refs),
+        )
+
+    def _bootstrap_config_sources(
+        self,
+        source_refs: list[str],
+        repo_refs: list[str],
+    ) -> None:
+        try:
+            for source_ref in source_refs:
+                self._run_bootstrap_source_import(source_ref)
+            for repo_ref in repo_refs:
+                self._run_bootstrap_clean_rule_import(repo_ref)
+        finally:
+            self._bootstrap_done.set()
+
+    def _run_bootstrap_source_import(self, source_ref: str) -> None:
+        signature = self._build_bootstrap_signature(source_ref)
+        entry_id = self._build_bootstrap_entry_id(source_ref)
+        started_at = time.time()
+        self._save_bootstrap_result(
+            "book_sources",
+            entry_id,
+            source_ref,
+            signature,
+            "running",
+            started_at,
+        )
+        imported_count = 0
+        try:
+            source_text = load_text_argument(
+                source_ref,
+                self.manager.config.user_agent,
+                self.manager.config.request_timeout,
+                self.manager.config.default_encoding,
+                self.manager.config.use_env_proxy,
+            )
+            result = self.source_registry.import_sources_from_text(source_text)
+            imported_count = int(result.get("imported_count", 0))
+            logger.info(
+                "从配置导入书源成功 source_ref=%s imported_count=%s",
+                source_ref,
+                imported_count,
+            )
+            self._save_bootstrap_result(
+                "book_sources",
+                entry_id,
+                source_ref,
+                signature,
+                "success",
+                started_at,
+                imported_count=imported_count,
+            )
+        except Exception as exc:
+            logger.warning("从配置导入书源失败 source_ref=%s error=%s", source_ref, exc)
+            self._save_bootstrap_result(
+                "book_sources",
+                entry_id,
+                source_ref,
+                signature,
+                "failed",
+                started_at,
+                error=str(exc),
+                imported_count=imported_count,
+            )
+
+    def _run_bootstrap_clean_rule_import(self, repo_ref: str) -> None:
+        signature = self._build_bootstrap_signature(repo_ref)
+        entry_id = self._build_bootstrap_entry_id(repo_ref)
+        started_at = time.time()
+        self._save_bootstrap_result(
+            "clean_rule_sources",
+            entry_id,
+            repo_ref,
+            signature,
+            "running",
+            started_at,
+        )
+        rule_count = 0
+        try:
+            repo_text = load_text_argument(
+                repo_ref,
+                self.manager.config.user_agent,
+                self.manager.config.request_timeout,
+                self.manager.config.default_encoding,
+                self.manager.config.use_env_proxy,
+            )
+            record = self.clean_rule_store.import_rules_from_text(
+                repo_text,
+                "",
+                repo_ref,
+            )
+            rule_count = int(record.get("rule_count", 0))
+            logger.info(
+                "从配置导入净化规则成功 repo_ref=%s rule_count=%s",
+                repo_ref,
+                rule_count,
+            )
+            self._save_bootstrap_result(
+                "clean_rule_sources",
+                entry_id,
+                repo_ref,
+                signature,
+                "success",
+                started_at,
+                rule_count=rule_count,
+            )
+        except Exception as exc:
+            logger.warning("从配置导入净化规则失败 repo_ref=%s error=%s", repo_ref, exc)
+            self._save_bootstrap_result(
+                "clean_rule_sources",
+                entry_id,
+                repo_ref,
+                signature,
+                "failed",
+                started_at,
+                error=str(exc),
+                rule_count=rule_count,
+            )
+
+    def wait_for_bootstrap(self, timeout: float | None = None) -> bool:
+        thread = self._bootstrap_thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
+
+    def _filter_bootstrap_refs(self, refs: list[str], section: str) -> list[str]:
+        if section == "book_sources" and not self.source_registry.list_sources():
+            return refs
+        if section == "clean_rule_sources" and not self.clean_rule_store.list_repositories():
+            return refs
+
+        state = self._load_bootstrap_state()
+        pending: list[str] = []
+        skipped_count = 0
+        for ref in refs:
+            entry = state.get(section, {}).get(self._build_bootstrap_entry_id(ref), {})
+            signature = self._build_bootstrap_signature(ref)
+            if entry.get("signature") == signature:
+                status = str(entry.get("status") or "")
+                if status == "success":
+                    skipped_count += 1
+                    logger.info(
+                        "跳过重复的配置导入 section=%s ref=%s",
+                        section,
+                        self._short_bootstrap_ref(ref),
+                    )
+                    continue
+                if status == "running" and (time.time() - float(entry.get("updated_at", 0.0))) < 1800:
+                    skipped_count += 1
+                    logger.info(
+                        "检测到已有后台导入正在进行，跳过重复启动 section=%s ref=%s",
+                        section,
+                        self._short_bootstrap_ref(ref),
+                    )
+                    continue
+            pending.append(ref)
+        if skipped_count:
+            logger.info(
+                "配置导入去重完成 section=%s skipped_count=%s pending_count=%s",
+                section,
+                skipped_count,
+                len(pending),
+            )
+        return pending
+
+    def _build_bootstrap_entry_id(self, ref: str) -> str:
+        return hashlib.sha1(str(ref).encode("utf-8")).hexdigest()
+
+    def _build_bootstrap_signature(self, ref: str) -> str:
+        text = str(ref or "").strip()
+        if not text:
+            return ""
+
+        try:
+            path = Path(text).expanduser()
+        except (OSError, ValueError):
+            path = None
+
+        if path is not None:
             try:
-                repo_text = load_text_argument(
-                    repo_ref,
-                    self.manager.config.user_agent,
-                    self.manager.config.request_timeout,
-                    self.manager.config.default_encoding,
-                    self.manager.config.use_env_proxy,
-                )
-                record = self.clean_rule_store.import_rules_from_text(
-                    repo_text,
-                    "",
-                    repo_ref,
-                )
-                logger.info(
-                    "从配置导入净化规则成功 repo_ref=%s rule_count=%s",
-                    repo_ref,
-                    record.get("rule_count", 0),
-                )
-            except Exception as exc:
-                logger.warning("从配置导入净化规则失败 repo_ref=%s error=%s", repo_ref, exc)
+                if path.is_file():
+                    stat = path.stat()
+                    return "file:{path}:{mtime}:{size}".format(
+                        path=path.resolve(),
+                        mtime=stat.st_mtime_ns,
+                        size=stat.st_size,
+                    )
+            except OSError:
+                pass
+
+        if text.startswith(("http://", "https://", "file://")):
+            return "url:{text}".format(text=text)
+        return "inline:{digest}".format(
+            digest=hashlib.sha1(text.encode("utf-8")).hexdigest(),
+        )
+
+    def _short_bootstrap_ref(self, ref: str) -> str:
+        text = str(ref or "").strip()
+        if len(text) <= 160:
+            return text
+        return text[:157] + "..."
+
+    def _load_bootstrap_state(self) -> dict[str, Any]:
+        if not self._bootstrap_state_path.exists():
+            return self._make_bootstrap_state()
+        try:
+            with open(self._bootstrap_state_path, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except Exception:
+            logger.warning("启动导入状态文件损坏，已回退到空状态")
+            return self._make_bootstrap_state()
+        if not isinstance(state, dict):
+            return self._make_bootstrap_state()
+        state.setdefault("schema_version", 1)
+        state.setdefault("updated_at", 0.0)
+        state.setdefault("book_sources", {})
+        state.setdefault("clean_rule_sources", {})
+        return state
+
+    def _make_bootstrap_state(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "updated_at": 0.0,
+            "book_sources": {},
+            "clean_rule_sources": {},
+        }
+
+    def _save_bootstrap_result(
+        self,
+        section: str,
+        entry_id: str,
+        ref: str,
+        signature: str,
+        status: str,
+        started_at: float,
+        **extra: Any,
+    ) -> None:
+        state = self._load_bootstrap_state()
+        state.setdefault(section, {})[entry_id] = {
+            "ref_preview": self._short_bootstrap_ref(ref),
+            "signature": signature,
+            "status": status,
+            "started_at": started_at,
+            "updated_at": time.time(),
+            **extra,
+        }
+        state["updated_at"] = time.time()
+        self._write_json_file(self._bootstrap_state_path, state)
+
+    def _write_json_file(self, path: Path, payload: Any) -> None:
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
 
     async def _load_text_argument(self, value: str) -> str:
         return await run_blocking(

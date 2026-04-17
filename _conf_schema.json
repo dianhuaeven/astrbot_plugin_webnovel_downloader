@@ -7,8 +7,8 @@
   },
   "request_timeout": {
     "type": "float",
-    "description": "[下载配置] 单次请求超时（秒）",
-    "hint": "章节页面超过该时长未返回即视为失败，进入重试。",
+    "description": "[下载配置] 单次请求超时（秒，必须大于 0）",
+    "hint": "章节页面超过该时长未返回即视为失败，进入重试。填 0 或负数会在插件启动时直接报配置错误。",
     "default": 20.0
   },
   "use_env_proxy": {
@@ -86,7 +86,7 @@
   "book_sources": {
     "type": "list",
     "description": "[启动导入] 启动时自动导入的书源列表",
-    "hint": "每项可填写 URL、文件路径，或原始 JSON 文本。插件启动时会依次导入。",
+    "hint": "每项可填写 URL、文件路径，或原始 JSON 文本。插件启动后会在后台依次导入；成功导入过且配置未变化的项会跳过重复导入。",
     "items": {
       "type": "string"
     },
@@ -95,7 +95,7 @@
   "clean_rule_sources": {
     "type": "list",
     "description": "[启动导入] 启动时自动导入的净化规则列表",
-    "hint": "每项可填写 URL、文件路径，或原始规则文本/JSON。插件启动时会依次导入。",
+    "hint": "每项可填写 URL、文件路径，或原始规则文本/JSON。插件启动后会在后台依次导入；成功导入过且配置未变化的项会跳过重复导入。",
     "items": {
       "type": "string"
     },

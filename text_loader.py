@@ -58,7 +58,9 @@ def fetch_raw_text(
     except HTTPError as exc:
         raise ValueError(format_remote_fetch_error(url, exc.code, str(exc.reason))) from exc
     except URLError as exc:
-        raise ValueError("网络错误: {reason}".format(reason=exc.reason)) from exc
+        raise ValueError(
+            format_network_fetch_error(url, exc.reason, use_env_proxy=use_env_proxy)
+        ) from exc
     try:
         return body.decode(encoding)
     except UnicodeDecodeError:
@@ -86,3 +88,48 @@ def format_remote_fetch_error(url: str, code: int, reason: str) -> str:
     if tips:
         return "{base}。提示：{tips}".format(base=message, tips="；".join(tips))
     return message
+
+
+def format_network_fetch_error(
+    url: str,
+    reason: object,
+    use_env_proxy: bool = False,
+) -> str:
+    reason_text = str(reason)
+    message = "网络错误: {reason}".format(reason=reason_text)
+    normalized_reason = reason_text.lower()
+    tips: list[str] = []
+
+    if "network is unreachable" in normalized_reason or "errno 101" in normalized_reason:
+        tips.append("当前宿主环境无法直连目标地址")
+        if use_env_proxy:
+            tips.append(
+                "已启用 use_env_proxy，请检查 AstrBot 进程中的 http_proxy/https_proxy/no_proxy 是否正确"
+            )
+        else:
+            tips.append(
+                "如果 AstrBot 需要通过代理访问外网，请在插件配置中将 use_env_proxy 设为 true"
+            )
+    elif (
+        "temporary failure in name resolution" in normalized_reason
+        or "name or service not known" in normalized_reason
+        or "nodename nor servname provided" in normalized_reason
+        or "getaddrinfo failed" in normalized_reason
+    ):
+        tips.append("DNS 解析失败，请检查宿主机网络和域名是否可解析")
+    elif "connection refused" in normalized_reason:
+        tips.append("目标服务拒绝连接，请确认地址、端口和代理配置是否正确")
+    elif "timed out" in normalized_reason or "timeout" in normalized_reason:
+        tips.append("请求超时，可稍后重试，或适当调大 request_timeout")
+
+    details = "url={url} use_env_proxy={flag}".format(
+        url=url,
+        flag="true" if use_env_proxy else "false",
+    )
+    if tips:
+        return "{message}。提示：{tips}。{details}".format(
+            message=message,
+            tips="；".join(tips),
+            details=details,
+        )
+    return "{message}。{details}".format(message=message, details=details)

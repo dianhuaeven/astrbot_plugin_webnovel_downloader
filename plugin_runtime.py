@@ -20,6 +20,15 @@ class PluginRuntime:
     source_download_service: SourceDownloadService
 
 
+def _parse_positive_float(settings: dict, key: str, default: float) -> float:
+    value = float(settings.get(key, default))
+    if value <= 0:
+        raise ValueError(
+            "配置项 {key} 必须大于 0，当前值: {value}".format(key=key, value=value)
+        )
+    return value
+
+
 def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> PluginRuntime:
     settings = config or {}
     plugin_data_dir = Path(base_dir)
@@ -27,7 +36,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
 
     runtime_config = RuntimeConfig(
         max_workers=int(settings.get("max_workers", 6)),
-        request_timeout=float(settings.get("request_timeout", 20.0)),
+        request_timeout=_parse_positive_float(settings, "request_timeout", 20.0),
         use_env_proxy=bool(settings.get("use_env_proxy", False)),
         max_retries=int(settings.get("max_retries", 3)),
         retry_backoff=float(settings.get("retry_backoff", 1.6)),

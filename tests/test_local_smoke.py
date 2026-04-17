@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -294,6 +295,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         expected = self.base_dir / "plugin_data"
         self.assertEqual(self.plugin.plugin_data_dir, expected)
         self.assertTrue(expected.exists())
+
+    def test_plugin_init_rejects_non_positive_request_timeout(self):
+        with self.assertRaisesRegex(ValueError, "request_timeout.*必须大于 0"):
+            self.module.JsonlNovelDownloaderPlugin(
+                context=object(),
+                config={"request_timeout": 0},
+            )
 
     def test_open_url_ignores_env_proxy_by_default(self):
         http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
@@ -692,6 +700,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "clean_rule_sources": [str(clean_path)],
             },
         )
+        self.assertTrue(plugin.wait_for_bootstrap(2.0))
 
         sources = plugin.source_registry.list_sources()
         clean_repos = plugin.clean_rule_store.list_repositories()
@@ -699,6 +708,119 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sources[0]["name"], "配置书源")
         self.assertEqual(len(clean_repos), 1)
         self.assertEqual(clean_repos[0]["rule_count"], 1)
+
+    def test_plugin_bootstrap_runs_in_background(self):
+        source_path = self.base_dir / "slow-bootstrap-source.json"
+        source_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "bookSourceName": "慢启动配置书源",
+                        "bookSourceUrl": "https://example.com",
+                        "searchUrl": "https://example.com/search?q={{key}}",
+                        "ruleSearch": {
+                            "bookList": "data.items",
+                            "name": "title",
+                            "bookUrl": "url",
+                        },
+                        "ruleBookInfo": {"name": "h1&&text"},
+                        "ruleToc": {
+                            "chapterList": "#toc a",
+                            "chapterName": "text",
+                            "chapterUrl": "@href",
+                        },
+                        "ruleContent": {"content": "#content&&text"},
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        original_loader = plugin_base.load_text_argument
+        started = threading.Event()
+        unblock = threading.Event()
+
+        def slow_loader(*args, **kwargs):
+            started.set()
+            unblock.wait(1.0)
+            return original_loader(*args, **kwargs)
+
+        plugin_base.load_text_argument = slow_loader
+        plugin = None
+        try:
+            begin = time.perf_counter()
+            plugin = self.module.JsonlNovelDownloaderPlugin(
+                context=object(),
+                config={"book_sources": [str(source_path)]},
+            )
+            elapsed = time.perf_counter() - begin
+            self.assertLess(elapsed, 0.2)
+            self.assertTrue(started.wait(1.0))
+            self.assertEqual(plugin.source_registry.list_sources(), [])
+
+            unblock.set()
+            self.assertTrue(plugin.wait_for_bootstrap(2.0))
+            self.assertEqual(len(plugin.source_registry.list_sources()), 1)
+        finally:
+            unblock.set()
+            plugin_base.load_text_argument = original_loader
+            if plugin is not None:
+                plugin.wait_for_bootstrap(2.0)
+
+    def test_plugin_bootstrap_skips_successful_duplicate_config_imports(self):
+        source_path = self.base_dir / "bootstrap-skip-source.json"
+        source_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "bookSourceName": "去重配置书源",
+                        "bookSourceUrl": "https://example.com",
+                        "searchUrl": "https://example.com/search?q={{key}}",
+                        "ruleSearch": {
+                            "bookList": "data.items",
+                            "name": "title",
+                            "bookUrl": "url",
+                        },
+                        "ruleBookInfo": {"name": "h1&&text"},
+                        "ruleToc": {
+                            "chapterList": "#toc a",
+                            "chapterName": "text",
+                            "chapterUrl": "@href",
+                        },
+                        "ruleContent": {"content": "#content&&text"},
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        plugin = self.module.JsonlNovelDownloaderPlugin(
+            context=object(),
+            config={"book_sources": [str(source_path)]},
+        )
+        self.assertTrue(plugin.wait_for_bootstrap(2.0))
+        self.assertEqual(len(plugin.source_registry.list_sources()), 1)
+
+        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        original_loader = plugin_base.load_text_argument
+
+        def should_not_run(*args, **kwargs):
+            raise AssertionError("重复配置导入不应再次请求 load_text_argument")
+
+        plugin_base.load_text_argument = should_not_run
+        try:
+            plugin_again = self.module.JsonlNovelDownloaderPlugin(
+                context=object(),
+                config={"book_sources": [str(source_path)]},
+            )
+            self.assertIsNone(plugin_again._bootstrap_thread)
+            self.assertTrue(plugin_again.wait_for_bootstrap(0.1))
+            self.assertEqual(len(plugin_again.source_registry.list_sources()), 1)
+        finally:
+            plugin_base.load_text_argument = original_loader
 
     async def test_search_cache_can_list_and_download_result(self):
         chapters_dir = self.base_dir / "cache-chapters"

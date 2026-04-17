@@ -49,7 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-limit", type=int, default=20, help="列书源分页大小")
     parser.add_argument("--list-offset", type=int, default=0, help="列书源分页偏移")
     parser.add_argument("--max-workers", type=int, default=6, help="并发数")
-    parser.add_argument("--request-timeout", type=float, default=20.0, help="请求超时秒数")
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=20.0,
+        help="请求超时秒数，必须大于 0",
+    )
     parser.add_argument(
         "--use-env-proxy",
         action="store_true",
