@@ -11,6 +11,12 @@
     "hint": "章节页面超过该时长未返回即视为失败，进入重试。填 0 或负数会在插件启动时直接报配置错误。",
     "default": 20.0
   },
+  "search_time_budget": {
+    "type": "float",
+    "description": "[搜索配置] 单次跨书源搜索的总时间预算（秒，必须大于 0）",
+    "hint": "到达这个时间预算后会提前返回当前已拿到的部分结果，避免 AstrBot 工具调用整体超时。",
+    "default": 45.0
+  },
   "use_env_proxy": {
     "type": "bool",
     "description": "[抓取配置] 沿用进程代理环境变量",

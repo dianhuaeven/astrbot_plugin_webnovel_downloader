@@ -108,7 +108,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         preview["html_preview"] = self.renderer.truncate_text(preview.get("html_preview", ""), limit)
         preview["text_preview"] = self.renderer.truncate_text(preview.get("text_preview", ""), limit)
         preview["applied_max_chars"] = limit
-        return self.renderer.to_json_text(preview)
+        return await run_blocking(self.renderer.to_json_text, preview)
 
     async def handle_novel_import_sources(self, source_json: str) -> str:
         source_text = await self._load_text_argument(source_json)
@@ -116,7 +116,7 @@ class JsonlNovelDownloaderPluginBase(Star):
             self.source_registry.import_sources_from_text,
             source_text,
         )
-        return self.renderer.render_import_summary(result)
+        return await run_blocking(self.renderer.render_import_summary, result)
 
     async def handle_novel_import_clean_rules(
         self,
@@ -130,11 +130,12 @@ class JsonlNovelDownloaderPluginBase(Star):
             repo_name,
             repo_json,
         )
-        return self.renderer.render_clean_rule_import_summary(record)
+        return await run_blocking(self.renderer.render_clean_rule_import_summary, record)
 
     async def handle_novel_list_clean_rules(self, limit: str = "", offset: str = "") -> str:
         repos = await run_blocking(self.clean_rule_store.list_repositories)
-        return self.renderer.render_clean_rule_list_summary(
+        return await run_blocking(
+            self.renderer.render_clean_rule_list_summary,
             repos,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
@@ -153,7 +154,8 @@ class JsonlNovelDownloaderPluginBase(Star):
             self.source_registry.list_sources,
             enabled_only_value,
         )
-        return self.renderer.render_sources_summary(
+        return await run_blocking(
+            self.renderer.render_sources_summary,
             result,
             enabled_only_value,
             limit_value,
@@ -166,11 +168,19 @@ class JsonlNovelDownloaderPluginBase(Star):
             source_id,
             self._parse_bool(enabled, True),
         )
-        return self.renderer.render_source_change_summary("set_enabled", result)
+        return await run_blocking(
+            self.renderer.render_source_change_summary,
+            "set_enabled",
+            result,
+        )
 
     async def handle_novel_remove_source(self, source_id: str) -> str:
         result = await run_blocking(self.source_registry.remove_source, source_id)
-        return self.renderer.render_source_change_summary("removed", result)
+        return await run_blocking(
+            self.renderer.render_source_change_summary,
+            "removed",
+            result,
+        )
 
     async def handle_novel_search_books(
         self,
@@ -197,11 +207,16 @@ class JsonlNovelDownloaderPluginBase(Star):
             include_disabled_value,
             limit_value,
         )
-        return self.renderer.render_search_summary_with_cache(result, cache_record)
+        return await run_blocking(
+            self.renderer.render_search_summary_with_cache,
+            result,
+            cache_record,
+        )
 
     async def handle_novel_list_searches(self, limit: str = "", offset: str = "") -> str:
         searches = await run_blocking(self.search_cache.list_searches)
-        return self.renderer.render_search_cache_list_summary(
+        return await run_blocking(
+            self.renderer.render_search_cache_list_summary,
             searches,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
@@ -214,7 +229,8 @@ class JsonlNovelDownloaderPluginBase(Star):
         offset: str = "",
     ) -> str:
         payload = await run_blocking(self.search_cache.load_search, search_id)
-        return self.renderer.render_cached_search_results(
+        return await run_blocking(
+            self.renderer.render_cached_search_results,
             payload,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
@@ -237,8 +253,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         )
         job_id = job_info["job_id"]
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
-        status = self.manager.get_status(job_id)
-        return self.renderer.render_status(status, created=job_info["created"])
+        return await self._render_job_status(job_id, created=job_info["created"])
 
     async def handle_novel_download_search_result(
         self,
@@ -278,8 +293,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         auto_assemble: str = "true",
     ) -> str:
         await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
-        status = self.manager.get_status(job_id)
-        return self.renderer.render_status(status, created=False)
+        return await self._render_job_status(job_id, created=False)
 
     async def handle_novel_start_download(
         self,
@@ -292,7 +306,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         encoding: str = "",
         auto_assemble: str = "true",
     ) -> str:
-        toc = json.loads(toc_json)
+        toc = await run_blocking(json.loads, toc_json)
         job_info = await run_blocking(
             self.manager.create_job,
             book_name,
@@ -307,8 +321,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         )
         job_id = job_info["job_id"]
         await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
-        status = self.manager.get_status(job_id)
-        return self.renderer.render_status(status, created=job_info["created"])
+        return await self._render_job_status(job_id, created=job_info["created"])
 
     async def handle_novel_resume_download(
         self,
@@ -316,8 +329,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         auto_assemble: str = "true",
     ) -> str:
         await self._ensure_job_running(job_id, self._parse_bool(auto_assemble, True))
-        status = self.manager.get_status(job_id)
-        return self.renderer.render_status(status, created=False)
+        return await self._render_job_status(job_id, created=False)
 
     async def handle_novel_download_status(
         self,
@@ -326,13 +338,13 @@ class JsonlNovelDownloaderPluginBase(Star):
         offset: str = "",
     ) -> str:
         if job_id:
-            status = self.manager.get_status(job_id)
-            return self.renderer.render_status(status, created=False)
+            return await self._render_job_status(job_id, created=False)
 
         jobs = await run_blocking(self.manager.list_jobs)
         if not jobs:
             return "当前没有任何下载任务。"
-        return self.renderer.render_jobs_summary(
+        return await run_blocking(
+            self.renderer.render_jobs_summary,
             jobs,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
@@ -347,11 +359,12 @@ class JsonlNovelDownloaderPluginBase(Star):
                 self.manager.config.cleanup_journal_after_assemble,
             ),
         )
-        return self.renderer.render_status(status, created=False)
+        return await run_blocking(self.renderer.render_status, status, False)
 
     async def handle_novel_list_jobs(self, limit: str = "", offset: str = "") -> str:
         jobs = await run_blocking(self.manager.list_jobs)
-        return self.renderer.render_jobs_summary(
+        return await run_blocking(
+            self.renderer.render_jobs_summary,
             jobs,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
@@ -382,7 +395,7 @@ class JsonlNovelDownloaderPluginBase(Star):
                     self.manager.config.cleanup_journal_after_assemble,
                 )
         except Exception as exc:
-            self.manager.record_state(job_id, "failed", error=str(exc))
+            await run_blocking(self._record_failed_state, job_id, str(exc))
             logger.exception("小说下载任务失败 job_id=%s error=%s", job_id, exc)
 
     async def _run_rule_job(self, job_id: str, auto_assemble: bool) -> None:
@@ -393,8 +406,15 @@ class JsonlNovelDownloaderPluginBase(Star):
                 auto_assemble,
             )
         except Exception as exc:
-            self.manager.record_state(job_id, "failed", error=str(exc))
+            await run_blocking(self._record_failed_state, job_id, str(exc))
             logger.exception("书源规则下载任务失败 job_id=%s error=%s", job_id, exc)
+
+    async def _render_job_status(self, job_id: str, created: bool) -> str:
+        status = await run_blocking(self.manager.get_status, job_id)
+        return await run_blocking(self.renderer.render_status, status, created)
+
+    def _record_failed_state(self, job_id: str, error: str) -> None:
+        self.manager.record_state(job_id, "failed", error=error)
 
     def _parse_optional_int(self, value: str) -> int | None:
         text = str(value or "").strip()
@@ -450,14 +470,8 @@ class JsonlNovelDownloaderPluginBase(Star):
         return [text]
 
     def _schedule_bootstrap_config_sources(self) -> None:
-        source_refs = self._filter_bootstrap_refs(
-            self._parse_config_refs(self.config.get("book_sources")),
-            "book_sources",
-        )
-        repo_refs = self._filter_bootstrap_refs(
-            self._parse_config_refs(self.config.get("clean_rule_sources")),
-            "clean_rule_sources",
-        )
+        source_refs = self._parse_config_refs(self.config.get("book_sources"))
+        repo_refs = self._parse_config_refs(self.config.get("clean_rule_sources"))
         if not source_refs and not repo_refs:
             return
 
@@ -481,6 +495,8 @@ class JsonlNovelDownloaderPluginBase(Star):
         repo_refs: list[str],
     ) -> None:
         try:
+            source_refs = self._filter_bootstrap_refs(source_refs, "book_sources")
+            repo_refs = self._filter_bootstrap_refs(repo_refs, "clean_rule_sources")
             for source_ref in source_refs:
                 self._run_bootstrap_source_import(source_ref)
             for repo_ref in repo_refs:

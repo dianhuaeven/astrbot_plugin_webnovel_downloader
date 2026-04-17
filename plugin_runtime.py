@@ -65,6 +65,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         engine,
         SearchServiceConfig(
             max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),
+            time_budget_seconds=_parse_positive_float(settings, "search_time_budget", 45.0),
         ),
     )
     source_download_service = SourceDownloadService(

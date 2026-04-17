@@ -816,11 +816,157 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 context=object(),
                 config={"book_sources": [str(source_path)]},
             )
-            self.assertIsNone(plugin_again._bootstrap_thread)
             self.assertTrue(plugin_again.wait_for_bootstrap(0.1))
             self.assertEqual(len(plugin_again.source_registry.list_sources()), 1)
         finally:
             plugin_base.load_text_argument = original_loader
+
+    async def test_download_status_offloads_blocking_status_read(self):
+        original_get_status = self.plugin.manager.get_status
+
+        def slow_get_status(job_id):
+            time.sleep(0.2)
+            return {
+                "job_id": job_id,
+                "book_name": "阻塞测试",
+                "state": "created",
+                "total_chapters": 1,
+                "completed_chapters": 0,
+                "failed_chapters": 0,
+                "missing_chapters": 1,
+                "output_filename": "test.txt",
+                "output_path": "/tmp/test.txt",
+                "journal_path": "/tmp/test.jsonl",
+                "latest_errors": [],
+                "corrupt_lines": 0,
+            }
+
+        self.plugin.manager.get_status = slow_get_status
+        try:
+            start = time.perf_counter()
+            task = asyncio.create_task(self.plugin.handle_novel_download_status("job-1"))
+            await asyncio.sleep(0.01)
+            elapsed = time.perf_counter() - start
+            self.assertLess(elapsed, 0.1)
+            self.assertFalse(task.done())
+            result = await task
+            self.assertIn("任务状态: job-1", result)
+        finally:
+            self.plugin.manager.get_status = original_get_status
+
+    async def test_import_sources_offloads_blocking_render(self):
+        original_render = self.plugin.renderer.render_import_summary
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "阻塞渲染测试源",
+                    "bookSourceUrl": "https://example.com",
+                    "searchUrl": "https://example.com/search?q={{key}}",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "bookUrl": "url",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        def slow_render(result):
+            time.sleep(0.2)
+            return original_render(result)
+
+        self.plugin.renderer.render_import_summary = slow_render
+        try:
+            start = time.perf_counter()
+            task = asyncio.create_task(self.plugin.handle_novel_import_sources(source_json))
+            await asyncio.sleep(0.01)
+            elapsed = time.perf_counter() - start
+            self.assertLess(elapsed, 0.1)
+            self.assertFalse(task.done())
+            result = await task
+            payload = json.loads(result)
+            self.assertEqual(payload["imported_count"], 1)
+        finally:
+            self.plugin.renderer.render_import_summary = original_render
+
+    def test_search_service_respects_time_budget_and_returns_partial_results(self):
+        search_module = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.core.search_service"
+        )
+
+        class FakeRegistry(object):
+            def load_enabled_source_summaries(self, source_ids=None, include_disabled=False):
+                return [
+                    {
+                        "source_id": "fast",
+                        "name": "快源",
+                        "supports_search": True,
+                    },
+                    {
+                        "source_id": "slow-a",
+                        "name": "慢源A",
+                        "supports_search": True,
+                    },
+                    {
+                        "source_id": "slow-b",
+                        "name": "慢源B",
+                        "supports_search": True,
+                    },
+                ]
+
+            def load_enabled_sources(self, source_ids=None, include_disabled=False):
+                return [
+                    {"source_id": "fast", "name": "快源"},
+                    {"source_id": "slow-a", "name": "慢源A"},
+                    {"source_id": "slow-b", "name": "慢源B"},
+                ]
+
+        class FakeEngine(object):
+            def search_books(self, source, keyword, limit):
+                if source["source_id"] == "fast":
+                    return [
+                        {
+                            "source_id": source["source_id"],
+                            "source_name": source["name"],
+                            "title": keyword,
+                            "author": "测试作者",
+                            "book_url": "https://example.com/book",
+                        }
+                    ]
+                time.sleep(0.2)
+                return []
+
+        service = search_module.SearchService(
+            FakeRegistry(),
+            FakeEngine(),
+            search_module.SearchServiceConfig(max_workers=3, time_budget_seconds=0.05),
+        )
+
+        start = time.perf_counter()
+        result = service.search("诡秘之主", limit=3)
+        elapsed = time.perf_counter() - start
+
+        self.assertLess(elapsed, 0.15)
+        self.assertTrue(result["partial"])
+        self.assertGreaterEqual(result["timed_out_source_count"], 1)
+        self.assertEqual(result["completed_sources"], 1)
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["title"], "诡秘之主")
+
+    def test_plugin_init_rejects_non_positive_search_time_budget(self):
+        with self.assertRaisesRegex(ValueError, "search_time_budget.*必须大于 0"):
+            self.module.JsonlNovelDownloaderPlugin(
+                context=object(),
+                config={"search_time_budget": 0},
+            )
 
     async def test_search_cache_can_list_and_download_result(self):
         chapters_dir = self.base_dir / "cache-chapters"
