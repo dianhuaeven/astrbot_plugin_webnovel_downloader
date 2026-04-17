@@ -102,6 +102,13 @@ def compat_llm_tool(name: str) -> Callable:
     return decorator
 
 
+def compat_hidden_tool() -> Callable:
+    def decorator(func: Callable) -> Callable:
+        return _hide_system_parameters(func)
+
+    return decorator
+
+
 async def run_blocking(func: Callable[..., Any], *args: Any) -> Any:
     to_thread = getattr(asyncio, "to_thread", None)
     if to_thread is not None:

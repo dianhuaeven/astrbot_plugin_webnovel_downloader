@@ -288,7 +288,17 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("novel_enable_source", tool_names)
         self.assertNotIn("novel_resume_book_download", tool_names)
         self.assertNotIn("novel_resume_download", tool_names)
-        self.assertIn("novel_auto_download", tool_names)
+        self.assertNotIn("novel_auto_download", tool_names)
+        self.assertNotIn("novel_search_books", tool_names)
+        self.assertNotIn("novel_list_searches", tool_names)
+        self.assertNotIn("novel_get_search_results", tool_names)
+        self.assertNotIn("novel_download_search_result", tool_names)
+        self.assertNotIn("novel_download_book", tool_names)
+        self.assertNotIn("novel_fetch_preview", tool_names)
+        self.assertNotIn("novel_start_download", tool_names)
+        self.assertNotIn("novel_assemble_book", tool_names)
+        self.assertNotIn("novel_list_jobs", tool_names)
+        self.assertIn("novel_download", tool_names)
         self.assertIn("novel_remove_source", tool_names)
         self.assertIn("novel_download_status", tool_names)
 
@@ -324,7 +334,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_novel_auto_download_accepts_runtime_call_without_event_argument(self):
+    async def test_novel_download_accepts_runtime_call_without_event_argument(self):
         recorded = {}
 
         async def fake_handle(
@@ -348,7 +358,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             return "ok"
 
         self.plugin.handle_novel_auto_download = fake_handle
-        result = await self.plugin.novel_auto_download(
+        result = await self.plugin.novel_download(
             "瘟疫医生",
             "作者甲",
             attempt_limit="3",
@@ -695,7 +705,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         assembled_text = await self._invoke_tool(self.plugin.novel_assemble_book, job_id, "false")
         self.assertIn("状态: assembled", assembled_text)
 
-    async def test_novel_auto_download_end_to_end(self):
+    async def test_novel_download_end_to_end(self):
         chapters_dir = self.base_dir / "auto-good-chapters"
         chapters_dir.mkdir(parents=True, exist_ok=True)
         (chapters_dir / "1.html").write_text(
@@ -822,7 +832,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             self.plugin.source_download_service.preflight_book = fake_preflight
             auto_result = json.loads(
                 await self._invoke_tool(
-                    self.plugin.novel_auto_download,
+                    self.plugin.novel_download,
                     "自动下载测试书",
                     "自动作者",
                     "",

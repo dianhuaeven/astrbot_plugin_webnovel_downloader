@@ -5,7 +5,7 @@ from astrbot.api.star import register
 
 from .core.download_manager import ExtractionRules
 from .plugin_base import JsonlNovelDownloaderPluginBase
-from .plugin_support import compat_llm_tool
+from .plugin_support import compat_hidden_tool, compat_llm_tool
 
 
 @register(
@@ -48,7 +48,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_list_clean_rules(limit, offset)
 
-    @compat_llm_tool(name="novel_fetch_preview")
+    @compat_hidden_tool()
     async def novel_fetch_preview(
         self, event: AstrMessageEvent, url: str, encoding: str = "", max_chars: str = ""
     ) -> str:
@@ -100,7 +100,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_remove_source(source_id)
 
-    @compat_llm_tool(name="novel_search_books")
+    @compat_hidden_tool()
     async def novel_search_books(
         self,
         event: AstrMessageEvent,
@@ -125,7 +125,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             include_disabled,
         )
 
-    @compat_llm_tool(name="novel_list_searches")
+    @compat_hidden_tool()
     async def novel_list_searches(
         self, event: AstrMessageEvent, limit: str = "", offset: str = ""
     ) -> str:
@@ -138,7 +138,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_list_searches(limit, offset)
 
-    @compat_llm_tool(name="novel_get_search_results")
+    @compat_hidden_tool()
     async def novel_get_search_results(
         self,
         event: AstrMessageEvent,
@@ -156,7 +156,44 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_get_search_results(search_id, limit, offset)
 
-    @compat_llm_tool(name="novel_auto_download")
+    @compat_llm_tool(name="novel_download")
+    async def novel_download(
+        self,
+        event: AstrMessageEvent,
+        keyword: str,
+        author: str = "",
+        source_ids_json: str = "",
+        search_limit: str = "",
+        attempt_limit: str = "",
+        output_filename: str = "",
+        auto_assemble: str = "true",
+        include_disabled: str = "",
+    ) -> str:
+        """
+        自动搜书、择优挑选候选源，并在 Python 侧完成预检回退后启动下载任务。
+
+        Args:
+            keyword(string): 搜索关键词，通常是书名。
+            author(string): 可选，作者名；传入后会优先选择标题和作者都匹配的候选。
+            source_ids_json(string): 可选，JSON 数组或逗号分隔的书源 ID 列表。
+            search_limit(string): 可选，本次搜索最多保留多少条候选结果。
+            attempt_limit(string): 可选，最多尝试多少个候选源做目录预检。
+            output_filename(string): 可选，自定义输出 TXT 文件名。
+            auto_assemble(string): 是否自动组装 TXT，支持 true/false/1/0/yes/no。
+            include_disabled(string): 是否包含禁用书源，支持 true/false/1/0/yes/no。
+        """
+        return await self.handle_novel_auto_download(
+            keyword,
+            author,
+            source_ids_json,
+            search_limit,
+            attempt_limit,
+            output_filename,
+            auto_assemble,
+            include_disabled,
+        )
+
+    @compat_hidden_tool()
     async def novel_auto_download(
         self,
         event: AstrMessageEvent,
@@ -193,7 +230,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             include_disabled,
         )
 
-    @compat_llm_tool(name="novel_download_search_result")
+    @compat_hidden_tool()
     async def novel_download_search_result(
         self,
         event: AstrMessageEvent,
@@ -218,7 +255,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             auto_assemble,
         )
 
-    @compat_llm_tool(name="novel_download_book")
+    @compat_hidden_tool()
     async def novel_download_book(
         self,
         event: AstrMessageEvent,
@@ -246,7 +283,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             auto_assemble,
         )
 
-    @compat_llm_tool(name="novel_start_download")
+    @compat_hidden_tool()
     async def novel_start_download(
         self,
         event: AstrMessageEvent,
@@ -301,7 +338,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_download_status(job_id, limit, offset)
 
-    @compat_llm_tool(name="novel_assemble_book")
+    @compat_hidden_tool()
     async def novel_assemble_book(
         self, event: AstrMessageEvent, job_id: str, cleanup_journal: str = ""
     ) -> str:
@@ -314,7 +351,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_assemble_book(job_id, cleanup_journal)
 
-    @compat_llm_tool(name="novel_list_jobs")
+    @compat_hidden_tool()
     async def novel_list_jobs(
         self, event: AstrMessageEvent, limit: str = "", offset: str = ""
     ) -> str:
