@@ -291,6 +291,14 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("novel_remove_source", tool_names)
         self.assertIn("novel_download_status", tool_names)
 
+    def test_llm_tool_signature_hides_system_event_parameter(self):
+        signature = inspect.signature(self.plugin.novel_search_books)
+        self.assertNotIn("event", signature.parameters)
+        self.assertEqual(
+            list(signature.parameters),
+            ["keyword", "source_ids_json", "limit", "include_disabled"],
+        )
+
     def test_plugin_init_uses_explicit_plugin_name_for_data_dir(self):
         expected = self.base_dir / "plugin_data"
         self.assertEqual(self.plugin.plugin_data_dir, expected)
