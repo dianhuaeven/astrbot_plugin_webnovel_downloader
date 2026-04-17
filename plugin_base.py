@@ -43,7 +43,9 @@ class JsonlNovelDownloaderPluginBase(Star):
         self.source_health_store = runtime.source_health_store
         self.source_probe_service = runtime.source_probe_service
         self.search_service = runtime.search_service
+        self.book_resolution_service = runtime.book_resolution_service
         self.source_download_service = runtime.source_download_service
+        self.download_orchestrator = runtime.download_orchestrator
         self.auto_probe_on_import = bool(self.config.get("auto_probe_on_import", True))
         self.renderer = ToolResultRenderer(
             self.reports_dir,
@@ -243,6 +245,55 @@ class JsonlNovelDownloaderPluginBase(Star):
             payload,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
+        )
+
+    async def handle_novel_auto_download(
+        self,
+        keyword: str,
+        author: str = "",
+        source_ids_json: str = "",
+        search_limit: str = "",
+        attempt_limit: str = "",
+        output_filename: str = "",
+        auto_assemble: str = "true",
+        include_disabled: str = "",
+    ) -> str:
+        source_ids = self._parse_string_list(source_ids_json)
+        attempt_limit_value = max(1, self._parse_optional_int(attempt_limit) or 5)
+        search_limit_value = max(
+            attempt_limit_value,
+            self._parse_optional_int(search_limit) or max(10, attempt_limit_value * 3),
+        )
+        include_disabled_value = self._parse_bool(include_disabled, False)
+        orchestration = await run_blocking(
+            self.download_orchestrator.auto_download,
+            keyword,
+            author,
+            source_ids or None,
+            search_limit_value,
+            include_disabled_value,
+            attempt_limit_value,
+            output_filename,
+        )
+        cache_record = await run_blocking(
+            self.search_cache.save_search,
+            str(orchestration.get("keyword") or keyword).strip(),
+            dict(orchestration.get("search_result") or {}),
+            source_ids or None,
+            include_disabled_value,
+            search_limit_value,
+        )
+        await run_blocking(self._record_auto_download_attempts, orchestration)
+        job_status = {}
+        job_id = str(orchestration.get("job", {}).get("job_id") or "").strip()
+        if job_id:
+            await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+            job_status = await run_blocking(self.manager.get_status, job_id)
+        return await run_blocking(
+            self.renderer.render_auto_download_summary,
+            orchestration,
+            cache_record,
+            job_status,
         )
 
     async def handle_novel_download_book(
@@ -514,6 +565,47 @@ class JsonlNovelDownloaderPluginBase(Star):
             summary="目录预检失败，未进入正文下载",
             metadata=metadata,
         )
+
+    def _record_auto_download_attempts(self, orchestration: dict[str, Any]) -> None:
+        skipped_candidates = list(orchestration.get("skipped_candidates") or [])
+        for candidate in skipped_candidates:
+            if candidate.get("supports_download"):
+                continue
+            source_id = str(candidate.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            summary = str(candidate.get("skip_reason") or "").strip()
+            metadata = {
+                "sample_book_name": str(candidate.get("title") or "").strip(),
+                "sample_book_url": str(candidate.get("book_url") or "").strip(),
+            }
+            self.source_health_store.mark_unsupported(
+                source_id,
+                "preflight",
+                summary=summary,
+                metadata=metadata,
+            )
+            self.source_health_store.mark_unsupported(
+                source_id,
+                "download",
+                summary=summary,
+                metadata=metadata,
+            )
+
+        for attempt in list(orchestration.get("attempts") or []):
+            outcome = str(attempt.get("outcome") or "").strip()
+            preflight = dict(attempt.get("preflight") or {})
+            if outcome in {"started", "job_create_failed"} and preflight:
+                self._record_preflight_success(preflight)
+                continue
+            if outcome != "preflight_failed":
+                continue
+            self._record_preflight_failure(
+                str(attempt.get("source_id") or "").strip(),
+                str(attempt.get("book_url") or "").strip(),
+                str(attempt.get("title") or "").strip(),
+                str(attempt.get("error") or "").strip(),
+            )
 
     def _parse_optional_int(self, value: str) -> int | None:
         text = str(value or "").strip()

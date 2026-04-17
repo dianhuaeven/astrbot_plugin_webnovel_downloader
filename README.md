@@ -46,8 +46,7 @@
 
 ```text
 novel_import <书源 URL/路径>
-novel_search <书名>
-novel_download_result <search_id> <result_index>
+novel_auto <书名>
 ```
 
 然后用下面的命令查看任务状态：
@@ -59,9 +58,8 @@ novel_status <job_id>
 如果你是让 LLM 调函数工具，推荐流程是：
 
 1. `novel_import_sources`
-2. `novel_search_books`
-3. `novel_download_search_result`
-4. `novel_download_status`
+2. `novel_auto_download`
+3. `novel_download_status`
 
 如果你已经知道要下载的 `source_id + book_url`，也可以跳过搜索，直接调用：
 
@@ -73,10 +71,16 @@ novel_status <job_id>
 
 1. 导入 `shuyuans/json/...` 书源集合
 2. 列出书源，确认哪些源被标记为支持搜索或下载
-3. 搜索目标书名
-4. 从结果里拿到 `search_id` 和 `result_index`
-5. 调 `novel_download_search_result`
-6. 轮询 `novel_download_status`
+3. 调 `novel_auto_download` 或 `novel_auto`
+4. 让插件在 Python 侧完成搜索、候选排序、目录预检和失败回退
+5. 轮询 `novel_download_status`
+
+如果你需要更细粒度地人工挑源，仍然可以退回这条传统链路：
+
+1. `novel_search_books`
+2. 从结果里拿到 `search_id` 和 `result_index`
+3. 调 `novel_download_search_result`
+4. 轮询 `novel_download_status`
 
 如果下载成功并启用了自动组装，最终会得到：
 
@@ -354,6 +358,7 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 - `novel_sources [limit] [offset]`
 - `novel_clean_rules [limit] [offset]`
 - `novel_search <keyword> [source_ids_json] [limit] [include_disabled]`
+- `novel_auto <keyword> [author] [source_ids_json] [search_limit] [attempt_limit] [output_filename] [auto_assemble] [include_disabled]`
 - `novel_searches [limit] [offset]`
 - `novel_search_results <search_id> [limit] [offset]`
 - `novel_download_result <search_id> <result_index> [output_filename] [auto_assemble]`
@@ -378,6 +383,7 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 - `novel_list_clean_rules`
 - `novel_remove_source`
 - `novel_search_books`
+- `novel_auto_download`
 - `novel_list_searches`
 - `novel_get_search_results`
 - `novel_download_search_result`
@@ -399,8 +405,18 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 当前最关键的一组能力是：
 
 - 书源管理：`novel_import_sources`、`novel_list_sources`、`novel_remove_source`
+- 自动化下载：`novel_auto_download`
 - 搜索与下载：`novel_search_books`、`novel_list_searches`、`novel_get_search_results`、`novel_download_search_result`、`novel_download_book`
 - 下载内核：`novel_start_download`、`novel_download_status`、`novel_assemble_book`
+
+`novel_auto_download` 会把“搜书 -> 候选排序 -> 目录预检 -> 失败回退 -> 建任务”收敛成一次确定性工具调用，并额外返回：
+
+- `search_id`
+- `search_path`
+- `selected`
+- `attempts`
+
+这样 LLM 不需要再一个个试书源，重复尝试由 Python 侧自动完成。
 
 `novel_search_books` 会把整次搜索结果落到本地搜索缓存中，并返回：
 

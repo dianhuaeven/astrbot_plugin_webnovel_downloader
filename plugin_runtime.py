@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .core.book_resolution_service import BookResolutionService
 from .core.download_manager import NovelDownloadManager, RuntimeConfig
+from .core.download_orchestrator import DownloadOrchestrator
 from .core.rule_engine import RuleEngine, RuleEngineConfig
 from .core.search_service import SearchService, SearchServiceConfig
 from .core.source_health_store import SourceHealthStore
@@ -21,7 +23,9 @@ class PluginRuntime:
     source_health_store: SourceHealthStore
     source_probe_service: SourceProbeService
     search_service: SearchService
+    book_resolution_service: BookResolutionService
     source_download_service: SourceDownloadService
+    download_orchestrator: DownloadOrchestrator
 
 
 def _parse_positive_float(settings: dict, key: str, default: float) -> float:
@@ -134,6 +138,15 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),
         ),
     )
+    book_resolution_service = BookResolutionService(
+        source_registry,
+        search_service,
+        source_health_store,
+    )
+    download_orchestrator = DownloadOrchestrator(
+        book_resolution_service,
+        source_download_service,
+    )
     return PluginRuntime(
         manager=manager,
         source_registry=source_registry,
@@ -141,5 +154,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         source_health_store=source_health_store,
         source_probe_service=source_probe_service,
         search_service=search_service,
+        book_resolution_service=book_resolution_service,
         source_download_service=source_download_service,
+        download_orchestrator=download_orchestrator,
     )

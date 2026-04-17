@@ -327,6 +327,100 @@ class ToolResultRenderer:
         }
         return self.to_json_text(payload)
 
+    def render_auto_download_summary(
+        self,
+        orchestration: dict[str, Any],
+        cache_record: dict[str, Any],
+        job_status: dict[str, Any],
+    ) -> str:
+        attempts = list(orchestration.get("attempts") or [])
+        skipped_candidates = list(orchestration.get("skipped_candidates") or [])
+        attempt_preview_count = min(self.config.max_tool_preview_items, len(attempts))
+        skipped_preview_count = min(self.config.max_tool_preview_items, len(skipped_candidates))
+        report_path = ""
+
+        while True:
+            summary = {
+                "status": orchestration.get("status", ""),
+                "failure_reason": orchestration.get("failure_reason", ""),
+                "keyword": orchestration.get("keyword", ""),
+                "author": orchestration.get("author", ""),
+                "search_id": cache_record.get("search_id", ""),
+                "search_path": cache_record.get("path", ""),
+                "candidate_sources": orchestration.get("search_result", {}).get(
+                    "candidate_sources",
+                    0,
+                ),
+                "searched_sources": orchestration.get("search_result", {}).get(
+                    "searched_sources",
+                    0,
+                ),
+                "successful_sources": orchestration.get("search_result", {}).get(
+                    "successful_sources",
+                    0,
+                ),
+                "result_count": orchestration.get("search_result", {}).get("result_count", 0),
+                "candidate_count": orchestration.get("candidate_count", 0),
+                "skipped_candidate_count": orchestration.get("skipped_candidate_count", 0),
+                "attempt_limit": orchestration.get("attempt_limit", 0),
+                "attempted_count": orchestration.get("attempted_count", 0),
+                "selected": self._compact_auto_download_candidate(
+                    dict(orchestration.get("selected") or {}),
+                ),
+                "job": self._compact_auto_download_job(
+                    dict(orchestration.get("job") or {}),
+                    job_status,
+                ),
+                "attempts": [
+                    self._compact_auto_download_attempt(item)
+                    for item in attempts[:attempt_preview_count]
+                ],
+                "skipped_candidates": [
+                    self._compact_auto_download_candidate(item, include_skip_reason=True)
+                    for item in skipped_candidates[:skipped_preview_count]
+                ],
+                "omitted_attempt_count": max(0, len(attempts) - attempt_preview_count),
+                "omitted_skipped_candidate_count": max(
+                    0,
+                    len(skipped_candidates) - skipped_preview_count,
+                ),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self.to_json_text(summary)
+            if len(text) <= self.config.max_tool_response_chars:
+                if (
+                    len(attempts) > attempt_preview_count
+                    or len(skipped_candidates) > skipped_preview_count
+                ) and not report_path:
+                    report_path = self._write_json_report(
+                        "auto-download",
+                        {
+                            "orchestration": orchestration,
+                            "search_record": cache_record,
+                            "job_status": job_status,
+                        },
+                    )
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report(
+                    "auto-download",
+                    {
+                        "orchestration": orchestration,
+                        "search_record": cache_record,
+                        "job_status": job_status,
+                    },
+                )
+                continue
+            if skipped_preview_count > 0:
+                skipped_preview_count -= 1
+                continue
+            if attempt_preview_count > 1:
+                attempt_preview_count -= 1
+                continue
+            return text
+
     def render_jobs_summary(self, jobs: list[dict[str, Any]], limit: int, offset: int) -> str:
         total = len(jobs)
         sliced = jobs[offset : offset + limit]
@@ -474,6 +568,76 @@ class ToolResultRenderer:
             "source_id": item.get("source_id", ""),
             "source_name": item.get("source_name", ""),
             message_key: self.truncate_text(item.get(message_key, ""), self.config.max_tool_preview_text),
+        }
+
+    def _compact_auto_download_candidate(
+        self,
+        item: dict[str, Any],
+        include_skip_reason: bool = False,
+    ) -> dict[str, Any]:
+        if not item:
+            return {}
+        compact = {
+            "candidate_index": item.get("candidate_index", 0),
+            "source_id": item.get("source_id", ""),
+            "source_name": item.get("source_name", ""),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "book_url": item.get("book_url", ""),
+            "supports_download": bool(item.get("supports_download", False)),
+            "title_match": item.get("title_match", ""),
+            "author_match": item.get("author_match", ""),
+            "search_health_state": item.get("search_health_state", ""),
+            "preflight_health_state": item.get("preflight_health_state", ""),
+            "download_health_state": item.get("download_health_state", ""),
+            "source_issues": [
+                self.truncate_text(issue, 80)
+                for issue in list(item.get("source_issues") or [])[:3]
+            ],
+        }
+        if include_skip_reason:
+            compact["skip_reason"] = self.truncate_text(item.get("skip_reason", ""), 120)
+        return compact
+
+    def _compact_auto_download_attempt(self, item: dict[str, Any]) -> dict[str, Any]:
+        compact = {
+            "attempt_index": item.get("attempt_index", 0),
+            "source_id": item.get("source_id", ""),
+            "source_name": item.get("source_name", ""),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "book_url": item.get("book_url", ""),
+            "outcome": item.get("outcome", ""),
+            "elapsed_ms": item.get("elapsed_ms", 0),
+        }
+        if item.get("toc_count"):
+            compact["toc_count"] = item.get("toc_count", 0)
+        if item.get("job_id"):
+            compact["job_id"] = item.get("job_id", "")
+        if item.get("error"):
+            compact["error"] = self.truncate_text(item.get("error", ""), 120)
+        return compact
+
+    def _compact_auto_download_job(
+        self,
+        job: dict[str, Any],
+        job_status: dict[str, Any],
+    ) -> dict[str, Any]:
+        if job_status:
+            return self._compact_job(job_status)
+        if not job:
+            return {}
+        status = dict(job.get("status") or {})
+        if status:
+            return self._compact_job(status)
+        return {
+            "job_id": job.get("job_id", ""),
+            "book_name": job.get("book_name", ""),
+            "state": "",
+            "completed_chapters": 0,
+            "total_chapters": job.get("toc_count", 0),
+            "output_path": "",
+            "journal_path": "",
         }
 
     def _compact_job(self, item: dict[str, Any]) -> dict[str, Any]:

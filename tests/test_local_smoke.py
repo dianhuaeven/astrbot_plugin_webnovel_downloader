@@ -288,6 +288,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("novel_enable_source", tool_names)
         self.assertNotIn("novel_resume_book_download", tool_names)
         self.assertNotIn("novel_resume_download", tool_names)
+        self.assertIn("novel_auto_download", tool_names)
         self.assertIn("novel_remove_source", tool_names)
         self.assertIn("novel_download_status", tool_names)
 
@@ -319,6 +320,51 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "keyword": "瘟疫医生",
                 "source_ids_json": "",
                 "limit": "5",
+                "include_disabled": "",
+            },
+        )
+
+    async def test_novel_auto_download_accepts_runtime_call_without_event_argument(self):
+        recorded = {}
+
+        async def fake_handle(
+            keyword,
+            author="",
+            source_ids_json="",
+            search_limit="",
+            attempt_limit="",
+            output_filename="",
+            auto_assemble="true",
+            include_disabled="",
+        ):
+            recorded["keyword"] = keyword
+            recorded["author"] = author
+            recorded["source_ids_json"] = source_ids_json
+            recorded["search_limit"] = search_limit
+            recorded["attempt_limit"] = attempt_limit
+            recorded["output_filename"] = output_filename
+            recorded["auto_assemble"] = auto_assemble
+            recorded["include_disabled"] = include_disabled
+            return "ok"
+
+        self.plugin.handle_novel_auto_download = fake_handle
+        result = await self.plugin.novel_auto_download(
+            "瘟疫医生",
+            "作者甲",
+            attempt_limit="3",
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            recorded,
+            {
+                "keyword": "瘟疫医生",
+                "author": "作者甲",
+                "source_ids_json": "",
+                "search_limit": "",
+                "attempt_limit": "3",
+                "output_filename": "",
+                "auto_assemble": "true",
                 "include_disabled": "",
             },
         )
@@ -648,6 +694,170 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         assembled_text = await self._invoke_tool(self.plugin.novel_assemble_book, job_id, "false")
         self.assertIn("状态: assembled", assembled_text)
+
+    async def test_novel_auto_download_end_to_end(self):
+        chapters_dir = self.base_dir / "auto-good-chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        (chapters_dir / "1.html").write_text(
+            "<html><body><h1>第一章</h1><div id='content'>自动下载第一章</div></body></html>",
+            encoding="utf-8",
+        )
+        (chapters_dir / "2.html").write_text(
+            "<html><body><h1>第二章</h1><div id='content'>自动下载第二章</div></body></html>",
+            encoding="utf-8",
+        )
+        (self.base_dir / "auto-good-book.html").write_text(
+            "<html><body>"
+            "<h1>自动下载测试书</h1>"
+            "<div class='author'>自动作者</div>"
+            "<div id='toc'>"
+            "<a href='{c1}'>第一章</a>"
+            "<a href='{c2}'>第二章</a>"
+            "</div>"
+            "</body></html>".format(
+                c1=(chapters_dir / "1.html").resolve().as_uri(),
+                c2=(chapters_dir / "2.html").resolve().as_uri(),
+            ),
+            encoding="utf-8",
+        )
+        (self.base_dir / "auto-bad-search.json").write_text(
+            json.dumps(
+                {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "自动下载测试书",
+                                "author": "自动作者",
+                                "url": "https://example.com/bad-book",
+                                "intro": "失败候选",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (self.base_dir / "auto-good-search.json").write_text(
+            json.dumps(
+                {
+                    "data": {
+                        "items": [
+                            {
+                                "title": "自动下载测试书",
+                                "author": "自动作者",
+                                "url": (self.base_dir / "auto-good-book.html").resolve().as_uri(),
+                                "intro": "成功候选",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "A失败源",
+                    "bookSourceUrl": "https://example.com/bad",
+                    "searchUrl": (self.base_dir / "auto-bad-search.json").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                },
+                {
+                    "bookSourceName": "B成功源",
+                    "bookSourceUrl": "https://example.com/good",
+                    "searchUrl": (self.base_dir / "auto-good-search.json").resolve().as_uri(),
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                        "intro": "intro",
+                    },
+                    "ruleBookInfo": {
+                        "name": "h1&&text",
+                        "author": ".author&&text",
+                    },
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {
+                        "title": "h1&&text",
+                        "content": "#content&&text",
+                    },
+                },
+            ],
+            ensure_ascii=False,
+        )
+
+        self.plugin.auto_probe_on_import = False
+        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        source_id_by_name = {item["name"]: item["source_id"] for item in listed_sources["sources"]}
+        bad_source_id = source_id_by_name["A失败源"]
+        original_preflight = self.plugin.source_download_service.preflight_book
+        try:
+
+            def fake_preflight(source_id, book_url, book_name=""):
+                if source_id == bad_source_id:
+                    raise ValueError("未解析到目录，请检查 ruleToc")
+                return original_preflight(source_id, book_url, book_name)
+
+            self.plugin.source_download_service.preflight_book = fake_preflight
+            auto_result = json.loads(
+                await self._invoke_tool(
+                    self.plugin.novel_auto_download,
+                    "自动下载测试书",
+                    "自动作者",
+                    "",
+                    "10",
+                    "2",
+                    "",
+                    "true",
+                    "false",
+                )
+            )
+        finally:
+            self.plugin.source_download_service.preflight_book = original_preflight
+
+        self.assertEqual(auto_result["status"], "started")
+        self.assertEqual(auto_result["attempted_count"], 2)
+        self.assertEqual(auto_result["attempts"][0]["outcome"], "preflight_failed")
+        self.assertEqual(auto_result["attempts"][1]["outcome"], "started")
+        self.assertEqual(auto_result["selected"]["source_name"], "B成功源")
+        self.assertTrue(auto_result["search_id"])
+        self.assertTrue(Path(auto_result["search_path"]).exists())
+
+        job_id = auto_result["job"]["job_id"]
+        await self.plugin._running_tasks[job_id]
+        status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
+        self.assertIn("状态: assembled", status_text)
+        output_path = self.plugin.manager.output_dir / "自动下载测试书.txt"
+        self.assertTrue(output_path.exists())
+        content = output_path.read_text(encoding="utf-8")
+        self.assertIn("自动下载第一章", content)
+        self.assertIn("自动下载第二章", content)
+
+        listed_after = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        health_by_name = {item["name"]: item for item in listed_after["sources"]}
+        self.assertEqual(health_by_name["A失败源"]["preflight_health_state"], "broken")
+        self.assertEqual(health_by_name["B成功源"]["preflight_health_state"], "healthy")
 
     async def test_human_commands_smoke(self):
         (self.base_dir / "search-command.json").write_text(
