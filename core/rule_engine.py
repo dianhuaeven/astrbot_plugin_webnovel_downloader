@@ -7,9 +7,7 @@ from html import unescape
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
-from urllib.request import Request
-
-from ..http_utils import open_url
+from .session_scraper import SessionScraper, SessionScraperConfig
 
 try:
     from jsonpath_ng.ext import parse as parse_jsonpath
@@ -44,6 +42,7 @@ class RuleEngineConfig:
     )
     use_env_proxy: bool = False
     clean_rule_store: Any = None
+    scraper: Any = None
 
 
 class RuleEngine:
@@ -64,6 +63,12 @@ class RuleEngine:
     def __init__(self, config: RuleEngineConfig):
         self.config = config
         self._cleaner_cache: Dict[str, List[Tuple[str, str]]] = {}
+        self.scraper = config.scraper or SessionScraper(
+            SessionScraperConfig(
+                user_agent=self.config.user_agent,
+                use_env_proxy=self.config.use_env_proxy,
+            )
+        )
 
     def search_books(
         self,
@@ -334,25 +339,21 @@ class RuleEngine:
         if body is not None and not self._has_content_type(request_headers):
             request_headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-        request = Request(
-            normalized_url,
-            headers=request_headers,
-            data=body,
-            method=(method or "GET").upper(),
-        )
         try:
-            with open_url(
-                request,
-                self.config.request_timeout,
-                use_env_proxy=self.config.use_env_proxy,
-            ) as response:
-                body = response.read()
-                final_url = getattr(response, "url", normalized_url)
-                encoding = (
-                    response.headers.get_content_charset()
-                    or self._guess_encoding(body)
-                    or "utf-8"
-                )
+            response = self.scraper.request(
+                normalized_url,
+                headers=request_headers,
+                method=(method or "GET").upper(),
+                body=body,
+                timeout=self.config.request_timeout,
+            )
+            body = response.body
+            final_url = response.url or normalized_url
+            encoding = (
+                response.headers.get_content_charset()
+                or self._guess_encoding(body)
+                or "utf-8"
+            )
         except HTTPError as exc:
             raise RuleEngineError("HTTP {code}: {reason}".format(code=exc.code, reason=exc.reason)) from exc
         except URLError as exc:

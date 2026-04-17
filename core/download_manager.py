@@ -12,9 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from urllib.error import HTTPError, URLError
-from urllib.request import Request
 
-from ..http_utils import open_url
+from .session_scraper import SessionScraper, SessionScraperConfig
 
 
 SCHEMA_VERSION = 1
@@ -73,7 +72,12 @@ class RuntimeConfig:
 
 
 class NovelDownloadManager:
-    def __init__(self, base_dir: Union[str, Path], config: RuntimeConfig):
+    def __init__(
+        self,
+        base_dir: Union[str, Path],
+        config: RuntimeConfig,
+        scraper: SessionScraper | None = None,
+    ):
         self.base_dir = Path(base_dir)
         self.jobs_dir = self.base_dir / "jobs"
         self.output_dir = self.base_dir / "downloads"
@@ -81,6 +85,14 @@ class NovelDownloadManager:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.config = config
         self._write_lock = threading.Lock()
+        self.scraper = scraper or SessionScraper(
+            SessionScraperConfig(
+                user_agent=self.config.user_agent,
+                use_env_proxy=self.config.use_env_proxy,
+                max_retries=self.config.max_retries,
+                retry_backoff=self.config.retry_backoff,
+            )
+        )
 
     def fetch_preview(
         self, url: str, encoding: str = "", max_chars: Optional[int] = None
@@ -498,24 +510,20 @@ class NovelDownloadManager:
         return normalized
 
     def _fetch_text(self, url: str, encoding: str = "") -> Tuple[str, str]:
-        request = Request(
-            url,
-            headers={
-                "User-Agent": self.config.user_agent,
-            },
-        )
         try:
-            with open_url(
-                request,
-                self.config.request_timeout,
-                use_env_proxy=self.config.use_env_proxy,
-            ) as response:
-                body = response.read()
-                guessed = (
-                    encoding
-                    or response.headers.get_content_charset()
-                    or self._guess_encoding(body)
-                )
+            response = self.scraper.request(
+                url,
+                headers={
+                    "User-Agent": self.config.user_agent,
+                },
+                timeout=self.config.request_timeout,
+            )
+            body = response.body
+            guessed = (
+                encoding
+                or response.headers.get_content_charset()
+                or self._guess_encoding(body)
+            )
         except HTTPError as exc:
             raise ValueError(f"HTTP {exc.code}: {exc.reason}") from exc
         except URLError as exc:

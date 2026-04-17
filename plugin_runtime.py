@@ -8,6 +8,7 @@ from .core.download_manager import NovelDownloadManager, RuntimeConfig
 from .core.download_orchestrator import DownloadOrchestrator
 from .core.rule_engine import RuleEngine, RuleEngineConfig
 from .core.search_service import SearchService, SearchServiceConfig
+from .core.session_scraper import SessionScraper, SessionScraperConfig
 from .core.source_health_store import SourceHealthStore
 from .core.source_probe_service import SourceProbeService, SourceProbeServiceConfig
 from .core.source_downloader import SourceDownloadConfig, SourceDownloadService
@@ -89,7 +90,15 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         ),
         user_agent=str(settings.get("user_agent", "")).strip() or RuntimeConfig().user_agent,
     )
-    manager = NovelDownloadManager(plugin_data_dir, runtime_config)
+    shared_scraper = SessionScraper(
+        SessionScraperConfig(
+            user_agent=runtime_config.user_agent,
+            use_env_proxy=runtime_config.use_env_proxy,
+            max_retries=runtime_config.max_retries,
+            retry_backoff=runtime_config.retry_backoff,
+        )
+    )
+    manager = NovelDownloadManager(plugin_data_dir, runtime_config, scraper=shared_scraper)
     source_registry = SourceRegistry(plugin_data_dir)
     clean_rule_store = CleanRuleRepositoryStore(plugin_data_dir)
     source_health_store = SourceHealthStore(plugin_data_dir / "source_health.json")
@@ -99,6 +108,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             user_agent=runtime_config.user_agent,
             use_env_proxy=runtime_config.use_env_proxy,
             clean_rule_store=clean_rule_store,
+            scraper=shared_scraper,
         )
     )
     search_engine = RuleEngine(
@@ -107,6 +117,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             user_agent=runtime_config.user_agent,
             use_env_proxy=runtime_config.use_env_proxy,
             clean_rule_store=clean_rule_store,
+            scraper=shared_scraper,
         )
     )
     search_service = SearchService(
