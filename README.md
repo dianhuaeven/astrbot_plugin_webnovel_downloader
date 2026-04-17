@@ -62,9 +62,7 @@ novel_status <job_id>
 3. `novel_download`
 4. `novel_download_status`
 
-如果你已经知道要下载的 `source_id + book_url`，也可以走调试路径直接调用：
-
-- `novel_download_book`
+如果你已经知道要下载的 `source_id + book_url`，请走人类命令或本地调试路径，不建议把这类低层步骤直接暴露给 LLM。
 
 ## 一个最短可跑通的流程
 
@@ -78,10 +76,10 @@ novel_status <job_id>
 
 如果你需要更细粒度地人工挑源，仍然可以退回命令/调试链路：
 
-1. `novel_search_books`
+1. `novel_search <keyword>`
 2. 从结果里拿到 `search_id` 和 `result_index`
-3. 调 `novel_download_search_result`
-4. 轮询 `novel_download_status`
+3. 调 `novel_download_result <search_id> <result_index>`
+4. 轮询 `novel_status` 或 `novel_download_status`
 
 如果下载成功并启用了自动组装，最终会得到：
 
@@ -352,7 +350,7 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 
 ## 人类命令
 
-除了函数工具，插件也提供了一组更适合人类手动输入的 AstrBot 指令：
+除了函数工具，插件也提供了一组更适合人类手动输入或排障调试的 AstrBot 指令：
 
 - `novel_import <source_json>`
 - `novel_import_clean <repo_json> [repo_name]`
@@ -370,32 +368,32 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 - `novel_preview <url> [encoding] [max_chars]`
 - `novel_jobs`
 
-这套命令与函数工具尽量保持同名同义，区别只是：
+它们和函数工具是两层不同接口：
 
-- 函数工具给 LLM 用，返回结构化摘要
-- 聊天命令给人类用，直接把摘要发回聊天窗口
+- 函数工具给 LLM 用，只保留高层、确定性的能力
+- 聊天命令给人类用，允许走更细的调试路径
+- 因此名字不一定一一对应；例如 LLM 使用 `novel_download`，人类高层命令使用 `novel_auto`
 
 ## 函数工具
 
 插件会向 AstrBot 注册这些函数工具：
 
-- `novel_import_sources`
-- `novel_import_clean_rules`
-- `novel_list_sources`
-- `novel_refresh_sources`
-- `novel_list_clean_rules`
-- `novel_remove_source`
-- `novel_download`
-- `novel_download_status`
+- `novel_import_sources`: 导入 Legado/阅读书源，供后续搜索和下载使用
+- `novel_import_clean_rules`: 导入正文净化规则仓库，供后续 TXT 下载自动清洗内容
+- `novel_list_sources`: 查看当前书源清单与能力摘要
+- `novel_refresh_sources`: 将书源重新加入后台健康探测队列，刷新存活状态和能力摘要
+- `novel_list_clean_rules`: 查看当前已导入的净化规则仓库
+- `novel_remove_source`: 删除一个已导入书源
+- `novel_download`: 按书名自动搜书、筛选候选源并启动下载任务
+- `novel_download_status`: 查询下载任务的状态、进度和输出信息
 
 下面这些低层工具仍然保留在代码与聊天命令里，用于人工诊断或调试，但默认不再暴露给 LLM：
 
-- 书源启停
-- 搜书缓存查看
+- 网页预览与页面结构分析
+- 搜书缓存查看与按结果索引下载
 - 指定 `source_id + book_url` 的直连下载
-- 页面预览与手工 regex 下载
-- 书源规则下载任务恢复
-- 手工 regex 下载任务恢复
+- 手工 regex 下载与手工组装
+- 底层任务列表与调试恢复
 
 原因是它们更适合由插件内部自动处理，或者由人类命令触发，而不是让 LLM 在上下文里自由组合。
 
@@ -423,7 +421,7 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 
 它不会等待探测完成，因此不会把 AstrBot 主链路卡住。
 
-如果你走调试路径，`novel_search_books` 仍然会把整次搜索结果落到本地搜索缓存中，并返回：
+如果你走人类命令 `novel_search`，它背后的底层调试工具 `novel_search_books` 仍然会把整次搜索结果落到本地搜索缓存中，并返回：
 
 - `search_id`
 - `search_path`
@@ -437,6 +435,8 @@ python -m astrbot_plugin_webnovel_downloader.local_smoke \
 - 已导入的净化规则仓库也会一起参与正文清洗
 
 ## 下载内核参数
+
+下面这些属于调试/底层下载链路，不是默认暴露给 LLM 的主工具：
 
 `novel_start_download` 参数说明如下：
 

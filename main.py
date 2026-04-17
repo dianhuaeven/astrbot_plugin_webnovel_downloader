@@ -24,11 +24,11 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         repo_name: str = "",
     ) -> str:
         """
-        导入一个正文净化规则仓库，并在后续下载正文时自动应用。
+        导入一份正文净化规则仓库，供后续 TXT 下载自动清洗广告和杂质内容。
 
         Args:
-            repo_json(string): 净化规则 JSON/文本，支持 URL、文件路径或原始内容。
-            repo_name(string): 可选，手动指定这份净化规则仓库的名称。
+            repo_json(string): 净化规则内容，支持仓库 URL、文件路径或原始 JSON/文本。
+            repo_name(string): 可选，自定义仓库名称；留空时会尽量从内容里自动识别。
         """
         return await self.handle_novel_import_clean_rules(repo_json, repo_name)
 
@@ -40,11 +40,11 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         offset: str = "",
     ) -> str:
         """
-        列出已导入的正文净化规则仓库。
+        查看当前已导入的正文净化规则仓库，确认哪些清洗规则可用于后续下载。
 
         Args:
-            limit(string): 可选，本次最多返回多少条规则仓库记录。
-            offset(string): 可选，从第几条规则仓库记录开始返回。
+            limit(string): 可选，本次最多返回多少条仓库记录。
+            offset(string): 可选，从第几条仓库记录开始返回。
         """
         return await self.handle_novel_list_clean_rules(limit, offset)
 
@@ -65,10 +65,10 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
     @compat_llm_tool(name="novel_import_sources")
     async def novel_import_sources(self, event: AstrMessageEvent, source_json: str) -> str:
         """
-        导入 Legado/阅读风格书源 JSON。
+        导入一批 Legado/阅读风格书源，并写入本地书源注册表供后续搜索和下载使用。
 
         Args:
-            source_json(string): 单个书源对象、书源数组，或带 sources 字段的 JSON 字符串。
+            source_json(string): 书源内容，支持单个书源对象、书源数组、带 sources 字段的 JSON，或这些内容的 URL/文件路径。
         """
         return await self.handle_novel_import_sources(source_json)
 
@@ -81,12 +81,12 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         offset: str = "",
     ) -> str:
         """
-        列出已导入书源。
+        查看当前书源清单与可用性摘要，适合在下载前确认哪些书源可参与搜索或下载。
 
         Args:
-            enabled_only(string): 是否只显示启用书源，支持 true/false/1/0/yes/no。
-            limit(string): 可选，本次最多返回多少条预览。
-            offset(string): 可选，从第几条开始返回，支持 0、10、20 这类非负整数。
+            enabled_only(string): 是否只显示已启用书源，支持 true/false/1/0/yes/no。
+            limit(string): 可选，本次最多返回多少条书源预览。
+            offset(string): 可选，从第几条书源开始返回，支持 0、10、20 这类非负整数。
         """
         return await self.handle_novel_list_sources(enabled_only, limit, offset)
 
@@ -98,21 +98,21 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         include_disabled: str = "",
     ) -> str:
         """
-        将指定书源重新加入后台健康探测队列，不等待探测完成。
+        将书源重新加入后台健康探测队列，用于刷新存活状态和能力摘要；该工具会立即返回，不等待探测完成。
 
         Args:
             source_ids_json(string): 可选，JSON 数组或逗号分隔的书源 ID 列表；留空时刷新全部启用书源。
-            include_disabled(string): 是否包含禁用书源，支持 true/false/1/0/yes/no。
+            include_disabled(string): 是否连禁用书源一起加入刷新队列，支持 true/false/1/0/yes/no。
         """
         return await self.handle_novel_refresh_sources(source_ids_json, include_disabled)
 
     @compat_llm_tool(name="novel_remove_source")
     async def novel_remove_source(self, event: AstrMessageEvent, source_id: str) -> str:
         """
-        删除一个已导入的书源。
+        从本地注册表删除一个已导入书源，适合清理失效、重复或不想继续参与搜索下载的源。
 
         Args:
-            source_id(string): 书源 ID。
+            source_id(string): 要删除的书源 ID。
         """
         return await self.handle_novel_remove_source(source_id)
 
@@ -186,17 +186,17 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         include_disabled: str = "",
     ) -> str:
         """
-        自动搜书、择优挑选候选源，并在 Python 侧完成预检回退后启动下载任务。
+        按书名自动搜书、筛选候选源并启动下载任务；这是给 LLM 使用的首选高层下载工具。
 
         Args:
-            keyword(string): 搜索关键词，通常是书名。
-            author(string): 可选，作者名；传入后会优先选择标题和作者都匹配的候选。
-            source_ids_json(string): 可选，JSON 数组或逗号分隔的书源 ID 列表。
-            search_limit(string): 可选，本次搜索最多保留多少条候选结果。
-            attempt_limit(string): 可选，最多尝试多少个候选源做目录预检。
+            keyword(string): 搜索关键词，通常填写书名；尽量完整可以减少误判。
+            author(string): 可选，作者名；填写后会优先选择标题和作者都匹配的候选。
+            source_ids_json(string): 可选，只在指定书源范围内搜索；支持 JSON 数组或逗号分隔的书源 ID。
+            search_limit(string): 可选，本次搜索阶段最多保留多少条候选结果。
+            attempt_limit(string): 可选，最多尝试多少个候选源做目录预检和失败回退。
             output_filename(string): 可选，自定义输出 TXT 文件名。
-            auto_assemble(string): 是否自动组装 TXT，支持 true/false/1/0/yes/no。
-            include_disabled(string): 是否包含禁用书源，支持 true/false/1/0/yes/no。
+            auto_assemble(string): 是否在章节抓取完成后自动组装 TXT，支持 true/false/1/0/yes/no。
+            include_disabled(string): 是否在搜索时包含禁用书源，支持 true/false/1/0/yes/no。
         """
         return await self.handle_novel_auto_download(
             keyword,
@@ -345,10 +345,10 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         offset: str = "",
     ) -> str:
         """
-        查询任务状态；如果未传 job_id，则返回所有任务概览。
+        查询下载任务的状态、进度和输出文件信息；未传 job_id 时返回任务列表摘要。
 
         Args:
-            job_id(string): 可选，任务 ID。
+            job_id(string): 可选，指定要查看的下载任务 ID。
             limit(string): 可选，当未传 job_id 时，本次最多返回多少条任务预览。
             offset(string): 可选，当未传 job_id 时，从第几条任务开始返回。
         """
