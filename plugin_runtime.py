@@ -6,6 +6,7 @@ from pathlib import Path
 from .core.book_resolution_service import BookResolutionService
 from .core.download_manager import NovelDownloadManager, RuntimeConfig
 from .core.download_orchestrator import DownloadOrchestrator
+from .core.extractors import FallbackRuleExtractor
 from .core.rule_engine import RuleEngine, RuleEngineConfig
 from .core.search_service import SearchService, SearchServiceConfig
 from .core.session_scraper import SessionScraper, SessionScraperConfig
@@ -120,9 +121,11 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             scraper=shared_scraper,
         )
     )
+    search_extractor = FallbackRuleExtractor(search_engine)
+    download_extractor = FallbackRuleExtractor(download_engine)
     search_service = SearchService(
         source_registry,
-        search_engine,
+        search_extractor,
         SearchServiceConfig(
             max_workers=search_max_workers,
             time_budget_seconds=_parse_positive_float(settings, "search_time_budget", 45.0),
@@ -131,7 +134,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     )
     source_probe_service = SourceProbeService(
         source_registry,
-        search_engine,
+        search_extractor,
         source_health_store,
         SourceProbeServiceConfig(
             max_workers=_parse_positive_int(settings, "probe_max_workers", 2),
@@ -143,7 +146,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     )
     source_download_service = SourceDownloadService(
         source_registry,
-        download_engine,
+        download_extractor,
         manager,
         SourceDownloadConfig(
             max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),
