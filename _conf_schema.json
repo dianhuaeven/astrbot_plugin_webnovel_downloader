@@ -29,6 +29,31 @@
     "hint": "到达这个时间预算后会提前返回当前已拿到的部分结果，避免 AstrBot 工具调用整体超时；搜索拿到足够多精确命中后也会提前收手。",
     "default": 45.0
   },
+  "auto_probe_on_import": {
+    "type": "bool",
+    "description": "[健康探测] 导入后自动加入后台探测队列",
+    "hint": "开启后，新导入书源会在后台异步做搜索/预检健康探测；不会阻塞插件启动、配置保存或函数工具返回。",
+    "default": true
+  },
+  "probe_max_workers": {
+    "type": "int",
+    "description": "[健康探测] 后台探测线程数",
+    "hint": "控制后台同时探测多少个书源。建议保持较小值，例如 2 到 4，避免与正文下载争抢资源。",
+    "default": 2
+  },
+  "probe_keywords": {
+    "type": "list",
+    "description": "[健康探测] 探测搜索关键词列表",
+    "hint": "后台探测时会依次使用这些关键词尝试搜书，用于判断书源是否可搜索并尽量拿到可预检样本书。",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "诡秘之主",
+      "斗破苍穹",
+      "凡人修仙传"
+    ]
+  },
   "use_env_proxy": {
     "type": "bool",
     "description": "[抓取配置] 沿用进程代理环境变量",

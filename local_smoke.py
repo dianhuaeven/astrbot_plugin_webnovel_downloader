@@ -157,6 +157,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
 
     if args.list_sources:
         sources = runtime.source_registry.list_sources(bool(args.enabled_only))
+        sources = runtime.source_health_store.enrich_sources(sources)
         payload["sources"] = json.loads(
             renderer.render_sources_summary(
                 sources,

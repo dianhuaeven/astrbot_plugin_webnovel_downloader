@@ -40,8 +40,11 @@ class JsonlNovelDownloaderPluginBase(Star):
         self.manager = runtime.manager
         self.source_registry = runtime.source_registry
         self.clean_rule_store = runtime.clean_rule_store
+        self.source_health_store = runtime.source_health_store
+        self.source_probe_service = runtime.source_probe_service
         self.search_service = runtime.search_service
         self.source_download_service = runtime.source_download_service
+        self.auto_probe_on_import = bool(self.config.get("auto_probe_on_import", True))
         self.renderer = ToolResultRenderer(
             self.reports_dir,
             self.source_registry,
@@ -116,6 +119,11 @@ class JsonlNovelDownloaderPluginBase(Star):
             self.source_registry.import_sources_from_text,
             source_text,
         )
+        probe_result = await run_blocking(self._queue_probe_for_import_result, result)
+        result = {
+            **dict(result),
+            **probe_result,
+        }
         return await run_blocking(self.renderer.render_import_summary, result)
 
     async def handle_novel_import_clean_rules(
@@ -154,6 +162,7 @@ class JsonlNovelDownloaderPluginBase(Star):
             self.source_registry.list_sources,
             enabled_only_value,
         )
+        result = await run_blocking(self.source_health_store.enrich_sources, result)
         return await run_blocking(
             self.renderer.render_sources_summary,
             result,
@@ -526,11 +535,13 @@ class JsonlNovelDownloaderPluginBase(Star):
                 self.manager.config.use_env_proxy,
             )
             result = self.source_registry.import_sources_from_text(source_text)
+            probe_result = self._queue_probe_for_import_result(result)
             imported_count = int(result.get("imported_count", 0))
             logger.info(
-                "从配置导入书源成功 source_ref=%s imported_count=%s",
+                "从配置导入书源成功 source_ref=%s imported_count=%s queued_probe_count=%s",
                 source_ref,
                 imported_count,
+                probe_result.get("queued_probe_count", 0),
             )
             self._save_bootstrap_result(
                 "book_sources",
@@ -540,6 +551,7 @@ class JsonlNovelDownloaderPluginBase(Star):
                 "success",
                 started_at,
                 imported_count=imported_count,
+                queued_probe_count=int(probe_result.get("queued_probe_count", 0) or 0),
             )
         except Exception as exc:
             logger.warning("从配置导入书源失败 source_ref=%s error=%s", source_ref, exc)
@@ -614,6 +626,12 @@ class JsonlNovelDownloaderPluginBase(Star):
             return True
         thread.join(timeout)
         return not thread.is_alive()
+
+    def wait_for_probe(self, timeout: float | None = None) -> bool:
+        wait_for_idle = getattr(self.source_probe_service, "wait_for_idle", None)
+        if not callable(wait_for_idle):
+            return True
+        return bool(wait_for_idle(timeout))
 
     def _filter_bootstrap_refs(self, refs: list[str], section: str) -> list[str]:
         if section == "book_sources" and not self.source_registry.list_sources():
@@ -691,6 +709,29 @@ class JsonlNovelDownloaderPluginBase(Star):
         if len(text) <= 160:
             return text
         return text[:157] + "..."
+
+    def _queue_probe_for_import_result(self, result: dict[str, Any]) -> dict[str, int]:
+        if not self.auto_probe_on_import:
+            return {
+                "queued_probe_count": 0,
+                "probe_queue_size": 0,
+            }
+        sources = list(result.get("sources") or [])
+        source_ids = [
+            str(item.get("source_id") or "").strip()
+            for item in sources
+            if str(item.get("source_id") or "").strip()
+        ]
+        if not source_ids:
+            return {
+                "queued_probe_count": 0,
+                "probe_queue_size": 0,
+            }
+        queued = self.source_probe_service.enqueue_sources(source_ids)
+        return {
+            "queued_probe_count": int(queued.get("queued_count", 0) or 0),
+            "probe_queue_size": int(queued.get("queue_size", 0) or 0),
+        }
 
     def _load_bootstrap_state(self) -> dict[str, Any]:
         if not self._bootstrap_state_path.exists():

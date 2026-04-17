@@ -6,6 +6,8 @@ from pathlib import Path
 from .core.download_manager import NovelDownloadManager, RuntimeConfig
 from .core.rule_engine import RuleEngine, RuleEngineConfig
 from .core.search_service import SearchService, SearchServiceConfig
+from .core.source_health_store import SourceHealthStore
+from .core.source_probe_service import SourceProbeService, SourceProbeServiceConfig
 from .core.source_downloader import SourceDownloadConfig, SourceDownloadService
 from .core.source_registry import SourceRegistry
 from .clean_rule_store import CleanRuleRepositoryStore
@@ -16,6 +18,8 @@ class PluginRuntime:
     manager: NovelDownloadManager
     source_registry: SourceRegistry
     clean_rule_store: CleanRuleRepositoryStore
+    source_health_store: SourceHealthStore
+    source_probe_service: SourceProbeService
     search_service: SearchService
     source_download_service: SourceDownloadService
 
@@ -27,6 +31,26 @@ def _parse_positive_float(settings: dict, key: str, default: float) -> float:
             "配置项 {key} 必须大于 0，当前值: {value}".format(key=key, value=value)
         )
     return value
+
+
+def _parse_positive_int(settings: dict, key: str, default: int) -> int:
+    value = int(settings.get(key, default))
+    if value <= 0:
+        raise ValueError(
+            "配置项 {key} 必须大于 0，当前值: {value}".format(key=key, value=value)
+        )
+    return value
+
+
+def _parse_string_list(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item or "").strip()]
+    else:
+        text = str(value or "").strip()
+        items = [line.strip() for line in text.splitlines() if line.strip()]
+    if not items:
+        return tuple(default)
+    return tuple(items)
 
 
 def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> PluginRuntime:
@@ -64,6 +88,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
     manager = NovelDownloadManager(plugin_data_dir, runtime_config)
     source_registry = SourceRegistry(plugin_data_dir)
     clean_rule_store = CleanRuleRepositoryStore(plugin_data_dir)
+    source_health_store = SourceHealthStore(plugin_data_dir / "source_health.json")
     download_engine = RuleEngine(
         RuleEngineConfig(
             request_timeout=runtime_config.request_timeout,
@@ -89,6 +114,18 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             health_path=plugin_data_dir / "search_source_health.json",
         ),
     )
+    source_probe_service = SourceProbeService(
+        source_registry,
+        search_engine,
+        source_health_store,
+        SourceProbeServiceConfig(
+            max_workers=_parse_positive_int(settings, "probe_max_workers", 2),
+            probe_keywords=_parse_string_list(
+                settings.get("probe_keywords"),
+                ("诡秘之主", "斗破苍穹", "凡人修仙传"),
+            ),
+        ),
+    )
     source_download_service = SourceDownloadService(
         source_registry,
         download_engine,
@@ -101,6 +138,8 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         manager=manager,
         source_registry=source_registry,
         clean_rule_store=clean_rule_store,
+        source_health_store=source_health_store,
+        source_probe_service=source_probe_service,
         search_service=search_service,
         source_download_service=source_download_service,
     )

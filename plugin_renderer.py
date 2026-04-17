@@ -106,6 +106,8 @@ class ToolResultRenderer:
                     self.truncate_text(item, self.config.max_tool_preview_text)
                     for item in warnings[:warning_preview_count]
                 ],
+                "queued_probe_count": int(result.get("queued_probe_count", 0) or 0),
+                "probe_queue_size": int(result.get("probe_queue_size", 0) or 0),
                 "remaining_source_count": max(0, len(sources) - source_preview_count),
                 "remaining_warning_count": max(0, len(warnings) - warning_preview_count),
             }
@@ -413,7 +415,7 @@ class ToolResultRenderer:
         return str(report_path)
 
     def _compact_source(self, item: dict[str, Any]) -> dict[str, Any]:
-        return {
+        compact = {
             "source_id": item.get("source_id", ""),
             "name": item.get("name", ""),
             "enabled": bool(item.get("enabled", False)),
@@ -427,6 +429,17 @@ class ToolResultRenderer:
             "search_url": self.truncate_text(item.get("search_url", ""), 120),
             "issues": [self.truncate_text(issue, 80) for issue in list(item.get("issues") or [])[:3]],
         }
+        for stage in ("search", "preflight", "download"):
+            state_key = "{stage}_health_state".format(stage=stage)
+            summary_key = "{stage}_health_summary".format(stage=stage)
+            updated_key = "{stage}_health_updated_at".format(stage=stage)
+            if state_key in item:
+                compact[state_key] = item.get(state_key, "")
+            if summary_key in item:
+                compact[summary_key] = self.truncate_text(item.get(summary_key, ""), 100)
+            if updated_key in item:
+                compact[updated_key] = item.get(updated_key, 0)
+        return compact
 
     def _compact_search_result(self, item: dict[str, Any], result_index: int | None = None) -> dict[str, Any]:
         compact = {

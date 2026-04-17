@@ -1162,6 +1162,127 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             str(runtime.search_service.config.health_path).endswith("search_source_health.json")
         )
+        self.assertTrue(
+            str(runtime.source_health_store.path).endswith("source_health.json")
+        )
+        self.assertEqual(runtime.source_probe_service.config.max_workers, 2)
+        self.assertEqual(
+            runtime.source_probe_service.config.probe_keywords,
+            ("诡秘之主", "斗破苍穹", "凡人修仙传"),
+        )
+
+    async def test_import_sources_queues_probe_and_list_sources_shows_health(self):
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "排队探测测试源",
+                    "bookSourceUrl": "https://example.com/probe",
+                    "searchUrl": "https://example.com/search?q={{key}}",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "author": "author",
+                        "bookUrl": "url",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+        queued_source_ids: list[str] = []
+        original_enqueue_sources = self.plugin.source_probe_service.enqueue_sources
+        try:
+            def fake_enqueue_sources(source_ids):
+                queued_source_ids.extend(list(source_ids))
+                return {
+                    "queued_count": len(list(source_ids)),
+                    "queue_size": 7,
+                }
+
+            self.plugin.source_probe_service.enqueue_sources = fake_enqueue_sources
+            imported = json.loads(await self.plugin.handle_novel_import_sources(source_json))
+        finally:
+            self.plugin.source_probe_service.enqueue_sources = original_enqueue_sources
+
+        self.assertEqual(imported["queued_probe_count"], 1)
+        self.assertEqual(imported["probe_queue_size"], 7)
+        self.assertEqual(len(queued_source_ids), 1)
+
+        source_id = queued_source_ids[0]
+        self.plugin.source_health_store.record_success(
+            source_id,
+            "search",
+            summary="搜索探测成功",
+        )
+        self.plugin.source_health_store.mark_unknown(
+            source_id,
+            "preflight",
+            summary="等待目录预检",
+        )
+        self.plugin.source_health_store.mark_unknown(
+            source_id,
+            "download",
+            summary="尚未进行正文下载探测",
+        )
+
+        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        self.assertEqual(listed_sources["sources"][0]["source_id"], source_id)
+        self.assertEqual(listed_sources["sources"][0]["search_health_state"], "healthy")
+        self.assertEqual(listed_sources["sources"][0]["search_health_summary"], "搜索探测成功")
+        self.assertEqual(listed_sources["sources"][0]["preflight_health_state"], "unknown")
+        self.assertEqual(listed_sources["sources"][0]["download_health_state"], "unknown")
+
+    async def test_import_sources_can_disable_auto_probe(self):
+        plugin = self.module.JsonlNovelDownloaderPlugin(
+            context=object(),
+            config={"auto_probe_on_import": False},
+        )
+        source_json = json.dumps(
+            [
+                {
+                    "bookSourceName": "禁用自动探测源",
+                    "bookSourceUrl": "https://example.com/no-probe",
+                    "searchUrl": "https://example.com/search?q={{key}}",
+                    "ruleSearch": {
+                        "bookList": "data.items",
+                        "name": "title",
+                        "bookUrl": "url",
+                    },
+                    "ruleBookInfo": {"name": "h1&&text"},
+                    "ruleToc": {
+                        "chapterList": "#toc a",
+                        "chapterName": "text",
+                        "chapterUrl": "@href",
+                    },
+                    "ruleContent": {"content": "#content&&text"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+        queued_source_ids: list[str] = []
+        original_enqueue_sources = plugin.source_probe_service.enqueue_sources
+        try:
+            def fake_enqueue_sources(source_ids):
+                queued_source_ids.extend(list(source_ids))
+                return {
+                    "queued_count": len(list(source_ids)),
+                    "queue_size": 5,
+                }
+
+            plugin.source_probe_service.enqueue_sources = fake_enqueue_sources
+            imported = json.loads(await plugin.handle_novel_import_sources(source_json))
+        finally:
+            plugin.source_probe_service.enqueue_sources = original_enqueue_sources
+
+        self.assertEqual(imported["queued_probe_count"], 0)
+        self.assertEqual(imported["probe_queue_size"], 0)
+        self.assertEqual(queued_source_ids, [])
 
     def test_plugin_init_rejects_non_positive_search_request_timeout(self):
         with self.assertRaisesRegex(ValueError, "search_request_timeout.*必须大于 0"):
