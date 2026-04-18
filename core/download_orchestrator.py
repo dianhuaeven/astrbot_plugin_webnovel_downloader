@@ -71,11 +71,21 @@ class DownloadOrchestrator:
             book_url = str(candidate.get("book_url") or "").strip()
             book_name = str(candidate.get("title") or resolution.get("keyword") or "").strip()
             try:
-                preflight = self.source_download_service.preflight_book(
-                    source_id,
-                    book_url,
-                    book_name,
-                )
+                try:
+                    preflight = self.source_download_service.preflight_book(
+                        source_id,
+                        book_url,
+                        book_name,
+                        rule_context=dict(candidate.get("_rule_vars") or {}),
+                    )
+                except TypeError as exc:
+                    if "rule_context" not in str(exc):
+                        raise
+                    preflight = self.source_download_service.preflight_book(
+                        source_id,
+                        book_url,
+                        book_name,
+                    )
             except Exception as exc:
                 attempts.append(
                     {

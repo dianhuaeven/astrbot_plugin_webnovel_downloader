@@ -160,6 +160,7 @@ class BookResolutionService:
             "download_strategy_mode": str(
                 (profile.get("download_strategy") or {}).get("mode") or ""
             ).strip(),
+            "_rule_vars": dict(item.get("_rule_vars") or {}),
         }
         for stage in HEALTH_STAGES:
             stage_entry = dict(health.get(stage) or {})

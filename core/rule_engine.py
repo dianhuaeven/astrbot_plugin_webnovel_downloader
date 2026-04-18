@@ -8,6 +8,7 @@ from html import unescape
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from .js_runtime import JavaScriptRuntime, JavaScriptRuntimeConfig
 from .session_scraper import SessionScraper, SessionScraperConfig
 
 try:
@@ -44,6 +45,7 @@ class RuleEngineConfig:
     use_env_proxy: bool = False
     clean_rule_store: Any = None
     scraper: Any = None
+    js_runtime: Any = None
 
 
 class RuleEngine:
@@ -70,6 +72,7 @@ class RuleEngine:
                 use_env_proxy=self.config.use_env_proxy,
             )
         )
+        self.js_runtime = config.js_runtime or JavaScriptRuntime(JavaScriptRuntimeConfig())
 
     def search_books(
         self,
@@ -118,11 +121,14 @@ class RuleEngine:
         source: Dict[str, Any],
         book_url: str,
         fallback_title: str = "",
+        rule_context: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         detail_text, detail_final_url = self._fetch_text(book_url, headers=source.get("headers") or {})
         payload_kind, payload = self._build_payload(detail_text, detail_final_url)
         book_info_rule = source.get("rule_book_info") or {}
         toc_rule = source.get("rule_toc") or {}
+        current_context = dict(rule_context or {})
+        self._run_rule_init(payload_kind, payload, book_info_rule.get("init") or "", current_context)
 
         title = self._extract_scalar(
             payload_kind,
@@ -131,12 +137,19 @@ class RuleEngine:
             or book_info_rule.get("bookName")
             or book_info_rule.get("title")
             or "",
+            rule_context=current_context,
         ) or fallback_title
-        author = self._extract_scalar(payload_kind, payload, book_info_rule.get("author") or "")
+        author = self._extract_scalar(
+            payload_kind,
+            payload,
+            book_info_rule.get("author") or "",
+            rule_context=current_context,
+        )
         intro = self._extract_scalar(
             payload_kind,
             payload,
             book_info_rule.get("intro") or book_info_rule.get("desc") or "",
+            rule_context=current_context,
         )
         toc_url = self._extract_scalar(
             payload_kind,
@@ -146,9 +159,10 @@ class RuleEngine:
             or book_info_rule.get("catalogUrl")
             or book_info_rule.get("listUrl")
             or "",
+            rule_context=current_context,
         )
         toc_page_url = self._make_absolute_url(toc_url, detail_final_url, source) or detail_final_url
-        toc = self.fetch_chapter_list(source, toc_page_url, toc_rule)
+        toc = self.fetch_chapter_list(source, toc_page_url, toc_rule, rule_context=current_context)
         if not toc:
             raise RuleEngineError("未解析到目录，请检查 ruleToc")
         return {
@@ -158,6 +172,7 @@ class RuleEngine:
             "author": author,
             "intro": intro,
             "toc": toc,
+            "_rule_vars": dict(current_context),
         }
 
     def fetch_chapter_list(
@@ -166,6 +181,7 @@ class RuleEngine:
         toc_url: str,
         toc_rule: Dict[str, Any],
         max_pages: int = 200,
+        rule_context: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         if not toc_rule:
             raise RuleEngineError("书源未提供 rule_toc")
@@ -173,12 +189,14 @@ class RuleEngine:
         current_url = toc_url
         visited = set()
         chapters: List[Dict[str, Any]] = []
+        shared_context = dict(rule_context or {})
         for _ in range(max_pages):
             if not current_url or current_url in visited:
                 break
             visited.add(current_url)
             page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
             payload_kind, payload = self._build_payload(page_text, final_url)
+            self._run_rule_init(payload_kind, payload, toc_rule.get("init") or "", shared_context)
             list_rule = (
                 toc_rule.get("chapterList")
                 or toc_rule.get("list")
@@ -186,8 +204,11 @@ class RuleEngine:
                 or toc_rule.get("__default__")
                 or "$"
             )
-            items = self._flatten_result_items(self._select_many(payload_kind, payload, list_rule))
+            items = self._flatten_result_items(
+                self._select_many(payload_kind, payload, list_rule, rule_context=shared_context)
+            )
             for item in items:
+                item_context = dict(shared_context)
                 title = self._extract_scalar(
                     payload_kind,
                     item,
@@ -196,6 +217,7 @@ class RuleEngine:
                     or toc_rule.get("title")
                     or toc_rule.get("text")
                     or "",
+                    rule_context=item_context,
                 )
                 url = self._extract_scalar(
                     payload_kind,
@@ -204,6 +226,7 @@ class RuleEngine:
                     or toc_rule.get("url")
                     or toc_rule.get("link")
                     or "",
+                    rule_context=item_context,
                 )
                 absolute_url = self._make_absolute_url(url, final_url, source)
                 if not title or not absolute_url:
@@ -212,6 +235,7 @@ class RuleEngine:
                     {
                         "title": title,
                         "url": absolute_url,
+                        "_rule_vars": item_context,
                     }
                 )
 
@@ -219,6 +243,7 @@ class RuleEngine:
                 payload_kind,
                 payload,
                 toc_rule.get("nextTocUrl") or toc_rule.get("nextUrl") or "",
+                rule_context=shared_context,
             )
             current_url = self._make_absolute_url(next_toc_url, final_url, source) if next_toc_url else ""
 
@@ -234,6 +259,7 @@ class RuleEngine:
                 "index": index,
                 "title": chapter["title"],
                 "url": chapter["url"],
+                "_rule_vars": dict(chapter.get("_rule_vars") or {}),
             }
             for index, chapter in enumerate(deduped)
         ]
@@ -244,6 +270,7 @@ class RuleEngine:
         chapter_url: str,
         fallback_title: str = "",
         max_pages: int = 5,
+        rule_context: Dict[str, Any] | None = None,
     ) -> Dict[str, str]:
         content_rule = source.get("rule_content") or {}
         if not content_rule:
@@ -254,6 +281,7 @@ class RuleEngine:
         segments: List[str] = []
         chosen_title = fallback_title
         final_encoding = ""
+        shared_context = dict(rule_context or {})
 
         for _ in range(max_pages):
             if not current_url or current_url in visited:
@@ -261,6 +289,7 @@ class RuleEngine:
             visited.add(current_url)
             page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
             payload_kind, payload = self._build_payload(page_text, final_url)
+            self._run_rule_init(payload_kind, payload, content_rule.get("init") or "", shared_context)
             title = self._extract_scalar(
                 payload_kind,
                 payload,
@@ -268,6 +297,7 @@ class RuleEngine:
                 or content_rule.get("chapterName")
                 or content_rule.get("name")
                 or "",
+                rule_context=shared_context,
             )
             content = self._extract_joined_scalar(
                 payload_kind,
@@ -277,6 +307,7 @@ class RuleEngine:
                 or content_rule.get("body")
                 or content_rule.get("__default__")
                 or "",
+                rule_context=shared_context,
             )
             if title:
                 chosen_title = title
@@ -287,6 +318,7 @@ class RuleEngine:
                 payload_kind,
                 payload,
                 content_rule.get("nextContentUrl") or content_rule.get("nextUrl") or "",
+                rule_context=shared_context,
             )
             if not next_content_url:
                 break
@@ -648,6 +680,8 @@ class RuleEngine:
         keyword: str,
     ) -> List[Dict[str, Any]]:
         rule = source.get("rule_search") or {}
+        shared_context: dict[str, Any] = {}
+        self._run_rule_init(payload_kind, payload, rule.get("init") or "", shared_context)
         list_rule = (
             rule.get("bookList")
             or rule.get("booklist")
@@ -656,15 +690,17 @@ class RuleEngine:
             or rule.get("__default__")
             or "$"
         )
-        items = self._select_many(payload_kind, payload, list_rule)
+        items = self._select_many(payload_kind, payload, list_rule, rule_context=shared_context)
         items = self._flatten_result_items(items)
         results: List[Dict[str, Any]] = []
 
         for item in items:
+            item_context = dict(shared_context)
             title = self._extract_scalar(
                 payload_kind,
                 item,
                 rule.get("name") or rule.get("bookName") or rule.get("title") or "",
+                rule_context=item_context,
             )
             if not title:
                 continue
@@ -673,28 +709,43 @@ class RuleEngine:
                 payload_kind,
                 item,
                 rule.get("bookUrl") or rule.get("url") or rule.get("detailUrl") or "",
+                rule_context=item_context,
             )
-            author = self._extract_scalar(payload_kind, item, rule.get("author") or "")
+            author = self._extract_scalar(
+                payload_kind,
+                item,
+                rule.get("author") or "",
+                rule_context=item_context,
+            )
             cover_url = self._extract_scalar(
                 payload_kind,
                 item,
                 rule.get("coverUrl") or rule.get("cover") or rule.get("img") or "",
+                rule_context=item_context,
             )
             intro = self._extract_scalar(
                 payload_kind,
                 item,
                 rule.get("intro") or rule.get("introHtml") or rule.get("desc") or "",
+                rule_context=item_context,
             )
-            kind = self._extract_scalar(payload_kind, item, rule.get("kind") or "")
+            kind = self._extract_scalar(
+                payload_kind,
+                item,
+                rule.get("kind") or "",
+                rule_context=item_context,
+            )
             last_chapter = self._extract_scalar(
                 payload_kind,
                 item,
                 rule.get("lastChapter") or rule.get("latestChapterTitle") or "",
+                rule_context=item_context,
             )
             word_count = self._extract_scalar(
                 payload_kind,
                 item,
                 rule.get("wordCount") or rule.get("words") or "",
+                rule_context=item_context,
             )
 
             absolute_book_url = self._make_absolute_url(book_url, final_url, source)
@@ -713,6 +764,7 @@ class RuleEngine:
                     "last_chapter": last_chapter,
                     "word_count": word_count,
                     "match_keyword": keyword,
+                    "_rule_vars": item_context,
                 }
             )
         return results
@@ -741,42 +793,211 @@ class RuleEngine:
             return urljoin(base_url, raw_url)
         return urljoin(final_url or base_url, raw_url)
 
-    def _extract_scalar(self, payload_kind: str, payload: Any, rule_text: str) -> str:
+    def _extract_scalar(
+        self,
+        payload_kind: str,
+        payload: Any,
+        rule_text: str,
+        rule_context: Dict[str, Any] | None = None,
+    ) -> str:
         if not rule_text:
             return ""
-        base_rule, cleaners = self._split_cleaners(str(rule_text or ""))
-        if "{{" in base_rule and "}}" in base_rule:
-            rendered = self._render_rule_template(payload_kind, payload, base_rule)
+        for candidate_rule in self._split_rule_alternatives(str(rule_text or "")):
+            resolved_rule, had_get_placeholder = self._resolve_context_placeholders(
+                candidate_rule,
+                rule_context,
+            )
+            base_rule, js_code = self._split_js_rule(resolved_rule)
+            base_rule, put_mapping = self._split_put_directives(base_rule)
+            base_rule, cleaners = self._split_cleaners(base_rule)
+            if "{{" in base_rule and "}}" in base_rule:
+                rendered = self._render_rule_template(
+                    payload_kind,
+                    payload,
+                    base_rule,
+                    rule_context=rule_context,
+                )
+                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                if cleaners:
+                    rendered = self._apply_cleaners(rendered, cleaners)
+                if js_code:
+                    rendered = self._stringify_js_result(
+                        self._execute_js(
+                            js_code,
+                            result=rendered,
+                            payload_kind=payload_kind,
+                            payload=payload,
+                            rule_context=rule_context,
+                        )
+                    )
+                if rendered.strip():
+                    return self._normalize_text(rendered)
+                continue
+            if had_get_placeholder and self._is_context_literal_rule(candidate_rule):
+                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                literal_value = base_rule.strip()
+                if cleaners:
+                    literal_value = self._apply_cleaners(literal_value, cleaners)
+                if js_code:
+                    literal_value = self._stringify_js_result(
+                        self._execute_js(
+                            js_code,
+                            result=literal_value,
+                            payload_kind=payload_kind,
+                            payload=payload,
+                            rule_context=rule_context,
+                        )
+                    )
+                if literal_value.strip():
+                    return self._normalize_text(literal_value)
+                continue
+            values = self._select_many(
+                payload_kind,
+                payload,
+                base_rule,
+                rule_context=rule_context,
+            )
+            self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+            if not values:
+                continue
+            value = self._stringify(values[0])
             if cleaners:
-                rendered = self._apply_cleaners(rendered, cleaners)
-            return self._normalize_text(rendered)
-        values = self._select_many(payload_kind, payload, rule_text)
-        if not values:
-            return ""
-        return self._stringify(values[0])
+                value = self._apply_cleaners(value, cleaners)
+            if js_code:
+                value = self._stringify_js_result(
+                    self._execute_js(
+                        js_code,
+                        result=values[0] if len(values) == 1 else values,
+                        payload_kind=payload_kind,
+                        payload=payload,
+                        rule_context=rule_context,
+                    )
+                )
+            if value.strip():
+                return value
+        return ""
 
-    def _extract_joined_scalar(self, payload_kind: str, payload: Any, rule_text: str) -> str:
+    def _extract_joined_scalar(
+        self,
+        payload_kind: str,
+        payload: Any,
+        rule_text: str,
+        rule_context: Dict[str, Any] | None = None,
+    ) -> str:
         if not rule_text:
             return ""
-        base_rule, cleaners = self._split_cleaners(str(rule_text or ""))
-        if "{{" in base_rule and "}}" in base_rule:
-            rendered = self._render_rule_template(payload_kind, payload, base_rule)
+        for candidate_rule in self._split_rule_alternatives(str(rule_text or "")):
+            resolved_rule, had_get_placeholder = self._resolve_context_placeholders(
+                candidate_rule,
+                rule_context,
+            )
+            base_rule, js_code = self._split_js_rule(resolved_rule)
+            base_rule, put_mapping = self._split_put_directives(base_rule)
+            base_rule, cleaners = self._split_cleaners(base_rule)
+            if "{{" in base_rule and "}}" in base_rule:
+                rendered = self._render_rule_template(
+                    payload_kind,
+                    payload,
+                    base_rule,
+                    rule_context=rule_context,
+                )
+                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                if cleaners:
+                    rendered = self._apply_cleaners(rendered, cleaners)
+                if js_code:
+                    rendered = self._stringify_js_result(
+                        self._execute_js(
+                            js_code,
+                            result=rendered,
+                            payload_kind=payload_kind,
+                            payload=payload,
+                            rule_context=rule_context,
+                        )
+                    )
+                if rendered.strip():
+                    return rendered.strip()
+                continue
+            if had_get_placeholder and self._is_context_literal_rule(candidate_rule):
+                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                literal_value = base_rule.strip()
+                if cleaners:
+                    literal_value = self._apply_cleaners(literal_value, cleaners)
+                if js_code:
+                    literal_value = self._stringify_js_result(
+                        self._execute_js(
+                            js_code,
+                            result=literal_value,
+                            payload_kind=payload_kind,
+                            payload=payload,
+                            rule_context=rule_context,
+                        )
+                    )
+                if literal_value.strip():
+                    return literal_value.strip()
+                continue
+            values = self._select_many(
+                payload_kind,
+                payload,
+                base_rule,
+                rule_context=rule_context,
+            )
+            self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+            if not values:
+                continue
+            parts = [self._stringify(value) for value in values]
+            joined = "\n".join([part for part in parts if part]).strip()
             if cleaners:
-                rendered = self._apply_cleaners(rendered, cleaners)
-            return rendered.strip()
-        values = self._select_many(payload_kind, payload, rule_text)
-        if not values:
-            return ""
-        parts = [self._stringify(value) for value in values]
-        return "\n".join([part for part in parts if part]).strip()
+                joined = self._apply_cleaners(joined, cleaners)
+            if js_code:
+                joined = self._stringify_js_result(
+                    self._execute_js(
+                        js_code,
+                        result=values if len(values) > 1 else (values[0] if values else joined),
+                        payload_kind=payload_kind,
+                        payload=payload,
+                        rule_context=rule_context,
+                    )
+                )
+            if joined:
+                return joined
+        return ""
 
-    def _select_many(self, payload_kind: str, payload: Any, rule_text: str) -> List[Any]:
-        base_rule, cleaners = self._split_cleaners(str(rule_text or ""))
+    def _select_many(
+        self,
+        payload_kind: str,
+        payload: Any,
+        rule_text: str,
+        rule_context: Dict[str, Any] | None = None,
+    ) -> List[Any]:
+        resolved_rule, _ = self._resolve_context_placeholders(str(rule_text or ""), rule_context)
+        base_rule, js_code = self._split_js_rule(resolved_rule)
+        base_rule, put_mapping = self._split_put_directives(base_rule)
+        base_rule, cleaners = self._split_cleaners(base_rule)
         base_rule = self._normalize_rule_prefix(base_rule, payload_kind)
         if payload_kind == "json":
             values = self._select_json_many(payload, base_rule or "$")
         else:
             values = self._select_html_many(payload, base_rule or "*")
+        self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+        if js_code:
+            js_input: Any
+            if values:
+                js_input = values if len(values) > 1 else values[0]
+            else:
+                js_input = payload if payload_kind == "json" else (payload.get() if hasattr(payload, "get") else "")
+            js_output = self._execute_js(
+                js_code,
+                result=js_input,
+                payload_kind=payload_kind,
+                payload=payload,
+                rule_context=rule_context,
+            )
+            if isinstance(js_output, list):
+                values = list(js_output)
+            elif js_output in (None, ""):
+                values = []
+            else:
+                values = [js_output]
         cleaned: List[Any] = []
         for value in values:
             if cleaners:
@@ -1036,6 +1257,22 @@ class RuleEngine:
         current: List[Any] = [payload]
         parts = [part.strip() for part in rule_text.split("&&") if part.strip()]
         for part in parts:
+            if self._is_modifier_only_expression(part):
+                (
+                    _selector_expression,
+                    index,
+                    slice_range,
+                    selected_indexes,
+                    excluded_indexes,
+                ) = self._parse_html_selector_modifiers(part)
+                current = self._apply_html_selector_modifiers(
+                    current,
+                    index=index,
+                    slice_range=slice_range,
+                    selected_indexes=selected_indexes,
+                    excluded_indexes=excluded_indexes,
+                )
+                continue
             next_values: List[Any] = []
             for node in current:
                 next_values.extend(self._apply_html_step(node, part))
@@ -1132,8 +1369,6 @@ class RuleEngine:
         if not match:
             return expression, None
         base_expression = match.group(1).strip()
-        if not base_expression:
-            return expression, None
         try:
             return base_expression, int(match.group(2))
         except ValueError:
@@ -1191,7 +1426,20 @@ class RuleEngine:
         current = list(selected)
         if slice_range is not None:
             start, end = slice_range
-            current = current[start : end + 1]
+            if not current:
+                current = []
+            else:
+                size = len(current)
+                if start < 0:
+                    start += size
+                if end < 0:
+                    end += size
+                start = max(0, start)
+                end = min(size - 1, end)
+                if start > end:
+                    current = []
+                else:
+                    current = current[start : end + 1]
         if selected_indexes is not None:
             picked: List[Any] = []
             for raw_index in selected_indexes:
@@ -1214,8 +1462,7 @@ class RuleEngine:
                 for current_index, item in enumerate(current)
                 if current_index not in normalized_excludes
             ]
-            if filtered:
-                current = filtered
+            current = filtered
         if index is None:
             return current
         if not current:
@@ -1302,20 +1549,385 @@ class RuleEngine:
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
+    def _split_rule_alternatives(self, rule_text: str) -> List[str]:
+        parts = self._split_top_level(str(rule_text or ""), "||")
+        normalized = [part.strip() for part in parts if part.strip()]
+        return normalized or [str(rule_text or "").strip()]
+
+    def _split_put_directives(self, rule_text: str) -> Tuple[str, Dict[str, str]]:
+        text = str(rule_text or "")
+        if "@put:{" not in text:
+            return text.strip(), {}
+        parts: List[str] = []
+        mappings: Dict[str, str] = {}
+        index = 0
+        while index < len(text):
+            marker_index = text.find("@put:{", index)
+            if marker_index < 0:
+                parts.append(text[index:])
+                break
+            parts.append(text[index:marker_index])
+            body_start = marker_index + len("@put:{")
+            body_end = self._find_matching_brace(text, body_start - 1)
+            if body_end < 0:
+                parts.append(text[marker_index:])
+                break
+            mappings.update(self._parse_put_mapping_body(text[body_start:body_end]))
+            index = body_end + 1
+        return "".join(parts).strip(), mappings
+
+    def _parse_put_mapping_body(self, body: str) -> Dict[str, str]:
+        mappings: Dict[str, str] = {}
+        for item in self._split_top_level(body, ","):
+            current = str(item or "").strip()
+            if not current:
+                continue
+            key_text, value_text = self._split_first_top_level(current, ":")
+            if value_text is None:
+                continue
+            normalized_key = self._strip_wrapping_quotes(key_text.strip())
+            normalized_value = self._strip_wrapping_quotes(value_text.strip())
+            if normalized_key:
+                mappings[normalized_key] = normalized_value
+        return mappings
+
+    def _run_rule_init(
+        self,
+        payload_kind: str,
+        payload: Any,
+        init_rule: str,
+        rule_context: Dict[str, Any] | None,
+    ) -> None:
+        if not init_rule or rule_context is None:
+            return
+        resolved_rule, _ = self._resolve_context_placeholders(str(init_rule or ""), rule_context)
+        _ignored_base_rule, put_mapping = self._split_put_directives(resolved_rule)
+        self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+
+    def _apply_put_mapping(
+        self,
+        payload_kind: str,
+        payload: Any,
+        put_mapping: Dict[str, str],
+        rule_context: Dict[str, Any] | None,
+    ) -> None:
+        if not put_mapping or rule_context is None:
+            return
+        for key, expression in put_mapping.items():
+            normalized_key = str(key or "").strip()
+            if not normalized_key:
+                continue
+            resolved_expression, had_get_placeholder = self._resolve_context_placeholders(
+                expression,
+                rule_context,
+            )
+            if "{{" in resolved_expression and "}}" in resolved_expression:
+                value = self._render_rule_template(
+                    payload_kind,
+                    payload,
+                    resolved_expression,
+                    rule_context=rule_context,
+                )
+            elif had_get_placeholder and self._is_context_literal_rule(expression):
+                value = resolved_expression
+            else:
+                value = self._extract_scalar(
+                    payload_kind,
+                    payload,
+                    resolved_expression,
+                    rule_context=rule_context,
+                )
+            if value != "":
+                rule_context[normalized_key] = value
+
+    def _resolve_context_placeholders(
+        self,
+        text: str,
+        rule_context: Dict[str, Any] | None,
+    ) -> Tuple[str, bool]:
+        raw_text = str(text or "")
+        if rule_context is None or "@get:{" not in raw_text:
+            return raw_text, False
+
+        def replacer(match: re.Match) -> str:
+            key_text = self._strip_wrapping_quotes(match.group(1).strip())
+            return str(rule_context.get(key_text, ""))
+
+        return re.sub(r"@get:\{([^{}]+)\}", replacer, raw_text), True
+
+    def _is_context_literal_rule(self, rule_text: str) -> bool:
+        stripped = re.sub(r"@get:\{[^{}]+\}", "", str(rule_text or "")).strip()
+        if not stripped:
+            return True
+        lowered = stripped.lower()
+        selector_markers = (
+            "@text",
+            "@html",
+            "xpath:",
+            "@css:",
+            "@xpath:",
+            "<js>",
+            "@js:",
+            "&&",
+            "text.",
+            "$.",
+            "$[",
+            "$..",
+        )
+        if any(marker in lowered for marker in selector_markers):
+            return False
+        return True
+
+    def _split_js_rule(self, rule_text: str) -> Tuple[str, str]:
+        text = str(rule_text or "")
+        if "<js>" in text and "</js>" in text:
+            start = text.index("<js>")
+            end = text.index("</js>", start)
+            return text[:start].strip(), text[start + 4 : end].strip()
+        if "@js:" in text:
+            base, _separator, js_code = text.partition("@js:")
+            return base.strip(), js_code.strip()
+        return text, ""
+
+    def _split_top_level(self, text: str, delimiter: str) -> List[str]:
+        if not text or delimiter not in text:
+            return [text]
+        parts: List[str] = []
+        buffer: List[str] = []
+        depth_curly = 0
+        depth_square = 0
+        depth_round = 0
+        quote_char = ""
+        escape = False
+        index = 0
+        delimiter_length = len(delimiter)
+        while index < len(text):
+            char = text[index]
+            if quote_char:
+                buffer.append(char)
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == quote_char:
+                    quote_char = ""
+                index += 1
+                continue
+            if char in ("'", "\""):
+                quote_char = char
+                buffer.append(char)
+                index += 1
+                continue
+            if char == "{":
+                depth_curly += 1
+            elif char == "}":
+                depth_curly = max(0, depth_curly - 1)
+            elif char == "[":
+                depth_square += 1
+            elif char == "]":
+                depth_square = max(0, depth_square - 1)
+            elif char == "(":
+                depth_round += 1
+            elif char == ")":
+                depth_round = max(0, depth_round - 1)
+            if (
+                depth_curly == 0
+                and depth_square == 0
+                and depth_round == 0
+                and text.startswith(delimiter, index)
+            ):
+                parts.append("".join(buffer))
+                buffer = []
+                index += delimiter_length
+                continue
+            buffer.append(char)
+            index += 1
+        parts.append("".join(buffer))
+        return parts
+
+    def _split_first_top_level(self, text: str, delimiter: str) -> Tuple[str, str | None]:
+        parts = self._split_top_level(text, delimiter)
+        if len(parts) <= 1:
+            return text, None
+        left = parts[0]
+        right = delimiter.join(parts[1:])
+        return left, right
+
+    def _find_matching_brace(self, text: str, brace_index: int) -> int:
+        depth = 0
+        quote_char = ""
+        escape = False
+        for index in range(brace_index, len(text)):
+            char = text[index]
+            if quote_char:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == quote_char:
+                    quote_char = ""
+                continue
+            if char in ("'", "\""):
+                quote_char = char
+                continue
+            if char == "{":
+                depth += 1
+                continue
+            if char == "}":
+                depth -= 1
+                if depth == 0:
+                    return index
+        return -1
+
+    def _strip_wrapping_quotes(self, text: str) -> str:
+        value = str(text or "").strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", "\""):
+            try:
+                parsed = ast.literal_eval(value)
+            except Exception:
+                return value[1:-1]
+            return str(parsed)
+        return value
+
+    def _is_modifier_only_expression(self, expression: str) -> bool:
+        normalized = str(expression or "").strip()
+        return bool(
+            re.fullmatch(r"\.\-?\d+", normalized)
+            or re.fullmatch(r"\.\-?\d+:\-?\d+", normalized)
+            or re.fullmatch(r"\[\-?\d+(?:\s*,\s*\-?\d+)*\]", normalized)
+            or re.fullmatch(r"!\-?\d+(?:\s*,\s*\-?\d+)*", normalized)
+        )
+
+    def _evaluate_literal_string_expression(self, expression: str) -> str | None:
+        raw_expression = str(expression or "").strip()
+        if not raw_expression:
+            return ""
+        try:
+            parsed = ast.parse(raw_expression, mode="eval")
+        except Exception:
+            return None
+
+        def evaluate(node: ast.AST) -> str:
+            if isinstance(node, ast.Expression):
+                return evaluate(node.body)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                return evaluate(node.left) + evaluate(node.right)
+            raise ValueError("unsupported literal expression")
+
+        try:
+            return evaluate(parsed)
+        except Exception:
+            return None
+
+    def _looks_like_selector_template_expression(self, expression: str, payload_kind: str) -> bool:
+        normalized = str(expression or "").strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        selector_prefixes = (
+            "@css:",
+            "@xpath:",
+            "xpath:",
+            "text.",
+            "//",
+            ".//",
+            "./",
+            "/",
+            "#",
+            ".",
+            "[",
+        )
+        if lowered.startswith(selector_prefixes):
+            return True
+        if payload_kind == "json":
+            if normalized.startswith("$"):
+                return True
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", normalized):
+                return True
+        return False
+
+    def _execute_js(
+        self,
+        code: str,
+        *,
+        result: Any,
+        payload_kind: str,
+        payload: Any,
+        rule_context: Dict[str, Any] | None = None,
+    ) -> Any:
+        try:
+            return self.js_runtime.evaluate(
+                code,
+                result=result,
+                payload_kind=payload_kind,
+                payload=payload,
+                rule_context=rule_context,
+                selector_resolver=lambda expression: self._extract_scalar(
+                    payload_kind,
+                    payload,
+                    expression,
+                    rule_context=rule_context,
+                ),
+            )
+        except Exception as exc:
+            raise RuleEngineError("JS 规则执行失败: {error}".format(error=exc)) from exc
+
+    def _stringify_js_result(self, value: Any) -> str:
+        if isinstance(value, list):
+            return "\n".join(
+                [self._stringify(item) for item in value if self._stringify(item)]
+            ).strip()
+        return self._stringify(value)
+
     def _render_template(self, template: str, variables: Dict[str, str]) -> str:
         def replacer(match: re.Match) -> str:
             key = match.group(1).strip()
+            literal_value = self._evaluate_literal_string_expression(key)
+            if literal_value is not None:
+                return literal_value
             return variables.get(key, "")
 
         return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", replacer, template)
 
-    def _render_rule_template(self, payload_kind: str, payload: Any, template: str) -> str:
+    def _render_rule_template(
+        self,
+        payload_kind: str,
+        payload: Any,
+        template: str,
+        rule_context: Dict[str, Any] | None = None,
+    ) -> str:
         def replacer(match: re.Match) -> str:
             expression = match.group(1).strip()
             if not expression:
                 return ""
+            literal_value = self._evaluate_literal_string_expression(expression)
+            if literal_value is not None:
+                return literal_value
             if expression.startswith("@@"):
                 expression = expression[2:].strip()
-            return self._extract_scalar(payload_kind, payload, expression)
+            resolved_expression, had_get_placeholder = self._resolve_context_placeholders(
+                expression,
+                rule_context,
+            )
+            if had_get_placeholder and self._is_context_literal_rule(expression):
+                return resolved_expression
+            if not self._looks_like_selector_template_expression(resolved_expression, payload_kind):
+                return self._stringify_js_result(
+                    self._execute_js(
+                        resolved_expression,
+                        result=payload if payload_kind == "json" else (payload.get() if hasattr(payload, "get") else ""),
+                        payload_kind=payload_kind,
+                        payload=payload,
+                        rule_context=rule_context,
+                    )
+                )
+            return self._extract_scalar(
+                payload_kind,
+                payload,
+                resolved_expression,
+                rule_context=rule_context,
+            )
 
         return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", replacer, template)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -175,11 +176,90 @@ class LegadoPhase5Test(unittest.TestCase):
             """
         )
 
-        chapter_nodes = engine._select_many("html", payload, ".list!0@li a")
+        chapter_nodes = engine._select_many("html", payload, ".list@li a")
         kind_values = engine._select_many("html", payload, "class.book w@span[1,2]@text")
 
         self.assertEqual(len(chapter_nodes), 2)
         self.assertEqual(kind_values, ["状态", "时间"])
+
+    def test_rule_engine_supports_literal_template_fragments_and_modifier_only_steps(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = Selector(
+            text="""
+            <html>
+              <body>
+                <div class="list">
+                  <span>甲</span>
+                  <span>乙</span>
+                  <span>丙</span>
+                </div>
+              </body>
+            </html>
+            """
+        )
+
+        rendered = engine._render_template("prefix{{'\\n'+'\\u200b'}}suffix", {})
+        last_value = engine._select_many("html", payload, ".list@span&&.-1&&@text")
+        sliced_values = engine._select_many("html", payload, ".list@span&&.0:-1&&@text")
+        excluded_values = engine._select_many("html", payload, ".list@span&&!0,1,2&&@text")
+
+        self.assertEqual(rendered, "prefix\n\u200bsuffix")
+        self.assertEqual(last_value, ["丙"])
+        self.assertEqual(sliced_values, ["甲", "乙", "丙"])
+        self.assertEqual(excluded_values, [])
+
+    def test_rule_engine_supports_put_and_get_context_variables(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = {
+            "novel": {
+                "name": "测试书",
+                "id": 123,
+            },
+            "id": "chapter-1",
+        }
+        rule_context = {}
+
+        title = engine._extract_scalar(
+            "json",
+            payload,
+            "$.novel.name@put:{bid:$.novel.id}",
+            rule_context=rule_context,
+        )
+        direct_value = engine._extract_scalar(
+            "json",
+            payload,
+            "@get:{bid}",
+            rule_context=rule_context,
+        )
+        chapter_url = engine._extract_scalar(
+            "json",
+            payload,
+            "https://example.com/book/@get:{bid}/{{$.id}}",
+            rule_context=rule_context,
+        )
+
+        self.assertEqual(title, "测试书")
+        self.assertEqual(rule_context["bid"], "123")
+        self.assertEqual(direct_value, "123")
+        self.assertEqual(chapter_url, "https://example.com/book/123/chapter-1")
+
+    def test_rule_engine_supports_lightweight_js_templates_and_transforms(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = {"name": "A B C"}
+
+        rendered = engine._render_rule_template(
+            "json",
+            payload,
+            "{{java.md5Encode('abc')}}",
+        )
+        transformed = engine._extract_scalar(
+            "json",
+            payload,
+            "$.name@js:result.replace(/\\s+/g, '')",
+        )
+
+        self.assertEqual(rendered, hashlib.md5(b"abc").hexdigest())
+        self.assertEqual(transformed, "ABC")
 
     def test_search_service_uses_runtime_health_to_skip_broken_search_and_hide_broken_download(self):
         health_store = SourceHealthStore(self.base_dir / "source_health.json")

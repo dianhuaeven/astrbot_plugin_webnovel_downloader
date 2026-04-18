@@ -49,10 +49,11 @@ class SourceDownloadService:
         source_id: str,
         book_url: str,
         book_name: str = "",
+        rule_context: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         summary = self._get_supported_download_summary(source_id)
         source = self.registry.load_normalized_source(source_id)
-        plan = self.engine.build_book_download_plan(source, book_url, book_name)
+        plan = self._build_book_download_plan(source, book_url, book_name, rule_context)
         toc = list(plan.get("toc") or [])
         return {
             "source_id": source_id,
@@ -65,6 +66,7 @@ class SourceDownloadService:
             "intro": plan.get("intro", ""),
             "toc": toc,
             "toc_count": len(toc),
+            "_rule_vars": dict(plan.get("_rule_vars") or {}),
         }
 
     def create_job_from_plan(
@@ -88,6 +90,7 @@ class SourceDownloadService:
                 "author": plan.get("author", ""),
                 "intro": plan.get("intro", ""),
                 "sampled_chapter_count": int(plan.get("sampled_chapter_count", 0) or 0),
+                "rule_vars": dict(plan.get("_rule_vars") or {}),
             },
         )
         return {
@@ -280,15 +283,51 @@ class SourceDownloadService:
 
     def _download_one_chapter(self, source: Dict[str, Any], chapter: Dict[str, Any]) -> Dict[str, str]:
         try:
+            return self._fetch_chapter_content(source, chapter)
+        except RuleEngineError:
+            raise
+        except Exception as exc:
+            raise RuleEngineError(str(exc))
+
+    def _build_book_download_plan(
+        self,
+        source: Dict[str, Any],
+        book_url: str,
+        book_name: str,
+        rule_context: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        try:
+            return self.engine.build_book_download_plan(
+                source,
+                book_url,
+                book_name,
+                rule_context=rule_context,
+            )
+        except TypeError as exc:
+            if "rule_context" not in str(exc):
+                raise
+            return self.engine.build_book_download_plan(source, book_url, book_name)
+
+    def _fetch_chapter_content(
+        self,
+        source: Dict[str, Any],
+        chapter: Dict[str, Any],
+    ) -> Dict[str, str]:
+        try:
+            return self.engine.fetch_chapter_content(
+                source,
+                chapter["url"],
+                chapter["title"],
+                rule_context=dict(chapter.get("_rule_vars") or {}),
+            )
+        except TypeError as exc:
+            if "rule_context" not in str(exc):
+                raise
             return self.engine.fetch_chapter_content(
                 source,
                 chapter["url"],
                 chapter["title"],
             )
-        except RuleEngineError:
-            raise
-        except Exception as exc:
-            raise RuleEngineError(str(exc))
 
     def _select_sample_chapters(
         self,

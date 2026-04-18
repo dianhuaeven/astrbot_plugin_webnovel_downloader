@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import json
-import os
 import threading
 import time
 from dataclasses import dataclass
@@ -10,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .rule_engine import RuleEngine, RuleEngineError
+from .search_stats_store import SearchStatsStore
 from .source_registry import SourceRegistry
 
 
@@ -36,9 +35,10 @@ class SearchService:
         self.config = config or SearchServiceConfig()
         self.source_profile_service = source_profile_service
         self.source_health_store = source_health_store
-        self._health_lock = threading.Lock()
+        self._health_lock = threading.RLock()
         health_path = self.config.health_path
         self._health_path = Path(health_path) if health_path else None
+        self._stats_store = SearchStatsStore(self._health_path) if self._health_path else None
         self._source_health = self._load_source_health()
 
     def search(
@@ -108,13 +108,13 @@ class SearchService:
         )
         sources = sorted(
             sources,
-            key=lambda item: self._source_priority_key(item, summary_by_source_id),
+            key=lambda item: self._source_priority_key(item, summary_by_source_id, runtime_health),
         )
 
         results: List[Dict[str, Any]] = []
         errors: List[Dict[str, str]] = []
         max_workers = min(max(1, self.config.max_workers), len(sources))
-        dispatch_window = max_workers
+        dispatch_window = max_workers if max_workers <= 1 else min(len(sources), max_workers * 2)
         completed_sources = 0
         dispatched_sources = 0
         timed_out_sources = 0
@@ -398,10 +398,15 @@ class SearchService:
     def _record_source_outcomes(self, outcomes: list[dict[str, Any]]) -> None:
         if not outcomes:
             return
+        if self._stats_store is not None:
+            updated_entries = self._stats_store.apply_outcomes(outcomes)
+            if updated_entries:
+                with self._health_lock:
+                    self._source_health.update(updated_entries)
+            return
         with self._health_lock:
             for item in outcomes:
                 self._apply_source_outcome(item)
-            self._save_source_health_locked()
 
     def _apply_source_outcome(self, outcome: dict[str, Any]) -> None:
         source_id = str(outcome.get("source_id") or "").strip()
@@ -451,6 +456,7 @@ class SearchService:
         self,
         source: Dict[str, Any],
         summary_by_source_id: Dict[str, Dict[str, Any]] | None = None,
+        runtime_health_by_source: Dict[str, Dict[str, Any]] | None = None,
     ) -> tuple:
         source_id = str(source.get("source_id") or "").strip()
         summary = {}
@@ -458,7 +464,11 @@ class SearchService:
             summary = dict(summary_by_source_id.get(source_id) or {})
         with self._health_lock:
             entry = dict(self._source_health.get(source_id) or {})
-        runtime_health = self._get_runtime_health_entry(source_id)
+        runtime_health = {}
+        if runtime_health_by_source is not None:
+            runtime_health = dict(runtime_health_by_source.get(source_id) or {})
+        else:
+            runtime_health = self._get_runtime_health_entry(source_id)
         profile_rank = self._profile_priority_rank(source_id)
         supports_download_rank = 0 if summary.get("supports_download", False) else 1
         runtime_rank = self._search_health_rank(runtime_health.get("search", {}))
@@ -582,47 +592,11 @@ class SearchService:
         return 2
 
     def _load_source_health(self) -> dict[str, dict[str, Any]]:
-        if self._health_path is None or not self._health_path.exists():
-            return {}
-        try:
-            with open(self._health_path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        sources = payload.get("sources", payload)
-        if not isinstance(sources, dict):
-            return {}
-        normalized: dict[str, dict[str, Any]] = {}
-        for source_id, item in sources.items():
-            if not isinstance(item, dict):
-                continue
-            normalized[str(source_id)] = {
-                "attempts": max(0, int(item.get("attempts", 0) or 0)),
-                "successes": max(0, int(item.get("successes", 0) or 0)),
-                "failures": max(0, int(item.get("failures", 0) or 0)),
-                "timeouts": max(0, int(item.get("timeouts", 0) or 0)),
-                "avg_duration_ms": float(item.get("avg_duration_ms", 0.0) or 0.0),
-                "avg_success_ms": float(item.get("avg_success_ms", 0.0) or 0.0),
-                "last_success_at": float(item.get("last_success_at", 0.0) or 0.0),
-                "last_failure_at": float(item.get("last_failure_at", 0.0) or 0.0),
-            }
-        return normalized
-
-    def _save_source_health_locked(self) -> None:
+        if self._stats_store is not None:
+            try:
+                return self._stats_store.load_all()
+            except Exception:
+                return {}
         if self._health_path is None:
-            return
-        self._health_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self._health_path.with_suffix(self._health_path.suffix + ".tmp")
-        payload = {
-            "schema_version": self._HEALTH_SCHEMA_VERSION,
-            "updated_at": time.time(),
-            "sources": self._source_health,
-        }
-        with open(tmp_path, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, self._health_path)
+            return {}
+        return {}
