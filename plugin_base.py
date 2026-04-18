@@ -6,6 +6,8 @@ import json
 import os
 import threading
 import time
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +74,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         self._bootstrap_thread: threading.Thread | None = None
         self._bootstrap_done = threading.Event()
         self._bootstrap_done.set()
-        self._schedule_bootstrap_config_sources()
+        self._schedule_bootstrap_tasks()
         logger.info("网文下载器初始化完成")
 
     def _resolve_plugin_data_dir(self) -> Path:
@@ -840,34 +842,40 @@ class JsonlNovelDownloaderPluginBase(Star):
             return parts
         return [text]
 
-    def _schedule_bootstrap_config_sources(self) -> None:
+    def _schedule_bootstrap_tasks(self) -> None:
         source_refs = self._parse_config_refs(self.config.get("book_sources"))
         repo_refs = self._parse_config_refs(self.config.get("clean_rule_sources"))
-        if not source_refs and not repo_refs:
+        bundled_skill_dirs = self._list_bundled_skill_dirs()
+        if not source_refs and not repo_refs and not bundled_skill_dirs:
             return
 
         self._bootstrap_done.clear()
         self._bootstrap_thread = threading.Thread(
-            target=self._bootstrap_config_sources,
-            args=(source_refs, repo_refs),
+            target=self._bootstrap_tasks,
+            args=(source_refs, repo_refs, bundled_skill_dirs),
             name="{name}-bootstrap".format(name=PLUGIN_NAME),
             daemon=True,
         )
         self._bootstrap_thread.start()
         logger.info(
-            "已在后台启动配置导入 pending_source_count=%s pending_clean_rule_count=%s",
+            "已在后台启动插件初始化 pending_source_count=%s pending_clean_rule_count=%s pending_skill_count=%s",
             len(source_refs),
             len(repo_refs),
+            len(bundled_skill_dirs),
         )
 
-    def _bootstrap_config_sources(
+    def _bootstrap_tasks(
         self,
         source_refs: list[str],
         repo_refs: list[str],
+        bundled_skill_dirs: list[Path],
     ) -> None:
         try:
+            bundled_skill_dirs = self._filter_bootstrap_skill_dirs(bundled_skill_dirs)
             source_refs = self._filter_bootstrap_refs(source_refs, "book_sources")
             repo_refs = self._filter_bootstrap_refs(repo_refs, "clean_rule_sources")
+            for skill_dir in bundled_skill_dirs:
+                self._run_bootstrap_bundled_skill_install(skill_dir)
             for source_ref in source_refs:
                 self._run_bootstrap_source_import(source_ref)
             for repo_ref in repo_refs:
@@ -982,6 +990,52 @@ class JsonlNovelDownloaderPluginBase(Star):
                 rule_count=rule_count,
             )
 
+    def _run_bootstrap_bundled_skill_install(self, skill_dir: Path) -> None:
+        skill_ref = str(skill_dir)
+        skill_name = skill_dir.name
+        signature = self._build_bootstrap_signature(skill_ref)
+        entry_id = self._build_bootstrap_entry_id(skill_ref)
+        started_at = time.time()
+        self._save_bootstrap_result(
+            "bundled_skills",
+            entry_id,
+            skill_ref,
+            signature,
+            "running",
+            started_at,
+            skill_name=skill_name,
+        )
+        try:
+            result = self._install_bundled_skill(skill_dir)
+            logger.info(
+                "自动安装插件自带 skill 成功 skill_name=%s synced_sandboxes=%s",
+                skill_name,
+                bool(result.get("synced_sandboxes", False)),
+            )
+            self._save_bootstrap_result(
+                "bundled_skills",
+                entry_id,
+                skill_ref,
+                signature,
+                "success",
+                started_at,
+                skill_name=skill_name,
+                installed_name=str(result.get("installed_name") or skill_name),
+                synced_sandboxes=bool(result.get("synced_sandboxes", False)),
+            )
+        except Exception as exc:
+            logger.warning("自动安装插件自带 skill 失败 skill_name=%s error=%s", skill_name, exc)
+            self._save_bootstrap_result(
+                "bundled_skills",
+                entry_id,
+                skill_ref,
+                signature,
+                "failed",
+                started_at,
+                skill_name=skill_name,
+                error=str(exc),
+            )
+
     def wait_for_bootstrap(self, timeout: float | None = None) -> bool:
         thread = self._bootstrap_thread
         if thread is None:
@@ -994,6 +1048,129 @@ class JsonlNovelDownloaderPluginBase(Star):
         if not callable(wait_for_idle):
             return True
         return bool(wait_for_idle(timeout))
+
+    def _list_bundled_skill_dirs(self) -> list[Path]:
+        skills_root = Path(__file__).resolve().parent / "skills"
+        if not skills_root.is_dir():
+            return []
+        bundled: list[Path] = []
+        for entry in sorted(skills_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            if not (entry / "SKILL.md").is_file() and not (entry / "skill.md").is_file():
+                continue
+            bundled.append(entry.resolve())
+        return bundled
+
+    def _filter_bootstrap_skill_dirs(self, skill_dirs: list[Path]) -> list[Path]:
+        if not skill_dirs:
+            return []
+
+        existing_skill_names = self._get_installed_skill_names()
+        if existing_skill_names is None:
+            logger.info("当前 AstrBot 环境未提供 SkillManager，跳过插件自带 skill 自动安装")
+            return []
+        state = self._load_bootstrap_state()
+        pending: list[Path] = []
+        skipped_count = 0
+        for skill_dir in skill_dirs:
+            skill_name = skill_dir.name
+            ref = str(skill_dir)
+            entry = state.get("bundled_skills", {}).get(self._build_bootstrap_entry_id(ref), {})
+            signature = self._build_bootstrap_signature(ref)
+            if skill_name in existing_skill_names:
+                if entry.get("signature") != signature or entry.get("status") != "success":
+                    self._save_bootstrap_result(
+                        "bundled_skills",
+                        self._build_bootstrap_entry_id(ref),
+                        ref,
+                        signature,
+                        "success",
+                        time.time(),
+                        skill_name=skill_name,
+                        installed_name=skill_name,
+                        install_action="already_exists",
+                        synced_sandboxes=False,
+                    )
+                skipped_count += 1
+                logger.info("检测到同名 skill 已存在，跳过自动安装 skill_name=%s", skill_name)
+                continue
+            if entry.get("signature") == signature:
+                status = str(entry.get("status") or "")
+                if status == "running" and (time.time() - float(entry.get("updated_at", 0.0))) < 1800:
+                    skipped_count += 1
+                    logger.info("检测到已有后台 skill 安装正在进行，跳过重复启动 skill_name=%s", skill_name)
+                    continue
+            pending.append(skill_dir)
+        if skipped_count:
+            logger.info(
+                "插件自带 skill 安装去重完成 skipped_count=%s pending_count=%s",
+                skipped_count,
+                len(pending),
+            )
+        return pending
+
+    def _get_installed_skill_names(self) -> set[str] | None:
+        try:
+            from astrbot.core.skills.skill_manager import SkillManager
+        except Exception:
+            return None
+
+        try:
+            manager = SkillManager()
+            return {str(item.name).strip() for item in manager.list_skills() if str(item.name).strip()}
+        except Exception:
+            return set()
+
+    def _install_bundled_skill(self, skill_dir: Path) -> dict[str, Any]:
+        if not skill_dir.is_dir():
+            raise FileNotFoundError("找不到插件自带 skill 目录: {path}".format(path=skill_dir))
+
+        try:
+            from astrbot.core.skills.skill_manager import SkillManager
+        except Exception as exc:
+            raise RuntimeError("当前 AstrBot 环境不支持 SkillManager") from exc
+
+        skill_name = skill_dir.name
+        with tempfile.TemporaryDirectory(
+            prefix="{name}-skill-".format(name=PLUGIN_NAME),
+            dir=str(self.plugin_data_dir),
+        ) as temp_dir:
+            zip_path = Path(temp_dir) / "{name}.zip".format(name=skill_name)
+            self._build_skill_zip(skill_dir, zip_path)
+            manager = SkillManager()
+            installed_name = manager.install_skill_from_zip(
+                str(zip_path),
+                overwrite=False,
+                skill_name_hint=skill_name,
+            )
+
+        synced_sandboxes = False
+        try:
+            from astrbot.core.computer.computer_client import sync_skills_to_active_sandboxes
+        except Exception:
+            sync_skills_to_active_sandboxes = None
+
+        if callable(sync_skills_to_active_sandboxes):
+            try:
+                asyncio.run(sync_skills_to_active_sandboxes())
+                synced_sandboxes = True
+            except Exception as exc:
+                logger.warning("插件自带 skill 已安装，但同步到活跃沙盒失败 skill_name=%s error=%s", skill_name, exc)
+
+        return {
+            "installed_name": str(installed_name or skill_name),
+            "synced_sandboxes": synced_sandboxes,
+        }
+
+    def _build_skill_zip(self, skill_dir: Path, zip_path: Path) -> None:
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(skill_dir.rglob("*")):
+                if path.is_dir():
+                    continue
+                relative_path = path.relative_to(skill_dir.parent)
+                archive.write(path, relative_path.as_posix())
 
     def _filter_bootstrap_refs(self, refs: list[str], section: str) -> list[str]:
         if section == "book_sources" and not self.source_registry.list_sources():
@@ -1050,6 +1227,11 @@ class JsonlNovelDownloaderPluginBase(Star):
 
         if path is not None:
             try:
+                if path.is_dir():
+                    return "dir:{path}:{digest}".format(
+                        path=path.resolve(),
+                        digest=self._build_directory_signature(path),
+                    )
                 if path.is_file():
                     stat = path.stat()
                     return "file:{path}:{mtime}:{size}".format(
@@ -1065,6 +1247,19 @@ class JsonlNovelDownloaderPluginBase(Star):
         return "inline:{digest}".format(
             digest=hashlib.sha1(text.encode("utf-8")).hexdigest(),
         )
+
+    def _build_directory_signature(self, directory: Path) -> str:
+        digest = hashlib.sha1()
+        for path in sorted(directory.rglob("*")):
+            relative_path = path.relative_to(directory).as_posix()
+            digest.update(relative_path.encode("utf-8"))
+            if path.is_dir():
+                digest.update(b"dir")
+                continue
+            stat = path.stat()
+            digest.update(str(stat.st_mtime_ns).encode("ascii"))
+            digest.update(str(stat.st_size).encode("ascii"))
+        return digest.hexdigest()
 
     def _short_bootstrap_ref(self, ref: str) -> str:
         text = str(ref or "").strip()
@@ -1110,6 +1305,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         state.setdefault("updated_at", 0.0)
         state.setdefault("book_sources", {})
         state.setdefault("clean_rule_sources", {})
+        state.setdefault("bundled_skills", {})
         return state
 
     def _make_bootstrap_state(self) -> dict[str, Any]:
@@ -1118,6 +1314,7 @@ class JsonlNovelDownloaderPluginBase(Star):
             "updated_at": 0.0,
             "book_sources": {},
             "clean_rule_sources": {},
+            "bundled_skills": {},
         }
 
     def _save_bootstrap_result(

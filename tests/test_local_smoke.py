@@ -11,6 +11,7 @@ import threading
 import time
 import types
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, get_args, get_origin
@@ -1591,6 +1592,132 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(plugin_again.source_registry.list_sources()), 1)
         finally:
             plugin_base.load_text_argument = original_loader
+
+    def test_install_bundled_skill_uses_skill_manager_and_syncs_sandbox(self):
+        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        skill_dir = self.plugin_dir / "skills" / "webnovel-downloader-workflow"
+
+        astrbot_core_skills = types.ModuleType("astrbot.core.skills")
+        astrbot_core_skill_manager = types.ModuleType("astrbot.core.skills.skill_manager")
+        astrbot_core_computer = types.ModuleType("astrbot.core.computer")
+        astrbot_core_computer_client = types.ModuleType("astrbot.core.computer.computer_client")
+
+        recorded: dict[str, object] = {}
+        synced_calls: list[bool] = []
+
+        class FakeSkillManager(object):
+            def __init__(self, skills_root=None):
+                recorded["skills_root"] = skills_root
+
+            def list_skills(self):
+                return []
+
+            def install_skill_from_zip(
+                self,
+                zip_path,
+                *,
+                overwrite=True,
+                skill_name_hint=None,
+            ):
+                recorded["zip_path"] = zip_path
+                recorded["overwrite"] = overwrite
+                recorded["skill_name_hint"] = skill_name_hint
+                with zipfile.ZipFile(zip_path) as archive:
+                    names = set(archive.namelist())
+                self_outer = self
+                _ = self_outer
+                assert "webnovel-downloader-workflow/SKILL.md" in names
+                return "webnovel-downloader-workflow"
+
+        async def fake_sync_skills_to_active_sandboxes():
+            synced_calls.append(True)
+
+        astrbot_core_skill_manager.SkillManager = FakeSkillManager
+        astrbot_core_computer_client.sync_skills_to_active_sandboxes = (
+            fake_sync_skills_to_active_sandboxes
+        )
+
+        sys.modules["astrbot.core.skills"] = astrbot_core_skills
+        sys.modules["astrbot.core.skills.skill_manager"] = astrbot_core_skill_manager
+        sys.modules["astrbot.core.computer"] = astrbot_core_computer
+        sys.modules["astrbot.core.computer.computer_client"] = (
+            astrbot_core_computer_client
+        )
+
+        result = self.plugin._install_bundled_skill(skill_dir)
+        self.assertEqual(recorded["skill_name_hint"], "webnovel-downloader-workflow")
+        self.assertFalse(recorded["overwrite"])
+        self.assertEqual(result["installed_name"], "webnovel-downloader-workflow")
+        self.assertTrue(result["synced_sandboxes"])
+        self.assertEqual(synced_calls, [True])
+
+    def test_plugin_bootstrap_auto_installs_bundled_skills_in_background(self):
+        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        demo_skill_dir = self.base_dir / "demo-skill"
+        demo_skill_dir.mkdir(parents=True, exist_ok=True)
+        (demo_skill_dir / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: demo\n---\n",
+            encoding="utf-8",
+        )
+
+        original_list = (
+            plugin_base.JsonlNovelDownloaderPluginBase._list_bundled_skill_dirs
+        )
+        original_get_names = (
+            plugin_base.JsonlNovelDownloaderPluginBase._get_installed_skill_names
+        )
+        original_install = (
+            plugin_base.JsonlNovelDownloaderPluginBase._install_bundled_skill
+        )
+        started = threading.Event()
+        unblock = threading.Event()
+        installed: list[str] = []
+
+        def fake_list(self):
+            return [demo_skill_dir]
+
+        def fake_get_names(self):
+            return set()
+
+        def slow_install(self, skill_dir):
+            started.set()
+            unblock.wait(1.0)
+            installed.append(skill_dir.name)
+            return {
+                "installed_name": skill_dir.name,
+                "synced_sandboxes": False,
+            }
+
+        plugin_base.JsonlNovelDownloaderPluginBase._list_bundled_skill_dirs = fake_list
+        plugin_base.JsonlNovelDownloaderPluginBase._get_installed_skill_names = (
+            fake_get_names
+        )
+        plugin_base.JsonlNovelDownloaderPluginBase._install_bundled_skill = slow_install
+        plugin = None
+        try:
+            begin = time.perf_counter()
+            plugin = self.module.JsonlNovelDownloaderPlugin(context=object(), config={})
+            elapsed = time.perf_counter() - begin
+            self.assertLess(elapsed, 0.2)
+            self.assertTrue(started.wait(1.0))
+            self.assertEqual(installed, [])
+
+            unblock.set()
+            self.assertTrue(plugin.wait_for_bootstrap(2.0))
+            self.assertEqual(installed, ["demo-skill"])
+        finally:
+            unblock.set()
+            plugin_base.JsonlNovelDownloaderPluginBase._list_bundled_skill_dirs = (
+                original_list
+            )
+            plugin_base.JsonlNovelDownloaderPluginBase._get_installed_skill_names = (
+                original_get_names
+            )
+            plugin_base.JsonlNovelDownloaderPluginBase._install_bundled_skill = (
+                original_install
+            )
+            if plugin is not None:
+                plugin.wait_for_bootstrap(2.0)
 
     async def test_download_status_offloads_blocking_status_read(self):
         original_get_status = self.plugin.manager.get_status
