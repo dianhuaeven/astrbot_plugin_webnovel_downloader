@@ -41,6 +41,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         self.source_registry = runtime.source_registry
         self.clean_rule_store = runtime.clean_rule_store
         self.source_health_store = runtime.source_health_store
+        self.source_profile_service = runtime.source_profile_service
         self.source_probe_service = runtime.source_probe_service
         self.search_service = runtime.search_service
         self.book_resolution_service = runtime.book_resolution_service
@@ -173,6 +174,20 @@ class JsonlNovelDownloaderPluginBase(Star):
             offset_value,
         )
 
+    async def handle_novel_get_source_detail(self, source_id: str) -> str:
+        summary = await run_blocking(self.source_registry.get_source_summary, source_id)
+        summary = await run_blocking(self.source_health_store.enrich_source, summary)
+        normalized_source = await run_blocking(self.source_registry.load_normalized_source, source_id)
+        health = await run_blocking(self.source_health_store.get_source_health, source_id)
+        profile = await run_blocking(self.source_profile_service.get, source_id, True)
+        return await run_blocking(
+            self.renderer.render_source_detail,
+            summary,
+            normalized_source,
+            health,
+            profile,
+        )
+
     async def handle_novel_refresh_sources(
         self,
         source_ids_json: str = "",
@@ -288,6 +303,128 @@ class JsonlNovelDownloaderPluginBase(Star):
             payload,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
+        )
+
+    async def handle_novel_query_candidates(
+        self,
+        keyword: str,
+        author: str = "",
+        source_ids_json: str = "",
+        limit: str = "",
+        offset: str = "",
+        include_disabled: str = "",
+    ) -> str:
+        source_ids = self._parse_string_list(source_ids_json)
+        limit_value = self._parse_optional_int(limit) or 10
+        offset_value = self._parse_non_negative_int(offset, 0)
+        include_disabled_value = self._parse_bool(include_disabled, False)
+        resolution_limit = min(200, max(limit_value, offset_value + limit_value))
+        resolution = await run_blocking(
+            self.book_resolution_service.resolve,
+            keyword,
+            author,
+            source_ids or None,
+            resolution_limit,
+            include_disabled_value,
+        )
+        cache_record = await run_blocking(
+            self.search_cache.save_search,
+            str(resolution.get("keyword") or keyword).strip(),
+            dict(resolution.get("search_result") or {}),
+            source_ids or None,
+            include_disabled_value,
+            resolution_limit,
+        )
+        return await run_blocking(
+            self.renderer.render_candidate_query_summary,
+            resolution,
+            cache_record,
+            limit_value,
+            offset_value,
+        )
+
+    async def handle_novel_probe_status(
+        self,
+        source_ids_json: str = "",
+        include_disabled: str = "",
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        source_ids = self._parse_string_list(source_ids_json)
+        include_disabled_value = self._parse_bool(include_disabled, False)
+        limit_value = self._parse_optional_int(limit) or self.max_tool_preview_items
+        offset_value = self._parse_non_negative_int(offset, 0)
+        selected_sources = await run_blocking(
+            self.source_registry.load_enabled_source_summaries,
+            source_ids or None,
+            include_disabled_value,
+        )
+        selected_sources = await run_blocking(
+            self.source_health_store.enrich_sources,
+            selected_sources,
+        )
+        probe_status = await run_blocking(
+            self.source_probe_service.get_status,
+            max(self.max_tool_preview_items, limit_value),
+        )
+        return await run_blocking(
+            self.renderer.render_probe_status_summary,
+            selected_sources,
+            list(source_ids),
+            include_disabled_value,
+            probe_status,
+            limit_value,
+            offset_value,
+        )
+
+    async def handle_novel_inspect_source_book(
+        self,
+        source_id: str,
+        book_url: str,
+        book_name: str = "",
+    ) -> str:
+        summary = await run_blocking(self.source_registry.get_source_summary, source_id)
+        summary = await run_blocking(self.source_health_store.enrich_source, summary)
+        preflight = None
+        try:
+            preflight = await run_blocking(
+                self.source_download_service.preflight_book,
+                source_id,
+                book_url,
+                book_name,
+            )
+        except Exception as exc:
+            return await run_blocking(
+                self.renderer.render_source_book_inspection,
+                summary,
+                {},
+                {},
+                "preflight_failed",
+                str(exc),
+            )
+
+        try:
+            sample = await run_blocking(
+                self.source_download_service.sample_book,
+                preflight,
+            )
+        except Exception as exc:
+            return await run_blocking(
+                self.renderer.render_source_book_inspection,
+                summary,
+                preflight,
+                {},
+                "sample_failed",
+                str(exc),
+            )
+
+        return await run_blocking(
+            self.renderer.render_source_book_inspection,
+            summary,
+            preflight,
+            sample,
+            "ready",
+            "",
         )
 
     async def handle_novel_auto_download(

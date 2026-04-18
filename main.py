@@ -90,6 +90,16 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_list_sources(enabled_only, limit, offset)
 
+    @compat_llm_tool(name="novel_get_source_detail")
+    async def novel_get_source_detail(self, event: AstrMessageEvent, source_id: str) -> str:
+        """
+        查看单个书源的详细信息，包括静态能力、健康状态、编译后的 profile 和关键规则摘要。
+
+        Args:
+            source_id(string): 要查询的书源 ID。
+        """
+        return await self.handle_novel_get_source_detail(source_id)
+
     @compat_llm_tool(name="novel_refresh_sources")
     async def novel_refresh_sources(
         self,
@@ -172,6 +182,84 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_get_search_results(search_id, limit, offset)
 
+    @compat_llm_tool(name="novel_query_candidates")
+    async def novel_query_candidates(
+        self,
+        event: AstrMessageEvent,
+        keyword: str,
+        author: str = "",
+        source_ids_json: str = "",
+        limit: str = "",
+        offset: str = "",
+        include_disabled: str = "",
+    ) -> str:
+        """
+        按书名只查询候选下载源和排序结果，不启动下载任务；可配合 offset 分页查看下一批候选源。
+
+        Args:
+            keyword(string): 搜索关键词，通常填写书名。
+            author(string): 可选，作者名；填写后会优先展示标题和作者都匹配的候选。
+            source_ids_json(string): 可选，只在指定书源范围内查询；支持 JSON 数组或逗号分隔的书源 ID。
+            limit(string): 可选，本次返回多少条候选结果。
+            offset(string): 可选，从第几条候选结果开始返回，用于手动查看下一批候选。
+            include_disabled(string): 是否在查询时包含禁用书源，支持 true/false/1/0/yes/no。
+        """
+        return await self.handle_novel_query_candidates(
+            keyword,
+            author,
+            source_ids_json,
+            limit,
+            offset,
+            include_disabled,
+        )
+
+    @compat_llm_tool(name="novel_probe_status")
+    async def novel_probe_status(
+        self,
+        event: AstrMessageEvent,
+        source_ids_json: str = "",
+        include_disabled: str = "",
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        """
+        查看后台健康探测的当前进度，以及指定书源范围内的健康状态摘要。
+
+        Args:
+            source_ids_json(string): 可选，只查看指定书源；支持 JSON 数组或逗号分隔的书源 ID。留空时统计全部已启用书源。
+            include_disabled(string): 是否把禁用书源也纳入统计，支持 true/false/1/0/yes/no。
+            limit(string): 可选，本次最多返回多少条书源健康摘要。
+            offset(string): 可选，从第几条书源开始返回，用于分页查看健康状态。
+        """
+        return await self.handle_novel_probe_status(
+            source_ids_json,
+            include_disabled,
+            limit,
+            offset,
+        )
+
+    @compat_llm_tool(name="novel_inspect_source_book")
+    async def novel_inspect_source_book(
+        self,
+        event: AstrMessageEvent,
+        source_id: str,
+        book_url: str,
+        book_name: str = "",
+    ) -> str:
+        """
+        在不创建任务的前提下，查询某个书源对指定书籍详情页的预检和正文抽样结果。
+
+        Args:
+            source_id(string): 书源 ID。
+            book_url(string): 书籍详情页地址。
+            book_name(string): 可选，手动指定书名，便于预检失败时保留上下文。
+        """
+        return await self.handle_novel_inspect_source_book(
+            source_id,
+            book_url,
+            book_name,
+        )
+
     @compat_llm_tool(name="novel_download")
     async def novel_download(
         self,
@@ -207,6 +295,77 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             output_filename,
             auto_assemble,
             include_disabled,
+        )
+
+    @compat_llm_tool(name="novel_download_source_book")
+    async def novel_download_source_book(
+        self,
+        event: AstrMessageEvent,
+        source_id: str,
+        book_url: str,
+        book_name: str = "",
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ) -> str:
+        """
+        直接指定某个书源和书籍详情页启动下载，适合在候选源之间手动切换而不再走自动择源。
+
+        Args:
+            source_id(string): 书源 ID，通常来自 novel_query_candidates 或 novel_get_source_detail。
+            book_url(string): 书籍详情页地址。
+            book_name(string): 可选，手动指定书名，方便任务命名和失败时保留上下文。
+            output_filename(string): 可选，自定义输出 TXT 文件名。
+            auto_assemble(string): 是否在下载完成后自动组装 TXT，支持 true/false/1/0/yes/no。
+        """
+        return await self.handle_novel_download_book(
+            source_id,
+            book_url,
+            book_name,
+            output_filename,
+            auto_assemble,
+        )
+
+    @compat_llm_tool(name="novel_read_search_results")
+    async def novel_read_search_results(
+        self,
+        event: AstrMessageEvent,
+        search_id: str,
+        limit: str = "",
+        offset: str = "",
+    ) -> str:
+        """
+        分页查看某次缓存搜索的原始结果，方便在自动候选之外手动检查更多书源命中。
+
+        Args:
+            search_id(string): 搜索缓存 ID，通常来自 novel_query_candidates 或其他搜索相关工具的返回。
+            limit(string): 可选，本次最多返回多少条原始搜索结果。
+            offset(string): 可选，从第几条结果开始返回。
+        """
+        return await self.handle_novel_get_search_results(search_id, limit, offset)
+
+    @compat_llm_tool(name="novel_download_cached_result")
+    async def novel_download_cached_result(
+        self,
+        event: AstrMessageEvent,
+        search_id: str,
+        result_index: str,
+        output_filename: str = "",
+        auto_assemble: str = "true",
+    ) -> str:
+        """
+        直接基于某次缓存搜索里的指定结果启动下载，适合在原始搜索命中里手动换源。
+
+        Args:
+            search_id(string): 搜索缓存 ID。
+            result_index(string): 搜索结果索引，通常来自 novel_read_search_results 返回的 result_index。
+            output_filename(string): 可选，自定义输出 TXT 文件名。
+            auto_assemble(string): 是否在下载完成后自动组装 TXT，支持 true/false/1/0/yes/no。
+        """
+        return await self.handle_novel_download_search_result(
+            search_id,
+            result_index,
+            output_filename,
+            auto_assemble,
         )
 
     @compat_hidden_tool()

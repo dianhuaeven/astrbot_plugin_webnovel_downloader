@@ -85,13 +85,22 @@ class SourceProbeService:
                 self._idle_condition.wait(remaining)
             return True
 
-    def get_status(self) -> dict[str, int | bool]:
+    def get_status(self, preview_limit: int = 8) -> dict[str, int | bool | list[str]]:
         with self._idle_condition:
+            normalized_preview_limit = max(0, int(preview_limit))
+            queued_ids = sorted(self._queued_ids)
+            active_ids = sorted(self._active_ids)
+            queued_preview = queued_ids[:normalized_preview_limit] if normalized_preview_limit else []
+            active_preview = active_ids[:normalized_preview_limit] if normalized_preview_limit else []
             return {
                 "workers_started": self._workers_started,
                 "queued_count": len(self._queued_ids),
                 "active_count": len(self._active_ids),
                 "max_workers": max(1, int(self.config.max_workers)),
+                "queued_source_ids": queued_preview,
+                "active_source_ids": active_preview,
+                "omitted_queued_count": max(0, len(queued_ids) - len(queued_preview)),
+                "omitted_active_count": max(0, len(active_ids) - len(active_preview)),
             }
 
     def shutdown(self, timeout: float | None = None) -> bool:

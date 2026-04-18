@@ -200,6 +200,194 @@ class ToolResultRenderer:
                 continue
             return text
 
+    def render_source_detail(
+        self,
+        source: dict[str, Any],
+        normalized_source: dict[str, Any],
+        health: dict[str, Any],
+        profile: dict[str, Any] | None,
+    ) -> str:
+        source_id = str(source.get("source_id") or normalized_source.get("source_id") or "").strip()
+        payload = {
+            "source": self._compact_source(source),
+            "paths": {
+                "raw_path": str(self.source_registry.raw_dir / "{source_id}.json".format(source_id=source_id)),
+                "normalized_path": str(
+                    self.source_registry.normalized_dir / "{source_id}.json".format(source_id=source_id)
+                ),
+                "registry_path": str(self.source_registry.registry_path),
+            },
+            "normalized": {
+                "source_url": normalized_source.get("source_url", ""),
+                "search_url": normalized_source.get("search_url", ""),
+                "single_url": normalized_source.get("single_url", ""),
+                "enabled": bool(normalized_source.get("enabled", False)),
+                "group": self.truncate_text(normalized_source.get("group", ""), 80),
+                "rule_search_keys": sorted((normalized_source.get("rule_search") or {}).keys()),
+                "rule_book_info_keys": sorted((normalized_source.get("rule_book_info") or {}).keys()),
+                "rule_toc_keys": sorted((normalized_source.get("rule_toc") or {}).keys()),
+                "rule_content_keys": sorted((normalized_source.get("rule_content") or {}).keys()),
+            },
+            "health": self._compact_source_health(health),
+            "profile": self._compact_source_profile(profile or {}),
+        }
+        return self.to_json_text(payload)
+
+    def render_candidate_query_summary(
+        self,
+        resolution: dict[str, Any],
+        cache_record: dict[str, Any],
+        limit: int,
+        offset: int,
+    ) -> str:
+        all_candidates = list(resolution.get("candidates") or [])
+        all_skipped_candidates = list(resolution.get("skipped_candidates") or [])
+        candidates = all_candidates[offset : offset + limit]
+        skipped_candidates = all_skipped_candidates[offset : offset + limit]
+        search_result = dict(resolution.get("search_result") or {})
+        errors = list(search_result.get("errors") or [])
+        candidate_preview_count = min(self.config.max_tool_preview_items, len(candidates))
+        skipped_preview_count = min(self.config.max_tool_preview_items, len(skipped_candidates))
+        error_preview_count = min(self.config.max_tool_preview_items, len(errors))
+        report_path = ""
+
+        while True:
+            summary = {
+                "keyword": resolution.get("keyword", ""),
+                "author": resolution.get("author", ""),
+                "search_id": cache_record.get("search_id", ""),
+                "search_path": cache_record.get("path", ""),
+                "candidate_sources": search_result.get("candidate_sources", 0),
+                "searched_sources": search_result.get("searched_sources", 0),
+                "successful_sources": search_result.get("successful_sources", 0),
+                "partial": bool(search_result.get("partial", False)),
+                "early_stopped": bool(search_result.get("early_stopped", False)),
+                "stop_reason": search_result.get("stop_reason", ""),
+                "offset": offset,
+                "limit": limit,
+                "returned_candidate_count": len(candidates),
+                "returned_skipped_candidate_count": len(skipped_candidates),
+                "has_more_candidates": offset + len(candidates) < len(all_candidates),
+                "next_candidate_offset": (
+                    offset + len(candidates) if offset + len(candidates) < len(all_candidates) else None
+                ),
+                "timed_out_source_count": search_result.get("timed_out_source_count", 0),
+                "unsearched_source_count": search_result.get("unsearched_source_count", 0),
+                "result_count": search_result.get("result_count", 0),
+                "candidate_count": len(all_candidates),
+                "skipped_candidate_count": len(all_skipped_candidates),
+                "candidates": [
+                    self._compact_auto_download_candidate(item)
+                    for item in candidates[:candidate_preview_count]
+                ],
+                "skipped_candidates": [
+                    self._compact_auto_download_candidate(item, include_skip_reason=True)
+                    for item in skipped_candidates[:skipped_preview_count]
+                ],
+                "errors": [
+                    self._compact_search_notice(item, "error")
+                    for item in errors[:error_preview_count]
+                ],
+                "omitted_candidate_count": max(0, len(candidates) - candidate_preview_count),
+                "omitted_skipped_candidate_count": max(
+                    0, len(skipped_candidates) - skipped_preview_count
+                ),
+                "omitted_error_count": max(0, len(errors) - error_preview_count),
+            }
+            if report_path:
+                summary["report_path"] = report_path
+            text = self.to_json_text(summary)
+            if len(text) <= self.config.max_tool_response_chars:
+                if (
+                    len(candidates) > candidate_preview_count
+                    or len(skipped_candidates) > skipped_preview_count
+                    or len(errors) > error_preview_count
+                ) and not report_path:
+                    report_path = self._write_json_report(
+                        "query-candidates",
+                        {
+                            "resolution": resolution,
+                            "search_record": cache_record,
+                        },
+                    )
+                    continue
+                return text
+            if not report_path:
+                report_path = self._write_json_report(
+                    "query-candidates",
+                    {
+                        "resolution": resolution,
+                        "search_record": cache_record,
+                    },
+                )
+                continue
+            if error_preview_count > 0:
+                error_preview_count -= 1
+                continue
+            if skipped_preview_count > 0:
+                skipped_preview_count -= 1
+                continue
+            if candidate_preview_count > 1:
+                candidate_preview_count -= 1
+                continue
+            return text
+
+    def render_probe_status_summary(
+        self,
+        sources: list[dict[str, Any]],
+        requested_source_ids: list[str],
+        include_disabled: bool,
+        probe_status: dict[str, Any],
+        limit: int,
+        offset: int,
+    ) -> str:
+        total = len(sources)
+        sliced = sources[offset : offset + limit]
+        preview_count = min(self.config.max_tool_preview_items, len(sliced))
+        payload = {
+            "requested_source_count": len(requested_source_ids),
+            "selected_source_count": total,
+            "include_disabled": include_disabled,
+            "workers_started": bool(probe_status.get("workers_started", False)),
+            "queued_probe_count": int(probe_status.get("queued_count", 0) or 0),
+            "active_probe_count": int(probe_status.get("active_count", 0) or 0),
+            "max_workers": int(probe_status.get("max_workers", 0) or 0),
+            "queued_source_ids": list(probe_status.get("queued_source_ids") or []),
+            "active_source_ids": list(probe_status.get("active_source_ids") or []),
+            "omitted_queued_count": int(probe_status.get("omitted_queued_count", 0) or 0),
+            "omitted_active_count": int(probe_status.get("omitted_active_count", 0) or 0),
+            "offset": offset,
+            "limit": limit,
+            "returned_count": len(sliced),
+            "previewed_count": preview_count,
+            "has_more": offset + len(sliced) < total,
+            "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+            "requested_source_ids": requested_source_ids[: self.config.max_tool_preview_items],
+            "search_health_counts": self._count_stage_states(sources, "search"),
+            "preflight_health_counts": self._count_stage_states(sources, "preflight"),
+            "download_health_counts": self._count_stage_states(sources, "download"),
+            "sources": [self._compact_source(item) for item in sliced[:preview_count]],
+            "omitted_from_inline_count": max(0, len(sliced) - preview_count),
+        }
+        return self.to_json_text(payload)
+
+    def render_source_book_inspection(
+        self,
+        source: dict[str, Any],
+        preflight: dict[str, Any] | None,
+        sample: dict[str, Any] | None,
+        status: str,
+        error: str = "",
+    ) -> str:
+        payload = {
+            "status": status,
+            "error": self.truncate_text(error, 180),
+            "source": self._compact_source(source),
+            "preflight": self._compact_preflight(preflight or {}),
+            "sample": self._compact_sample(sample or {}),
+        }
+        return self.to_json_text(payload)
+
     def render_probe_enqueue_summary(
         self,
         selected_sources: list[dict[str, Any]],
@@ -590,7 +778,10 @@ class ToolResultRenderer:
             "enabled": bool(item.get("enabled", False)),
             "search_uses_js": bool(item.get("search_uses_js", False)),
             "download_uses_js": bool(item.get("download_uses_js", False)),
+            "search_uses_webview": bool(item.get("search_uses_webview", False)),
+            "download_uses_webview": bool(item.get("download_uses_webview", False)),
             "has_js_lib": bool(item.get("has_js_lib", False)),
+            "has_web_js": bool(item.get("has_web_js", False)),
             "has_login_flow": bool(item.get("has_login_flow", False)),
             "supports_search": bool(item.get("supports_search", False)),
             "supports_download": bool(item.get("supports_download", False)),
@@ -662,6 +853,10 @@ class ToolResultRenderer:
             "supports_download": bool(item.get("supports_download", False)),
             "title_match": item.get("title_match", ""),
             "author_match": item.get("author_match", ""),
+            "template_family": item.get("template_family", ""),
+            "preferred_extractor": item.get("preferred_extractor", ""),
+            "search_strategy_mode": item.get("search_strategy_mode", ""),
+            "download_strategy_mode": item.get("download_strategy_mode", ""),
             "search_health_state": item.get("search_health_state", ""),
             "preflight_health_state": item.get("preflight_health_state", ""),
             "download_health_state": item.get("download_health_state", ""),
@@ -692,6 +887,83 @@ class ToolResultRenderer:
         if item.get("error"):
             compact["error"] = self.truncate_text(item.get("error", ""), 120)
         return compact
+
+    def _compact_source_health(self, health: dict[str, Any]) -> dict[str, Any]:
+        compact: dict[str, Any] = {}
+        for stage in ("search", "preflight", "download"):
+            stage_entry = dict(health.get(stage) or {})
+            compact[stage] = {
+                "state": stage_entry.get("state", "unknown"),
+                "attempts": int(stage_entry.get("attempts", 0) or 0),
+                "successes": int(stage_entry.get("successes", 0) or 0),
+                "failures": int(stage_entry.get("failures", 0) or 0),
+                "timeouts": int(stage_entry.get("timeouts", 0) or 0),
+                "avg_ms": float(stage_entry.get("avg_ms", 0.0) or 0.0),
+                "updated_at": float(stage_entry.get("updated_at", 0.0) or 0.0),
+                "note": self.truncate_text(stage_entry.get("note", ""), 120),
+                "last_error_code": stage_entry.get("last_error_code", ""),
+                "last_error_summary": self.truncate_text(
+                    stage_entry.get("last_error_summary", ""),
+                    120,
+                ),
+                "sample_book_name": self.truncate_text(
+                    stage_entry.get("sample_book_name", ""),
+                    80,
+                ),
+                "sample_book_url": self.truncate_text(
+                    stage_entry.get("sample_book_url", ""),
+                    120,
+                ),
+                "toc_count": int(stage_entry.get("toc_count", 0) or 0),
+            }
+        return compact
+
+    def _compact_source_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        if not profile:
+            return {}
+        return {
+            "template_family": profile.get("template_family", ""),
+            "preferred_extractors": list(profile.get("preferred_extractors") or []),
+            "search_strategy": dict(profile.get("search_strategy") or {}),
+            "download_strategy": dict(profile.get("download_strategy") or {}),
+            "compiled_at": float(profile.get("compiled_at", 0.0) or 0.0),
+            "updated_at": float(profile.get("updated_at", 0.0) or 0.0),
+        }
+
+    def _compact_preflight(self, preflight: dict[str, Any]) -> dict[str, Any]:
+        if not preflight:
+            return {}
+        return {
+            "source_id": preflight.get("source_id", ""),
+            "source_name": preflight.get("source_name", ""),
+            "book_name": preflight.get("book_name", ""),
+            "author": preflight.get("author", ""),
+            "book_url": preflight.get("book_url", ""),
+            "toc_url": preflight.get("toc_url", ""),
+            "toc_count": int(preflight.get("toc_count", len(preflight.get("toc") or [])) or 0),
+            "intro": self.truncate_text(preflight.get("intro", ""), 180),
+        }
+
+    def _compact_sample(self, sample: dict[str, Any]) -> dict[str, Any]:
+        if not sample:
+            return {}
+        sampled_chapters = list(sample.get("sampled_chapters") or [])
+        sample_errors = list(sample.get("sample_errors") or [])
+        return {
+            "sampled_chapter_count": int(sample.get("sampled_chapter_count", 0) or 0),
+            "requested_sample_count": int(sample.get("requested_sample_count", 0) or 0),
+            "min_content_chars": int(sample.get("min_content_chars", 0) or 0),
+            "sampled_chapters": sampled_chapters[: self.config.max_tool_preview_items],
+            "sample_errors": sample_errors[: self.config.max_tool_preview_items],
+            "omitted_sampled_chapter_count": max(
+                0,
+                len(sampled_chapters) - self.config.max_tool_preview_items,
+            ),
+            "omitted_sample_error_count": max(
+                0,
+                len(sample_errors) - self.config.max_tool_preview_items,
+            ),
+        }
 
     def _compact_auto_download_job(
         self,
@@ -738,3 +1010,11 @@ class ToolResultRenderer:
             "skipped_rule_count": item.get("skipped_rule_count", 0),
             "path": item.get("path", ""),
         }
+
+    def _count_stage_states(self, sources: list[dict[str, Any]], stage: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        key = "{stage}_health_state".format(stage=stage)
+        for item in sources:
+            state = str(item.get(key, "unknown") or "unknown")
+            counts[state] = counts.get(state, 0) + 1
+        return counts
