@@ -29,11 +29,13 @@ class SearchService:
         engine: RuleEngine,
         config: Optional[SearchServiceConfig] = None,
         source_profile_service: Any = None,
+        source_health_store: Any = None,
     ):
         self.registry = registry
         self.engine = engine
         self.config = config or SearchServiceConfig()
         self.source_profile_service = source_profile_service
+        self.source_health_store = source_health_store
         self._health_lock = threading.Lock()
         health_path = self.config.health_path
         self._health_path = Path(health_path) if health_path else None
@@ -65,7 +67,12 @@ class SearchService:
                 "errors": [],
             }
 
-        searchable_summaries = [item for item in source_summaries if item.get("supports_search")]
+        runtime_health = self._load_runtime_health(source_summaries)
+        searchable_summaries = [
+            item
+            for item in source_summaries
+            if self._search_skip_reason(item, runtime_health.get(str(item.get("source_id") or ""), {})) == ""
+        ]
         summary_by_source_id = {
             str(item.get("source_id") or ""): item for item in searchable_summaries
         }
@@ -73,10 +80,16 @@ class SearchService:
             {
                 "source_id": item.get("source_id", ""),
                 "source_name": item.get("name", ""),
-                "reason": "；".join(item.get("issues") or []) or "当前书源不支持 route A 搜索",
+                "reason": self._search_skip_reason(
+                    item,
+                    runtime_health.get(str(item.get("source_id") or ""), {}),
+                ),
             }
             for item in source_summaries
-            if not item.get("supports_search")
+            if self._search_skip_reason(
+                item,
+                runtime_health.get(str(item.get("source_id") or ""), {}),
+            )
         ]
         if not searchable_summaries:
             return {
@@ -219,6 +232,7 @@ class SearchService:
                         self._attach_source_summary_fields(
                             source_results,
                             summary_by_source_id.get(str(source.get("source_id") or ""), {}),
+                            runtime_health.get(str(source.get("source_id") or ""), {}),
                         )
                     )
                 for future in done:
@@ -284,13 +298,21 @@ class SearchService:
         self,
         items: List[Dict[str, Any]],
         summary: Dict[str, Any],
+        health_entry: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         enriched: List[Dict[str, Any]] = []
-        supports_download = bool(summary.get("supports_download", False))
+        supports_download = self._supports_download_with_runtime(summary, health_entry)
         issues = [str(issue).strip() for issue in list(summary.get("issues") or []) if str(issue).strip()]
         for item in items:
             current = dict(item)
             current["supports_download"] = supports_download
+            current["static_supports_download"] = bool(summary.get("supports_download", False))
+            for stage in ("search", "preflight", "download"):
+                stage_entry = dict(health_entry.get(stage) or {})
+                current["{stage}_health_state".format(stage=stage)] = str(
+                    stage_entry.get("state", "unknown") or "unknown"
+                )
+                current["{stage}_health_summary".format(stage=stage)] = self._stage_summary(stage_entry)
             if issues:
                 current["source_issues"] = issues[:3]
             enriched.append(current)
@@ -436,10 +458,12 @@ class SearchService:
             summary = dict(summary_by_source_id.get(source_id) or {})
         with self._health_lock:
             entry = dict(self._source_health.get(source_id) or {})
+        runtime_health = self._get_runtime_health_entry(source_id)
         profile_rank = self._profile_priority_rank(source_id)
         supports_download_rank = 0 if summary.get("supports_download", False) else 1
+        runtime_rank = self._search_health_rank(runtime_health.get("search", {}))
         if not entry:
-            return (supports_download_rank, profile_rank, 1, 0, float("inf"), 0.0)
+            return (runtime_rank, supports_download_rank, profile_rank, 1, 0, float("inf"), 0.0)
         successes = max(0, int(entry.get("successes", 0) or 0))
         failures = max(0, int(entry.get("failures", 0) or 0))
         timeouts = max(0, int(entry.get("timeouts", 0) or 0))
@@ -450,6 +474,7 @@ class SearchService:
         if successes > 0:
             penalty = timeouts * 2 + max(0, failures - successes)
             return (
+                runtime_rank,
                 supports_download_rank,
                 profile_rank,
                 0,
@@ -458,6 +483,7 @@ class SearchService:
                 -last_success_at,
             )
         return (
+            runtime_rank,
             supports_download_rank,
             profile_rank,
             2,
@@ -465,6 +491,77 @@ class SearchService:
             avg_duration_ms,
             last_failure_at,
         )
+
+    def _load_runtime_health(self, source_summaries: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        if self.source_health_store is None:
+            return {}
+        source_ids = [
+            str(item.get("source_id") or "").strip()
+            for item in source_summaries
+            if str(item.get("source_id") or "").strip()
+        ]
+        try:
+            return dict(self.source_health_store.get_many(source_ids))
+        except Exception:
+            return {}
+
+    def _get_runtime_health_entry(self, source_id: str) -> Dict[str, Any]:
+        if self.source_health_store is None or not source_id:
+            return {}
+        try:
+            return dict(self.source_health_store.get_source_health(source_id) or {})
+        except Exception:
+            return {}
+
+    def _search_skip_reason(self, summary: Dict[str, Any], health_entry: Dict[str, Any]) -> str:
+        if not summary.get("supports_search"):
+            return "；".join(summary.get("issues") or []) or "当前书源不支持 route A 搜索"
+        stage_entry = dict(health_entry.get("search") or {})
+        state = str(stage_entry.get("state", "unknown") or "unknown")
+        if state in {"broken", "unsupported"}:
+            return self._stage_summary(stage_entry)
+        return ""
+
+    def _supports_download_with_runtime(
+        self,
+        summary: Dict[str, Any],
+        health_entry: Dict[str, Any],
+    ) -> bool:
+        if not bool(summary.get("supports_download", False)):
+            return False
+        for stage in ("preflight", "download"):
+            stage_state = str((health_entry.get(stage) or {}).get("state", "unknown") or "unknown")
+            if stage_state in {"broken", "unsupported"}:
+                return False
+        return True
+
+    def _stage_summary(self, stage_entry: Dict[str, Any]) -> str:
+        note = str(stage_entry.get("note", "") or "").strip()
+        if note:
+            return note
+        error_summary = str(stage_entry.get("last_error_summary", "") or "").strip()
+        if error_summary:
+            return error_summary
+        state = str(stage_entry.get("state", "unknown") or "unknown")
+        if state == "healthy":
+            return "最近探测成功"
+        if state == "degraded":
+            return "最近探测不稳定"
+        if state == "broken":
+            return "最近探测失败"
+        if state == "unsupported":
+            return "静态或运行时规则不支持"
+        return "尚无健康记录"
+
+    def _search_health_rank(self, stage_entry: Dict[str, Any]) -> int:
+        state = str(stage_entry.get("state", "unknown") or "unknown")
+        return {
+            "healthy": 0,
+            "degraded": 1,
+            "unknown": 2,
+            "broken": 3,
+            "unsupported": 4,
+        }.get(state, 5)
 
     def _profile_priority_rank(self, source_id: str) -> int:
         if self.source_profile_service is None or not source_id:

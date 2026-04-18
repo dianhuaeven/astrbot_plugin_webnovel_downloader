@@ -157,6 +157,19 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             health_path=plugin_data_dir / "search_source_health.json",
         ),
         source_profile_service=source_profile_service,
+        source_health_store=source_health_store,
+    )
+    source_download_service = SourceDownloadService(
+        source_registry,
+        download_extractor,
+        manager,
+        SourceDownloadConfig(
+            max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),
+            sample_chapters=max(1, int(settings.get("download_sample_chapters", 1))),
+            sample_min_chars=max(1, int(settings.get("download_sample_min_chars", 1))),
+        ),
+        source_health_store=source_health_store,
+        source_profile_service=source_profile_service,
     )
     source_probe_service = SourceProbeService(
         source_registry,
@@ -170,18 +183,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
                 ("诡秘之主", "斗破苍穹", "凡人修仙传"),
             ),
         ),
-    )
-    source_download_service = SourceDownloadService(
-        source_registry,
-        download_extractor,
-        manager,
-        SourceDownloadConfig(
-            max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),
-            sample_chapters=max(1, int(settings.get("download_sample_chapters", 1))),
-            sample_min_chars=max(1, int(settings.get("download_sample_min_chars", 1))),
-        ),
-        source_health_store=source_health_store,
-        source_profile_service=source_profile_service,
+        source_download_service=source_download_service,
     )
     book_resolution_service = BookResolutionService(
         source_registry,

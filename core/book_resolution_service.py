@@ -127,15 +127,17 @@ class BookResolutionService:
         book_url = str(item.get("book_url") or "").strip()
         profile = self._safe_get_source_profile(source_id)
         preferred_extractors = list(profile.get("preferred_extractors") or [])
-        supports_download = bool(
-            item.get("supports_download", summary.get("supports_download", False))
+        health = health_by_source.get(source_id) or {}
+        supports_download = self._supports_download_with_runtime(
+            item,
+            summary,
+            health,
         )
         source_issues = [
             str(issue).strip()
             for issue in list(item.get("source_issues") or summary.get("issues") or [])
             if str(issue).strip()
         ]
-        health = health_by_source.get(source_id) or {}
         candidate = {
             "source_id": source_id,
             "source_name": source_name,
@@ -169,7 +171,7 @@ class BookResolutionService:
         if not book_url:
             candidate["skip_reason"] = "搜索结果缺少 book_url，无法自动下载"
         elif not supports_download:
-            candidate["skip_reason"] = "；".join(source_issues) or "书源静态规则当前不支持 TXT 下载"
+            candidate["skip_reason"] = self._download_skip_reason(health, source_issues)
         else:
             candidate["skip_reason"] = ""
         return candidate
@@ -288,3 +290,29 @@ class BookResolutionService:
 
     def _normalize_text(self, value: Any) -> str:
         return str(value or "").strip().casefold()
+
+    def _supports_download_with_runtime(
+        self,
+        item: dict[str, Any],
+        summary: dict[str, Any],
+        health: dict[str, dict[str, Any]],
+    ) -> bool:
+        if not bool(item.get("supports_download", summary.get("supports_download", False))):
+            return False
+        for stage in ("preflight", "download"):
+            stage_state = str((health.get(stage) or {}).get("state", "unknown") or "unknown")
+            if stage_state in {"broken", "unsupported"}:
+                return False
+        return True
+
+    def _download_skip_reason(
+        self,
+        health: dict[str, dict[str, Any]],
+        source_issues: list[str],
+    ) -> str:
+        for stage in ("preflight", "download"):
+            stage_entry = dict(health.get(stage) or {})
+            stage_state = str(stage_entry.get("state", "unknown") or "unknown")
+            if stage_state in {"broken", "unsupported"}:
+                return self._stage_summary(stage_entry)
+        return "；".join(source_issues) or "书源当前不支持 TXT 下载"

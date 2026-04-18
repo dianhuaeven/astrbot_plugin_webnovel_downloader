@@ -159,6 +159,8 @@ class SourceProfileService:
         mode = "keyword_search"
         if normalized.get("single_url"):
             mode = "single_url"
+        elif summary.get("search_uses_webview"):
+            mode = "unsupported_webview"
         elif not supports_search and summary.get("search_uses_js"):
             mode = "unsupported_js"
         elif not supports_search:
@@ -168,6 +170,7 @@ class SourceProfileService:
             "mode": mode,
             "supports_search": supports_search,
             "requires_js": bool(summary.get("search_uses_js", False)),
+            "requires_webview": bool(summary.get("search_uses_webview", False)),
             "search_url": str(normalized.get("search_url") or ""),
             "rule_keys": sorted((normalized.get("rule_search") or {}).keys()),
             "preferred_extractor": preferred_extractors[0],
@@ -181,7 +184,9 @@ class SourceProfileService:
     ) -> Dict[str, Any]:
         supports_download = bool(summary.get("supports_download", False))
         mode = "chapter_list"
-        if not supports_download and summary.get("download_uses_js"):
+        if not supports_download and summary.get("download_uses_webview"):
+            mode = "unsupported_webview"
+        elif not supports_download and summary.get("download_uses_js"):
             mode = "unsupported_js"
         elif not supports_download:
             mode = "missing_rules"
@@ -190,6 +195,7 @@ class SourceProfileService:
             "mode": mode,
             "supports_download": supports_download,
             "requires_js": bool(summary.get("download_uses_js", False)),
+            "requires_webview": bool(summary.get("download_uses_webview", False)),
             "rule_book_info_keys": sorted((normalized.get("rule_book_info") or {}).keys()),
             "rule_toc_keys": sorted((normalized.get("rule_toc") or {}).keys()),
             "rule_content_keys": sorted((normalized.get("rule_content") or {}).keys()),
@@ -200,6 +206,8 @@ class SourceProfileService:
         source_text = self._collect_rule_text(normalized)
         if normalized.get("single_url"):
             return "single_url"
+        if summary.get("search_uses_webview") or summary.get("download_uses_webview") or normalized.get("has_web_js"):
+            return "webview_dynamic"
         if summary.get("search_uses_js") or summary.get("download_uses_js") or normalized.get("enable_js"):
             return "javascript_dynamic"
         if summary.get("has_login_flow"):
@@ -233,6 +241,7 @@ class SourceProfileService:
         family_to_extractor = {
             "generic_html": "fallback_rule",
             "javascript_dynamic": "javascript_dynamic",
+            "webview_dynamic": "webview_dynamic",
             "wordpress_madara_like": "template_wordpress_madara_like",
             "novelfull_like": "template_novelfull_like",
             "novelpub_like": "template_novelpub_like",

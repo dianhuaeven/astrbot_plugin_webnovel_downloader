@@ -56,6 +56,29 @@ class _FakeEngine(object):
         )
 
 
+class _FakeSourceDownloadService(object):
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = []
+
+    def sample_book(self, plan, chapter_count=None, min_content_chars=None):
+        del chapter_count, min_content_chars
+        self.calls.append(dict(plan))
+        if self.error is not None:
+            raise self.error
+        return {
+            "sampled_chapter_count": 1,
+            "sampled_chapters": [
+                {
+                    "index": 0,
+                    "title": "第一章",
+                    "url": "https://example.com/chapter-1",
+                    "content_chars": 128,
+                }
+            ],
+        }
+
+
 class SourceProbeServiceTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -141,6 +164,47 @@ class SourceProbeServiceTest(unittest.TestCase):
         self.assertEqual(entry["download"]["state"], "unknown")
         self.assertEqual(entry["preflight"]["sample_book_url"], "https://example.com/book/1")
         self.assertEqual(len(engine.preflight_calls), 1)
+
+    def test_probe_can_record_download_sample_success_when_sampler_is_available(self):
+        registry = _FakeRegistry(
+            {
+                "full": {
+                    "source_id": "full",
+                    "supports_search": True,
+                    "supports_download": True,
+                    "issues": [],
+                }
+            },
+            {
+                "full": {
+                    "source_id": "full",
+                    "name": "完整源",
+                }
+            },
+        )
+        engine = _FakeEngine()
+        engine.search_results["full"] = [
+            {
+                "title": "样本书",
+                "book_url": "https://example.com/book/1",
+            }
+        ]
+        downloader = _FakeSourceDownloadService()
+        service = SourceProbeService(
+            registry,
+            engine,
+            self.store,
+            SourceProbeServiceConfig(max_workers=1, probe_keywords=("诡秘之主",)),
+            source_download_service=downloader,
+        )
+
+        service.enqueue_sources(["full"])
+        self.assertTrue(service.wait_for_idle(2.0))
+
+        entry = self.store.get_source_health("full")
+        self.assertEqual(entry["download"]["state"], "healthy")
+        self.assertEqual(entry["download"]["note"], "正文抽样成功")
+        self.assertEqual(len(downloader.calls), 1)
 
     def test_probe_leaves_preflight_unknown_when_search_has_no_results(self):
         registry = _FakeRegistry(

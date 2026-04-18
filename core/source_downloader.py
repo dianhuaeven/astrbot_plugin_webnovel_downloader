@@ -388,6 +388,23 @@ class SourceDownloadService:
     def _get_supported_download_summary(self, source_id: str) -> Dict[str, Any]:
         summary = self.registry.get_source_summary(source_id)
         if summary.get("supports_download"):
+            if self.source_health_store is not None:
+                try:
+                    health = dict(self.source_health_store.get_source_health(source_id) or {})
+                except Exception:
+                    health = {}
+                for stage in ("preflight", "download"):
+                    stage_entry = dict(health.get(stage) or {})
+                    stage_state = str(stage_entry.get("state", "unknown") or "unknown")
+                    if stage_state != "unsupported":
+                        continue
+                    issues = str(stage_entry.get("note") or stage_entry.get("last_error_summary") or "").strip()
+                    raise ValueError(
+                        "书源 {name} 当前不支持 TXT 下载：{issues}".format(
+                            name=summary.get("name") or source_id,
+                            issues=issues or "当前书源不支持 route A TXT 下载",
+                        )
+                    )
             return summary
         issues = "；".join(summary.get("issues") or []) or "当前书源不支持 route A TXT 下载"
         raise ValueError(

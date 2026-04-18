@@ -25,6 +25,7 @@ class SourceProbeService:
         health_store: Any,
         source_profile_service: Any = None,
         config: SourceProbeServiceConfig | None = None,
+        source_download_service: Any = None,
     ):
         if isinstance(source_profile_service, SourceProbeServiceConfig) and config is None:
             config = source_profile_service
@@ -34,6 +35,7 @@ class SourceProbeService:
         self.health_store = health_store
         self.source_profile_service = source_profile_service
         self.config = config or SourceProbeServiceConfig()
+        self.source_download_service = source_download_service
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._state_lock = threading.Lock()
         self._idle_condition = threading.Condition(self._state_lock)
@@ -347,10 +349,50 @@ class SourceProbeService:
                 )
             except Exception:
                 pass
-        self.health_store.mark_unknown(
+        if self.source_download_service is None:
+            self.health_store.mark_unknown(
+                source_id,
+                "download",
+                summary="尚未进行正文下载探测",
+            )
+            return
+
+        probe_plan = dict(plan)
+        probe_plan.setdefault("source_id", source_id)
+        probe_plan.setdefault("source_name", summary.get("name") or source_id)
+        probe_plan.setdefault("toc_count", len(plan.get("toc") or []))
+        started_at = time.monotonic()
+        try:
+            sample = self.source_download_service.sample_book(probe_plan, chapter_count=1)
+        except Exception as exc:
+            self.health_store.record_failure(
+                source_id,
+                "download",
+                elapsed_ms=max(0.0, (time.monotonic() - started_at) * 1000.0),
+                error_code=self._classify_error_code(exc),
+                error_summary=str(exc),
+                timeout=self._classify_error_code(exc) == "timeout",
+                metadata={
+                    "sample_keyword": sample_keyword or first_success_keyword,
+                    "sample_book_name": str(plan.get("book_name") or book_name),
+                    "sample_book_url": str(plan.get("book_url") or book_url),
+                    "toc_count": len(plan.get("toc") or []),
+                },
+            )
+            return
+
+        self.health_store.record_success(
             source_id,
             "download",
-            summary="尚未进行正文下载探测",
+            elapsed_ms=max(0.0, (time.monotonic() - started_at) * 1000.0),
+            summary="正文抽样成功",
+            metadata={
+                "sample_keyword": sample_keyword or first_success_keyword,
+                "sample_book_name": str(plan.get("book_name") or book_name),
+                "sample_book_url": str(plan.get("book_url") or book_url),
+                "toc_count": len(plan.get("toc") or []),
+                "sampled_chapter_count": int(sample.get("sampled_chapter_count", 0) or 0),
+            },
         )
 
     def _classify_error_code(self, exc: Exception) -> str:

@@ -10,6 +10,12 @@ from typing import Any, Dict, Iterable, List
 
 REGISTRY_SCHEMA_VERSION = 1
 JS_RULE_MARKERS = ("<js>", "@js:")
+WEBVIEW_MARKERS = (
+    "\"webview\":true",
+    "\"webview\": true",
+    "'webview':true",
+    "'webview': true",
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -103,6 +109,16 @@ def _contains_js_marker(value: Any) -> bool:
     return False
 
 
+def _contains_webview_marker(value: Any) -> bool:
+    for item in _iter_string_values(value):
+        lowered = str(item or "").lower()
+        if any(marker in lowered for marker in WEBVIEW_MARKERS):
+            return True
+        if "webview" in lowered and "true" in lowered:
+            return True
+    return False
+
+
 def _looks_like_script_or_login_flow(value: Any) -> bool:
     text = _clean_text(value).lower()
     if not text:
@@ -162,6 +178,7 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "load_with_base_url": bool(raw_source.get("loadWithBaseUrl", False)),
         "enable_js": bool(raw_source.get("enableJs", False)),
         "has_js_lib": bool(_clean_text(raw_source.get("jsLib"))),
+        "has_web_js": bool(_clean_text(raw_source.get("webJs"))),
         "has_login_flow": bool(raw_source.get("loginUi")) or _looks_like_script_or_login_flow(
             raw_source.get("loginUrl")
         ),
@@ -169,6 +186,16 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "rule_book_info_uses_js": _contains_js_marker(raw_source.get("ruleBookInfo")),
         "rule_toc_uses_js": _contains_js_marker(raw_source.get("ruleToc")),
         "rule_content_uses_js": _contains_js_marker(raw_source.get("ruleContent")),
+        "search_uses_webview": _contains_webview_marker(
+            (
+                raw_source.get("searchUrl"),
+                raw_source.get("ruleSearch"),
+                raw_source.get("header"),
+            )
+        ),
+        "rule_book_info_uses_webview": _contains_webview_marker(raw_source.get("ruleBookInfo")),
+        "rule_toc_uses_webview": _contains_webview_marker(raw_source.get("ruleToc")),
+        "rule_content_uses_webview": _contains_webview_marker(raw_source.get("ruleContent")),
         "last_imported_at": time.time(),
     }
     return normalized
@@ -187,6 +214,7 @@ class SourceSummary:
     single_url: bool
     enable_js: bool
     has_js_lib: bool
+    has_web_js: bool
     has_login_flow: bool
     has_rule_search: bool
     has_rule_book_info: bool
@@ -194,6 +222,8 @@ class SourceSummary:
     has_rule_content: bool
     search_uses_js: bool
     download_uses_js: bool
+    search_uses_webview: bool
+    download_uses_webview: bool
     supports_search: bool
     supports_download: bool
     issues: List[str]
@@ -216,8 +246,19 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
             normalized.get("rule_content_uses_js"),
         )
     )
-    supports_search = has_required_search and not search_uses_js
-    supports_download = has_required_download and not download_uses_js
+    search_uses_webview = bool(normalized.get("search_uses_webview"))
+    download_uses_webview = bool(
+        normalized.get("rule_book_info_uses_webview")
+        or normalized.get("rule_toc_uses_webview")
+        or normalized.get("rule_content_uses_webview")
+        or normalized.get("has_web_js")
+    )
+    supports_search = has_required_search and not search_uses_js and not search_uses_webview
+    supports_download = (
+        has_required_download
+        and not download_uses_js
+        and not download_uses_webview
+    )
     issues: List[str] = []
     if normalized.get("single_url") and not has_required_search:
         issues.append("检测到 singleUrl 单链接/RSS 源，当前不支持按书名搜索下载")
@@ -225,6 +266,8 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         issues.append("该源启用了 enableJs，当前路线 A 不支持 JS 执行")
     if normalized.get("rule_search_uses_js"):
         issues.append("ruleSearch 含 JS 规则，当前无法按书名搜索")
+    if search_uses_webview:
+        issues.append("搜索规则依赖 webView/浏览器渲染，当前服务端模式不支持")
     download_js_blocks = []
     if normalized.get("rule_book_info_uses_js"):
         download_js_blocks.append("ruleBookInfo")
@@ -236,6 +279,21 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         issues.append(
             "{blocks} 含 JS 规则，当前无法稳定抓目录/正文并下载 TXT".format(
                 blocks="/".join(download_js_blocks)
+            )
+        )
+    download_webview_blocks = []
+    if normalized.get("rule_book_info_uses_webview"):
+        download_webview_blocks.append("ruleBookInfo")
+    if normalized.get("rule_toc_uses_webview"):
+        download_webview_blocks.append("ruleToc")
+    if normalized.get("rule_content_uses_webview"):
+        download_webview_blocks.append("ruleContent")
+    if normalized.get("has_web_js"):
+        issues.append("检测到 webJs/browser 脚本，当前服务端模式不支持 webView")
+    if download_webview_blocks:
+        issues.append(
+            "{blocks} 依赖 webView/浏览器渲染，当前服务端模式不支持 TXT 下载".format(
+                blocks="/".join(download_webview_blocks)
             )
         )
     if normalized.get("has_js_lib"):
@@ -258,6 +316,7 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         single_url=bool(normalized.get("single_url", False)),
         enable_js=bool(normalized.get("enable_js", False)),
         has_js_lib=bool(normalized.get("has_js_lib", False)),
+        has_web_js=bool(normalized.get("has_web_js", False)),
         has_login_flow=bool(normalized.get("has_login_flow", False)),
         has_rule_search=bool(normalized.get("rule_search")),
         has_rule_book_info=bool(normalized.get("rule_book_info")),
@@ -265,6 +324,8 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         has_rule_content=bool(normalized.get("rule_content")),
         search_uses_js=bool(search_uses_js),
         download_uses_js=bool(download_uses_js),
+        search_uses_webview=bool(search_uses_webview),
+        download_uses_webview=bool(download_uses_webview),
         supports_search=supports_search,
         supports_download=supports_download,
         issues=issues,

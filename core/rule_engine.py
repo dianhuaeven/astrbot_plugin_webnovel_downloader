@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass
@@ -325,7 +326,27 @@ class RuleEngine:
         body: bytes | None = None,
         request_encoding: str = "utf-8",
     ) -> Tuple[str, str]:
-        absolute_url = urljoin(headers.get("Referer", "") or "", url) if "://" not in url else url
+        inline_url, inline_options = self._split_request_options(url)
+        self._raise_for_unsupported_request_options(inline_options)
+        request_encoding = str(
+            inline_options.get("charset")
+            or inline_options.get("encoding")
+            or request_encoding
+            or "utf-8"
+        ).strip() or "utf-8"
+        method = str(inline_options.get("method") or method or "GET").strip().upper() or "GET"
+        inline_headers = self._normalize_request_headers(inline_options.get("headers"))
+        if body is None:
+            body = self._encode_request_body(
+                inline_options.get("body") or inline_options.get("data"),
+                request_encoding,
+            )
+        if body is not None and method == "GET":
+            method = "POST"
+
+        merged_headers = self._merge_headers(headers, inline_headers)
+        referer = merged_headers.get("Referer", "") or ""
+        absolute_url = urljoin(referer, inline_url) if "://" not in inline_url else inline_url
         normalized_url = self._normalize_request_url(
             absolute_url,
             request_encoding or "utf-8",
@@ -333,7 +354,7 @@ class RuleEngine:
         request_headers = {
             "User-Agent": self.config.user_agent,
         }
-        for key, value in headers.items():
+        for key, value in merged_headers.items():
             if value:
                 request_headers[str(key)] = str(value)
         if body is not None and not self._has_content_type(request_headers):
@@ -368,6 +389,7 @@ class RuleEngine:
 
     def _build_request_spec(self, source: Dict[str, Any], rendered_url: str) -> RequestSpec:
         base_url, options = self._split_request_options(rendered_url)
+        self._raise_for_unsupported_request_options(options)
         request_encoding = str(
             options.get("charset")
             or options.get("encoding")
@@ -405,13 +427,31 @@ class RuleEngine:
             if not prefix.endswith(","):
                 continue
             suffix = text[index:]
-            try:
-                parsed = json.loads(suffix)
-            except Exception:
-                continue
+            parsed = self._parse_request_options_text(suffix)
             if isinstance(parsed, dict):
                 return prefix[:-1].rstrip(), parsed
         return text, {}
+
+    def _parse_request_options_text(self, raw_text: str) -> Dict[str, Any] | None:
+        text = str(raw_text or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        try:
+            normalized = re.sub(r"\btrue\b", "True", text, flags=re.I)
+            normalized = re.sub(r"\bfalse\b", "False", normalized, flags=re.I)
+            normalized = re.sub(r"\bnull\b", "None", normalized, flags=re.I)
+            literal = ast.literal_eval(normalized)
+        except Exception:
+            return None
+        if isinstance(literal, dict):
+            return literal
+        return None
 
     def _normalize_request_headers(self, raw_headers: Any) -> Dict[str, str]:
         if not isinstance(raw_headers, dict):
@@ -420,7 +460,13 @@ class RuleEngine:
         for key, value in raw_headers.items():
             if value is None:
                 continue
-            result[str(key)] = str(value)
+            normalized_key = str(key or "").strip()
+            normalized_value = str(value).strip()
+            if not normalized_key or not normalized_value:
+                continue
+            if self._is_control_header(normalized_key, normalized_value):
+                continue
+            result[normalized_key] = normalized_value
         return result
 
     def _merge_headers(
@@ -429,13 +475,45 @@ class RuleEngine:
         extra_headers: Dict[str, str],
     ) -> Dict[str, str]:
         merged: Dict[str, str] = {}
-        for key, value in base_headers.items():
-            if value:
-                merged[str(key)] = str(value)
-        for key, value in extra_headers.items():
-            if value:
-                merged[str(key)] = str(value)
+        for source_headers in (base_headers, extra_headers):
+            for key, value in self._normalize_request_headers(source_headers).items():
+                if value:
+                    merged[str(key)] = str(value)
         return merged
+
+    def _is_control_header(self, key: str, value: str) -> bool:
+        lowered_key = str(key or "").strip().lower()
+        lowered_value = str(value or "").strip().lower()
+        if not lowered_key:
+            return True
+        if lowered_key.startswith("@"):
+            return True
+        if lowered_value.startswith("@js"):
+            return True
+        return False
+
+    def _raise_for_unsupported_request_options(self, options: Dict[str, Any]) -> None:
+        if not options:
+            return
+        if self._request_requires_webview(options):
+            raise RuleEngineError("当前不支持 webView/浏览器规则")
+        if self._request_requires_js(options):
+            raise RuleEngineError("当前不支持 URL 级 JS 规则")
+
+    def _request_requires_webview(self, options: Dict[str, Any]) -> bool:
+        value = options.get("webView")
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().lower()
+        return text in {"1", "true", "yes", "on"}
+
+    def _request_requires_js(self, options: Dict[str, Any]) -> bool:
+        for key in ("js", "@js"):
+            if key not in options:
+                continue
+            if str(options.get(key) or "").strip():
+                return True
+        return False
 
     def _encode_request_body(
         self,
@@ -694,6 +772,7 @@ class RuleEngine:
 
     def _select_many(self, payload_kind: str, payload: Any, rule_text: str) -> List[Any]:
         base_rule, cleaners = self._split_cleaners(str(rule_text or ""))
+        base_rule = self._normalize_rule_prefix(base_rule, payload_kind)
         if payload_kind == "json":
             values = self._select_json_many(payload, base_rule or "$")
         else:
@@ -705,6 +784,17 @@ class RuleEngine:
             else:
                 cleaned.append(value)
         return cleaned
+
+    def _normalize_rule_prefix(self, rule_text: str, payload_kind: str) -> str:
+        normalized = str(rule_text or "").strip()
+        lowered = normalized.lower()
+        if lowered.startswith("@css:"):
+            return normalized[5:].strip()
+        if lowered.startswith("@xpath:"):
+            return "xpath:" + normalized[7:].strip()
+        if payload_kind == "json" and lowered.startswith("@json:"):
+            return normalized[6:].strip()
+        return normalized
 
     def _split_cleaners(self, rule_text: str) -> Tuple[str, List[Tuple[str, str]]]:
         if "##" not in rule_text:
@@ -1007,27 +1097,35 @@ class RuleEngine:
         return False
 
     def _html_select(self, node: Any, expression: str) -> List[Any]:
-        index = None
-        selector_expression = expression
-        if not expression.startswith(("xpath:", "//", ".//", "./", "/")):
-            selector_expression, index = self._split_html_index(expression)
-        if expression.startswith("xpath:"):
-            selected = list(node.xpath(expression[len("xpath:") :]))
-        elif expression.startswith(("//", ".//", "./", "/")):
-            selected = list(node.xpath(expression))
+        (
+            selector_expression,
+            index,
+            slice_range,
+            selected_indexes,
+            excluded_indexes,
+        ) = self._parse_html_selector_modifiers(expression)
+        if selector_expression.startswith("xpath:"):
+            selected = list(node.xpath(selector_expression[len("xpath:") :]))
+        elif selector_expression.startswith(("//", ".//", "./", "/")):
+            selected = list(node.xpath(selector_expression))
         elif selector_expression.startswith("text."):
             selected = self._select_html_by_text(node, selector_expression[5:].strip())
         else:
-            selected = list(node.css(self._normalize_css_selector(selector_expression)))
-        if index is None:
-            return selected
-        if not selected:
-            return []
-        if index < 0:
-            index += len(selected)
-        if index < 0 or index >= len(selected):
-            return []
-        return [selected[index]]
+            try:
+                selected = list(node.css(self._normalize_css_selector(selector_expression)))
+            except Exception as exc:
+                raise RuleEngineError(
+                    "HTML 规则选择器暂不兼容: {expression}".format(
+                        expression=selector_expression
+                    )
+                ) from exc
+        return self._apply_html_selector_modifiers(
+            selected,
+            index=index,
+            slice_range=slice_range,
+            selected_indexes=selected_indexes,
+            excluded_indexes=excluded_indexes,
+        )
 
     def _split_html_index(self, expression: str) -> Tuple[str, int | None]:
         match = re.match(r"^(.*)\.(-?\d+)$", expression.strip())
@@ -1040,6 +1138,93 @@ class RuleEngine:
             return base_expression, int(match.group(2))
         except ValueError:
             return expression, None
+
+    def _parse_html_selector_modifiers(
+        self,
+        expression: str,
+    ) -> Tuple[str, int | None, Tuple[int, int] | None, List[int] | None, List[int]]:
+        normalized = self._normalize_html_selector_expression(expression)
+        selected_indexes: List[int] | None = None
+        excluded_indexes: List[int] = []
+        slice_range: Tuple[int, int] | None = None
+
+        match = re.match(r"^(.*)\[(-?\d+(?:\s*,\s*-?\d+)*)\]$", normalized)
+        if match:
+            normalized = match.group(1).strip()
+            selected_indexes = [int(part.strip()) for part in match.group(2).split(",")]
+
+        match = re.match(r"^(.*)!(-?\d+(?:\s*,\s*-?\d+)*)$", normalized)
+        if match:
+            normalized = match.group(1).strip()
+            excluded_indexes = [int(part.strip()) for part in match.group(2).split(",")]
+
+        match = re.match(r"^(.*)\.(-?\d+):(-?\d+)$", normalized)
+        if match:
+            normalized = match.group(1).strip()
+            slice_range = (int(match.group(2)), int(match.group(3)))
+
+        index = None
+        if not normalized.startswith(("xpath:", "//", ".//", "./", "/")):
+            normalized, index = self._split_html_index(normalized)
+        return normalized, index, slice_range, selected_indexes, excluded_indexes
+
+    def _normalize_html_selector_expression(self, expression: str) -> str:
+        normalized = str(expression or "").strip()
+        lowered = normalized.lower()
+        if lowered.startswith("class."):
+            class_tokens = [token for token in normalized[6:].split() if token]
+            if class_tokens:
+                return "." + ".".join(class_tokens)
+            return "."
+        if lowered.startswith("id."):
+            return "#" + normalized[3:]
+        return normalized
+
+    def _apply_html_selector_modifiers(
+        self,
+        selected: List[Any],
+        index: int | None,
+        slice_range: Tuple[int, int] | None,
+        selected_indexes: List[int] | None,
+        excluded_indexes: List[int],
+    ) -> List[Any]:
+        current = list(selected)
+        if slice_range is not None:
+            start, end = slice_range
+            current = current[start : end + 1]
+        if selected_indexes is not None:
+            picked: List[Any] = []
+            for raw_index in selected_indexes:
+                normalized_index = raw_index
+                if normalized_index < 0:
+                    normalized_index += len(current)
+                if 0 <= normalized_index < len(current):
+                    picked.append(current[normalized_index])
+            current = picked
+        if excluded_indexes:
+            normalized_excludes: set[int] = set()
+            for raw_index in excluded_indexes:
+                normalized_index = raw_index
+                if normalized_index < 0:
+                    normalized_index += len(current)
+                if 0 <= normalized_index < len(current):
+                    normalized_excludes.add(normalized_index)
+            filtered = [
+                item
+                for current_index, item in enumerate(current)
+                if current_index not in normalized_excludes
+            ]
+            if filtered:
+                current = filtered
+        if index is None:
+            return current
+        if not current:
+            return []
+        if index < 0:
+            index += len(current)
+        if index < 0 or index >= len(current):
+            return []
+        return [current[index]]
 
     def _select_html_by_text(self, node: Any, text_value: str) -> List[Any]:
         keyword = text_value.strip()
