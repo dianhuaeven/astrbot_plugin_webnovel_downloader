@@ -1,4 +1,4 @@
 interface:
   display_name: "Webnovel Downloader"
-  short_description: "Guide AstrBot through branched source probe, candidate, and download workflows"
-  default_prompt: "Use $webnovel-downloader-workflow to handle source import, async probe refresh and status checks, candidate queries, source inspection, cached search continuation, and deterministic novel downloads in AstrBot. Prefer novel_download for straightforward requests, and switch to probe/candidate/cache branches when the user needs source selection, health visibility, or retrying from existing search results."
+  short_description: "Guide AstrBot through candidate-first source selection, probe checks, and precise downloads"
+  default_prompt: "Use $webnovel-downloader-workflow to handle source import, async probe refresh and status checks, candidate queries, source inspection, cached search-result paging, and precise novel downloads in AstrBot. Default to novel_query_candidates first, then use novel_download_source_book only after source_id, book_url, book_name, and author are confirmed; use novel_read_search_results when continuing an existing search_id."

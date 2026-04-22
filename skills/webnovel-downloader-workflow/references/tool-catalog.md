@@ -14,10 +14,8 @@
 | `novel_remove_source` | 删除书源 | `source_id` | 适合移除失效或重复书源 |
 | `novel_query_candidates` | 只查候选源和排序结果 | `keyword`, `author`, `source_ids_json`, `limit`, `offset`, `include_disabled` | 返回 `search_id`，便于后续分页或续下 |
 | `novel_inspect_source_book` | 只读检查单个候选源 | `source_id`, `book_url`, `book_name` | 不创建任务，适合做目录预检和正文抽样 |
-| `novel_download` | 高层下载入口 | `keyword`, `author`, `source_ids_json`, `search_limit`, `attempt_limit`, `output_filename`, `auto_assemble`, `include_disabled` | 首选下载工具 |
-| `novel_download_source_book` | 指定源直连下载 | `source_id`, `book_url`, `book_name`, `output_filename`, `auto_assemble` | 适合从候选结果中手动选定一个源 |
+| `novel_download_source_book` | 指定源精确下载 | `source_id`, `book_url`, `book_name`, `author`, `output_filename`, `auto_assemble` | 要求 `book_name + author` 都与候选结果精确一致 |
 | `novel_read_search_results` | 分页读取缓存搜索结果 | `search_id`, `limit`, `offset` | 避免重复发起同一次搜索 |
-| `novel_download_cached_result` | 从缓存搜索结果继续下载 | `search_id`, `result_index`, `output_filename`, `auto_assemble` | 适合换页、换源或重试时复用已有搜索缓存 |
 | `novel_download_status` | 查询进度 | `job_id`, `limit`, `offset` | 未传 `job_id` 时返回任务列表摘要 |
 
 ## Manual Command Mapping
@@ -31,11 +29,11 @@
 | `novel_sources` | `novel_list_sources` / `novel_get_source_detail` | LLM 侧拆成列表和单源详情两个入口 |
 | `novel_refresh` | `novel_refresh_sources` + `novel_probe_status` | 刷新是异步入队；状态查看单独走 probe 工具 |
 | `novel_clean_rules` | `novel_list_clean_rules` | 查看已导入净化规则仓库 |
-| `novel_auto` | `novel_download` | 都是高层自动搜书并发起下载 |
-| `novel_search` | `novel_query_candidates` | LLM 默认先拿候选摘要和 `search_id`，减少上下文噪音 |
+| `novel_auto` | `novel_query_candidates` | 兼容命令现在也只返回候选摘要，不再直接启动下载 |
+| `novel_search` | `novel_query_candidates` / `novel_read_search_results` | LLM 先拿候选摘要和 `search_id`，需要查看更多原始结果时再读缓存 |
 | `novel_search_results` | `novel_read_search_results` | 都按 `search_id` 分页读取缓存搜索结果 |
-| `novel_download_result` | `novel_download_cached_result` | 都按 `search_id + result_index` 从缓存结果继续下载 |
-| `novel_download <source_id> <book_url>` | `novel_download_source_book` | 都是已知源和详情页时的直连下载 |
+| `novel_download_result` | none | 该命令已停用，提示先查候选再指定源下载 |
+| `novel_download <source_id> <book_url>` | `novel_download_source_book` | LLM 侧需要补全 `book_name + author` 后才能精确下载 |
 | `novel_status` | `novel_download_status` | 查看任务状态和结果摘要 |
 | `novel_remove` | `novel_remove_source` | 删除已导入书源 |
 | `novel_preview` | none | 仍主要用于人工诊断页面结构 |
@@ -43,8 +41,10 @@
 
 ## Important Limits
 
-- 直接下载诉求优先走 `novel_download`，不要在对话里手动拼装低层下载链路。
-- 当书名歧义明显、需要人工挑源、要确认探测状态，或已经有 `search_id` 需要翻页/换源时，再切到 `novel_query_candidates`、`novel_probe_status`、`novel_read_search_results`、`novel_download_source_book`、`novel_download_cached_result` 这些分支工具。
+- 当前对 LLM 的默认下载流程是 `novel_query_candidates -> novel_download_source_book`，不要再按旧文档直接调用 `novel_download`。
+- 当书名歧义明显、需要人工挑源、要确认探测状态，或已经有 `search_id` 需要翻页/查看更多原始结果时，再切到 `novel_query_candidates`、`novel_probe_status`、`novel_read_search_results`、`novel_download_source_book` 这些分支工具。
 - `novel_refresh_sources` 只是把书源加入后台健康探测队列；想确认进度时要再调用 `novel_probe_status`。
 - `novel_inspect_source_book` 是只读预检工具，不会创建下载任务。
+- `novel_download_source_book` 会在预检后再次校验 `book_name + author`，不一致就拒绝创建任务。
+- `novel_download`、`novel_download_cached_result` 等兼容入口仍在代码里，但不再对 LLM 暴露。
 - 如果书源提示 JS、登录或动态渲染限制，应尽早向用户说明兼容边界。
