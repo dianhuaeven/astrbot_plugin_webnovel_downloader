@@ -77,6 +77,22 @@ class JsonlNovelDownloaderPluginBase(Star):
         self._schedule_bootstrap_tasks()
         logger.info("网文下载器初始化完成")
 
+    async def terminate(self) -> None:
+        running_tasks = [task for task in self._running_tasks.values() if not task.done()]
+        for task in running_tasks:
+            task.cancel()
+        if running_tasks:
+            await asyncio.gather(*running_tasks, return_exceptions=True)
+
+        # Bootstrap may still be importing sources or rules when AstrBot unloads the plugin.
+        if self._bootstrap_thread is not None and self._bootstrap_thread.is_alive():
+            await run_blocking(self.wait_for_bootstrap, 5.0)
+
+        # Probe workers own background threads and must be stopped explicitly on unload.
+        shutdown_probe = getattr(self.source_probe_service, "shutdown", None)
+        if callable(shutdown_probe):
+            await run_blocking(shutdown_probe, 5.0)
+
     def _resolve_plugin_data_dir(self) -> Path:
         plugin_name = str(getattr(self, "name", "") or PLUGIN_NAME).strip() or PLUGIN_NAME
         get_data_dir = getattr(StarTools, "get_data_dir", None)
@@ -345,6 +361,41 @@ class JsonlNovelDownloaderPluginBase(Star):
             offset_value,
         )
 
+    async def handle_novel_prepare_download(
+        self,
+        keyword: str,
+        author: str = "",
+        source_ids_json: str = "",
+        search_limit: str = "",
+        include_disabled: str = "",
+    ) -> str:
+        candidate_summary_text = await self.handle_novel_query_candidates(
+            keyword,
+            author,
+            source_ids_json,
+            search_limit,
+            "0",
+            include_disabled,
+        )
+        try:
+            payload = json.loads(candidate_summary_text)
+        except Exception:
+            return candidate_summary_text
+        if not isinstance(payload, dict):
+            return candidate_summary_text
+        payload = {
+            "status": "manual_selection_required",
+            "download_blocked": True,
+            "selection_mode": "query_then_download",
+            "message": (
+                "已禁用按关键词一键下载；请先确认标题和作者精确匹配的候选，"
+                "再使用 novel_download_source_book 下载。"
+            ),
+            "recommended_next_tool": "novel_download_source_book",
+            **payload,
+        }
+        return await run_blocking(self.renderer.to_json_text, payload)
+
     async def handle_novel_probe_status(
         self,
         source_ids_json: str = "",
@@ -441,10 +492,16 @@ class JsonlNovelDownloaderPluginBase(Star):
         include_disabled: str = "",
     ) -> str:
         source_ids = self._parse_string_list(source_ids_json)
-        attempt_limit_value = max(1, self._parse_optional_int(attempt_limit) or 5)
+        raw_attempt_limit = self._parse_optional_int(attempt_limit)
+        attempt_limit_value = max(1, raw_attempt_limit) if raw_attempt_limit else 0
+        default_attempt_limit = max(
+            1,
+            int(getattr(self.download_orchestrator.config, "default_attempt_limit", 5) or 5),
+        )
+        effective_attempt_budget = attempt_limit_value or default_attempt_limit
         search_limit_value = max(
-            attempt_limit_value,
-            self._parse_optional_int(search_limit) or max(10, attempt_limit_value * 3),
+            effective_attempt_budget,
+            self._parse_optional_int(search_limit) or max(10, effective_attempt_budget * 3),
         )
         include_disabled_value = self._parse_bool(include_disabled, False)
         orchestration = await run_blocking(
@@ -485,6 +542,8 @@ class JsonlNovelDownloaderPluginBase(Star):
         book_name: str = "",
         output_filename: str = "",
         auto_assemble: str = "true",
+        expected_title: str = "",
+        expected_author: str = "",
     ) -> str:
         preflight = None
         try:
@@ -504,6 +563,7 @@ class JsonlNovelDownloaderPluginBase(Star):
             )
             raise
 
+        self._validate_preflight_identity(preflight, expected_title, expected_author)
         await run_blocking(self._record_preflight_success, preflight)
         job_info = await run_blocking(
             self.source_download_service.create_job_from_plan,
@@ -519,6 +579,38 @@ class JsonlNovelDownloaderPluginBase(Star):
             book=str(preflight.get("book_name") or book_name or ""),
         )
         return "{status}\n{summary}".format(status=status_text, summary=preflight_summary)
+
+    def _validate_preflight_identity(
+        self,
+        preflight: dict[str, Any],
+        expected_title: str = "",
+        expected_author: str = "",
+    ) -> None:
+        normalized_expected_title = self._normalize_match_text(expected_title)
+        normalized_expected_author = self._normalize_match_text(expected_author)
+        if not normalized_expected_title and not normalized_expected_author:
+            return
+        actual_title = str(preflight.get("book_name") or "").strip()
+        actual_author = str(preflight.get("author") or "").strip()
+        normalized_actual_title = self._normalize_match_text(actual_title)
+        normalized_actual_author = self._normalize_match_text(actual_author)
+        if normalized_expected_title and normalized_actual_title != normalized_expected_title:
+            raise ValueError(
+                "书名不匹配：期望《{expected}》，实际《{actual}》".format(
+                    expected=str(expected_title or "").strip(),
+                    actual=actual_title or "未知",
+                )
+            )
+        if normalized_expected_author and normalized_actual_author != normalized_expected_author:
+            raise ValueError(
+                "作者不匹配：期望 {expected}，实际 {actual}".format(
+                    expected=str(expected_author or "").strip(),
+                    actual=actual_author or "未知",
+                )
+            )
+
+    def _normalize_match_text(self, value: object) -> str:
+        return str(value or "").strip().casefold()
 
     async def handle_novel_download_search_result(
         self,

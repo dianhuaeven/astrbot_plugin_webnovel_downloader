@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,6 +73,20 @@ class SourceHealthStoreTest(unittest.TestCase):
         self.assertEqual(entry["download"]["note"], "静态规则不支持下载")
         self.assertEqual(entry["preflight"]["state"], "unknown")
         self.assertEqual(entry["preflight"]["note"], "尚未自动预检")
+
+    def test_store_recreates_schema_when_table_is_missing(self):
+        with sqlite3.connect(self.store.sqlite_path) as connection:
+            connection.execute("DROP TABLE IF EXISTS source_stage_health")
+
+        self.store.mark_unsupported(
+            "source-d",
+            "search",
+            summary="重新建表后仍可写入",
+        )
+
+        entry = self.store.get_source_health("source-d")
+        self.assertEqual(entry["search"]["state"], "unsupported")
+        self.assertEqual(entry["search"]["note"], "重新建表后仍可写入")
 
 
 if __name__ == "__main__":

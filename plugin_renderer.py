@@ -750,6 +750,10 @@ class ToolResultRenderer:
             f"输出: {status['output_path']}",
             f"Journal: {status['journal_path']}",
         ]
+        state_details = dict(status.get("state_details") or {})
+        stop_reason = str(state_details.get("stop_reason") or "").strip()
+        if stop_reason:
+            lines.append(f"停止原因: {stop_reason}")
         if status.get("latest_errors"):
             first_error = status["latest_errors"][0]
             lines.append(

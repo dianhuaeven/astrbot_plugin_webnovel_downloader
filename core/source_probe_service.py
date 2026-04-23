@@ -3,8 +3,11 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,11 @@ class SourceProbeService:
 
         queued_count = 0
         with self._idle_condition:
+            if self._shutdown:
+                return {
+                    "queued_count": 0,
+                    "queue_size": 0,
+                }
             if normalized_ids and not self._workers_started:
                 self._start_workers_locked()
             for source_id in normalized_ids:
@@ -106,6 +114,16 @@ class SourceProbeService:
     def shutdown(self, timeout: float | None = None) -> bool:
         with self._idle_condition:
             self._shutdown = True
+            # Drop queued work before posting sentinels so teardown does not keep stale
+            # probe requests alive after the plugin has already been unloaded.
+            while True:
+                try:
+                    queued_item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if queued_item is not None:
+                    self._queued_ids.discard(queued_item)
+                self._queue.task_done()
             for _ in self._workers:
                 self._queue.put(None)
             self._idle_condition.notify_all()
@@ -140,6 +158,9 @@ class SourceProbeService:
                 self._idle_condition.notify_all()
             try:
                 self._probe_source(source_id)
+            except Exception as exc:
+                # A single broken source should not permanently kill the worker thread.
+                logger.exception("书源探测线程异常 source_id=%s error=%s", source_id, exc)
             finally:
                 with self._idle_condition:
                     self._active_ids.discard(source_id)

@@ -12,9 +12,11 @@ from .source_registry import SourceRegistry
 
 @dataclass
 class SourceDownloadConfig:
-    max_workers: int = 4
+    max_workers: int = 3
     sample_chapters: int = 1
     sample_min_chars: int = 1
+    stop_after_consecutive_failures: int = 6
+    stop_after_same_error: int = 3
 
 
 class SourceDownloadService:
@@ -198,6 +200,7 @@ class SourceDownloadService:
         source = self.registry.load_normalized_source(source_id)
         failure_status: dict[str, Any] | None = None
         missing = self.manager.get_missing_chapters(job_id)
+        missing = self._hydrate_missing_rule_contexts(manifest, source_id, missing)
         if not missing:
             if auto_assemble:
                 status = self.manager.assemble(
@@ -214,9 +217,16 @@ class SourceDownloadService:
             return status
 
         self.manager.record_state(job_id, "downloading", missing_count=len(missing))
-        errors = self._download_missing_chapters(source, job_id, missing)
+        download_result = self._download_missing_chapters(source, job_id, missing)
+        errors = int(download_result.get("error_count", 0) or 0)
         if errors:
-            self.manager.record_state(job_id, "failed", error_count=errors)
+            state_extra = {
+                "error_count": errors,
+            }
+            stop_reason = str(download_result.get("stop_reason") or "").strip()
+            if stop_reason:
+                state_extra["stop_reason"] = stop_reason
+            self.manager.record_state(job_id, "failed", **state_extra)
             failure_status = self.manager.get_status(job_id)
             self._record_download_outcome(
                 manifest,
@@ -245,41 +255,171 @@ class SourceDownloadService:
         source: Dict[str, Any],
         job_id: str,
         missing: list[Dict[str, Any]],
-    ) -> int:
+    ) -> Dict[str, Any]:
         error_count = 0
         max_workers = min(max(1, self.config.max_workers), max(1, len(missing)))
+        consecutive_failures = 0
+        same_error_streak = 0
+        last_error_text = ""
+        stop_reason = ""
+        remaining = iter(missing)
+
+        def _submit_next(
+            executor: concurrent.futures.ThreadPoolExecutor,
+            future_map: Dict[concurrent.futures.Future, Dict[str, Any]],
+        ) -> bool:
+            try:
+                chapter = next(remaining)
+            except StopIteration:
+                return False
+            future_map[executor.submit(self._download_one_chapter, source, chapter)] = chapter
+            return True
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {
-                executor.submit(self._download_one_chapter, source, chapter): chapter
-                for chapter in missing
-            }
-            for future in concurrent.futures.as_completed(future_map):
-                chapter = future_map[future]
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    error_count += 1
-                    self.manager.append_download_error(
+            future_map: Dict[concurrent.futures.Future, Dict[str, Any]] = {}
+            for _ in range(max_workers):
+                if not _submit_next(executor, future_map):
+                    break
+
+            while future_map:
+                done, _pending = concurrent.futures.wait(
+                    list(future_map.keys()),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    chapter = future_map.pop(future)
+                    if future.cancelled():
+                        continue
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        error_text = str(exc)
+                        error_count += 1
+                        consecutive_failures += 1
+                        if error_text == last_error_text:
+                            same_error_streak += 1
+                        else:
+                            last_error_text = error_text
+                            same_error_streak = 1
+                        self.manager.append_download_error(
+                            job_id,
+                            chapter["index"],
+                            chapter["title"],
+                            chapter["url"],
+                            error_text,
+                            1,
+                        )
+                        if not stop_reason:
+                            stop_reason = self._build_failure_stop_reason(
+                                error_text,
+                                consecutive_failures,
+                                same_error_streak,
+                            )
+                        continue
+
+                    consecutive_failures = 0
+                    same_error_streak = 0
+                    last_error_text = ""
+                    self.manager.append_downloaded_chapter(
                         job_id,
                         chapter["index"],
-                        chapter["title"],
+                        result["title"],
                         chapter["url"],
-                        str(exc),
+                        result["content"],
+                        result.get("encoding", ""),
                         1,
                     )
+
+                if stop_reason:
+                    for pending_future in list(future_map.keys()):
+                        pending_future.cancel()
                     continue
 
-                self.manager.append_downloaded_chapter(
-                    job_id,
-                    chapter["index"],
-                    result["title"],
-                    chapter["url"],
-                    result["content"],
-                    result.get("encoding", ""),
-                    1,
+                while len(future_map) < max_workers:
+                    if not _submit_next(executor, future_map):
+                        break
+        return {
+            "error_count": error_count,
+            "stop_reason": stop_reason,
+        }
+
+    def _hydrate_missing_rule_contexts(
+        self,
+        manifest: Dict[str, Any],
+        source_id: str,
+        missing: list[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        chapters = [dict(chapter) for chapter in list(missing or [])]
+        if not chapters:
+            return chapters
+        if all(dict(chapter.get("_rule_vars") or {}) for chapter in chapters):
+            return chapters
+
+        metadata = dict(manifest.get("metadata") or {})
+        book_url = str(metadata.get("book_url") or "").strip()
+        if not book_url:
+            return chapters
+
+        try:
+            preflight = self.preflight_book(
+                source_id,
+                book_url,
+                str(manifest.get("book_name") or "").strip(),
+                rule_context=dict(metadata.get("rule_vars") or {}),
+            )
+        except Exception:
+            return chapters
+
+        toc = list(preflight.get("toc") or [])
+        rule_vars_by_url = {
+            str(item.get("url") or "").strip(): dict(item.get("_rule_vars") or {})
+            for item in toc
+            if str(item.get("url") or "").strip()
+        }
+        rule_vars_by_index = {
+            int(item.get("index", -1) or -1): dict(item.get("_rule_vars") or {})
+            for item in toc
+            if int(item.get("index", -1) or -1) >= 0
+        }
+        for chapter in chapters:
+            existing_rule_vars = dict(chapter.get("_rule_vars") or {})
+            if existing_rule_vars:
+                continue
+            chapter_url = str(chapter.get("url") or "").strip()
+            restored_rule_vars = dict(rule_vars_by_url.get(chapter_url) or {})
+            if not restored_rule_vars:
+                chapter_index = int(chapter.get("index", -1) or -1)
+                restored_rule_vars = dict(rule_vars_by_index.get(chapter_index) or {})
+            if restored_rule_vars:
+                chapter["_rule_vars"] = restored_rule_vars
+        return chapters
+
+    def _build_failure_stop_reason(
+        self,
+        error_text: str,
+        consecutive_failures: int,
+        same_error_streak: int,
+    ) -> str:
+        repeated_error_limit = max(2, int(self.config.stop_after_same_error or 0))
+        if error_text and same_error_streak >= repeated_error_limit:
+            return (
+                "连续 {count} 次出现相同下载错误，已停止继续派发新章节: {error}".format(
+                    count=same_error_streak,
+                    error=error_text,
                 )
-        return error_count
+            )
+        consecutive_limit = max(
+            repeated_error_limit,
+            int(self.config.stop_after_consecutive_failures or 0),
+        )
+        if consecutive_failures >= consecutive_limit:
+            return (
+                "连续 {count} 个章节下载失败，已停止继续派发新章节: {error}".format(
+                    count=consecutive_failures,
+                    error=error_text,
+                )
+            )
+        return ""
 
     def _download_one_chapter(self, source: Dict[str, Any], chapter: Dict[str, Any]) -> Dict[str, str]:
         try:

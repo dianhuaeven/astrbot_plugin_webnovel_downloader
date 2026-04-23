@@ -10,9 +10,9 @@ from .plugin_support import compat_hidden_tool, compat_llm_tool
 
 @register(
     "astrbot_plugin_webnovel_downloader",
-    "OpenAI",
+    "Dianhua",
     "网文下载器：基于单文件 journal 的纯 Python 网文下载与装订插件，支持断点续传、绝对有序输出与函数工具调用",
-    "0.1.0",
+    "0.8.0",
     "https://github.com/dianhuaeven/astrbot_plugin_webnovel_downloader",
 )
 class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
@@ -260,7 +260,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             book_name,
         )
 
-    @compat_llm_tool(name="novel_download")
+    @compat_hidden_tool()
     async def novel_download(
         self,
         event: AstrMessageEvent,
@@ -274,26 +274,24 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         include_disabled: str = "",
     ) -> str:
         """
-        按书名自动搜书、筛选候选源并启动下载任务；这是给 LLM 使用的首选高层下载工具。
+        兼容入口：按书名返回候选下载源摘要，但不再启动下载任务。
 
         Args:
-            keyword(string): 搜索关键词，通常填写书名；尽量完整可以减少误判。
-            author(string): 可选，作者名；填写后会优先选择标题和作者都匹配的候选。
+            keyword(string): 搜索关键词，通常填写书名。
+            author(string): 可选，作者名；填写后会优先展示标题和作者都精确匹配的候选。
             source_ids_json(string): 可选，只在指定书源范围内搜索；支持 JSON 数组或逗号分隔的书源 ID。
             search_limit(string): 可选，本次搜索阶段最多保留多少条候选结果。
-            attempt_limit(string): 可选，最多尝试多少个候选源做目录预检和失败回退。
-            output_filename(string): 可选，自定义输出 TXT 文件名。
-            auto_assemble(string): 是否在章节抓取完成后自动组装 TXT，支持 true/false/1/0/yes/no。
+            attempt_limit(string): 兼容保留参数，当前已忽略。
+            output_filename(string): 兼容保留参数，当前已忽略。
+            auto_assemble(string): 兼容保留参数，当前已忽略。
             include_disabled(string): 是否在搜索时包含禁用书源，支持 true/false/1/0/yes/no。
         """
-        return await self.handle_novel_auto_download(
+        del attempt_limit, output_filename, auto_assemble
+        return await self.handle_novel_prepare_download(
             keyword,
             author,
             source_ids_json,
             search_limit,
-            attempt_limit,
-            output_filename,
-            auto_assemble,
             include_disabled,
         )
 
@@ -304,25 +302,33 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         source_id: str,
         book_url: str,
         book_name: str = "",
+        author: str = "",
         output_filename: str = "",
         auto_assemble: str = "true",
     ) -> str:
         """
-        直接指定某个书源和书籍详情页启动下载，适合在候选源之间手动切换而不再走自动择源。
+        直接指定某个书源和书籍详情页启动下载；必须先确认标题和作者精确匹配。
 
         Args:
             source_id(string): 书源 ID，通常来自 novel_query_candidates 或 novel_get_source_detail。
             book_url(string): 书籍详情页地址。
-            book_name(string): 可选，手动指定书名，方便任务命名和失败时保留上下文。
+            book_name(string): 目标书名，必须与候选结果中的标题精确一致。
+            author(string): 目标作者，必须与候选结果中的作者精确一致。
             output_filename(string): 可选，自定义输出 TXT 文件名。
             auto_assemble(string): 是否在下载完成后自动组装 TXT，支持 true/false/1/0/yes/no。
         """
+        if not str(book_name or "").strip() or not str(author or "").strip():
+            raise ValueError(
+                "为避免误下错书，novel_download_source_book 现在要求同时提供精确的 book_name 和 author。"
+            )
         return await self.handle_novel_download_book(
             source_id,
             book_url,
             book_name,
             output_filename,
             auto_assemble,
+            book_name,
+            author,
         )
 
     @compat_llm_tool(name="novel_read_search_results")
@@ -343,7 +349,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_get_search_results(search_id, limit, offset)
 
-    @compat_llm_tool(name="novel_download_cached_result")
+    @compat_hidden_tool()
     async def novel_download_cached_result(
         self,
         event: AstrMessageEvent,
@@ -353,7 +359,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         auto_assemble: str = "true",
     ) -> str:
         """
-        直接基于某次缓存搜索里的指定结果启动下载，适合在原始搜索命中里手动换源。
+        兼容入口：该能力不再对 LLM 暴露，建议改用候选查询后再指定源下载。
 
         Args:
             search_id(string): 搜索缓存 ID。
@@ -382,26 +388,24 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         include_disabled: str = "",
     ) -> str:
         """
-        自动搜书、择优挑选候选源，并在 Python 侧完成预检回退后启动下载任务。
+        兼容入口：返回候选源摘要，不再启动自动下载任务。
 
         Args:
             keyword(string): 搜索关键词，通常是书名。
-            author(string): 可选，作者名；传入后会优先选择标题和作者都匹配的候选。
+            author(string): 可选，作者名；传入后会优先展示标题和作者都精确匹配的候选。
             source_ids_json(string): 可选，JSON 数组或逗号分隔的书源 ID 列表。
             search_limit(string): 可选，本次搜索最多保留多少条候选结果。
-            attempt_limit(string): 可选，最多尝试多少个候选源做目录预检。
-            output_filename(string): 可选，自定义输出 TXT 文件名。
-            auto_assemble(string): 是否自动组装 TXT，支持 true/false/1/0/yes/no。
+            attempt_limit(string): 兼容保留参数，当前已忽略。
+            output_filename(string): 兼容保留参数，当前已忽略。
+            auto_assemble(string): 兼容保留参数，当前已忽略。
             include_disabled(string): 是否包含禁用书源，支持 true/false/1/0/yes/no。
         """
-        return await self.handle_novel_auto_download(
+        del attempt_limit, output_filename, auto_assemble
+        return await self.handle_novel_prepare_download(
             keyword,
             author,
             source_ids_json,
             search_limit,
-            attempt_limit,
-            output_filename,
-            auto_assemble,
             include_disabled,
         )
 
@@ -610,13 +614,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         output_filename: str = "",
         auto_assemble: str = "true",
     ):
+        del search_id, result_index, output_filename, auto_assemble
         yield event.plain_result(
-            await self.handle_novel_download_search_result(
-                search_id,
-                result_index,
-                output_filename,
-                auto_assemble,
-            )
+            "为避免误下错书，`novel_download_result` 已停用；请先用 `novel_auto` 确认精确候选，再用 `novel_download <source_id> <book_url> [book_name]` 下载。"
         )
 
     @filter.command("novel_auto")
@@ -633,14 +633,11 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         include_disabled: str = "",
     ):
         yield event.plain_result(
-            await self.handle_novel_auto_download(
+            await self.handle_novel_prepare_download(
                 keyword,
                 author,
                 source_ids_json,
                 search_limit,
-                attempt_limit,
-                output_filename,
-                auto_assemble,
                 include_disabled,
             )
         )

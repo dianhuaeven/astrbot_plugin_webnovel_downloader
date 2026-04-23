@@ -528,7 +528,7 @@ class SearchService:
             return "；".join(summary.get("issues") or []) or "当前书源不支持 route A 搜索"
         stage_entry = dict(health_entry.get("search") or {})
         state = str(stage_entry.get("state", "unknown") or "unknown")
-        if state in {"broken", "unsupported"}:
+        if state == "unsupported":
             return self._stage_summary(stage_entry)
         return ""
 
@@ -541,7 +541,7 @@ class SearchService:
             return False
         for stage in ("preflight", "download"):
             stage_state = str((health_entry.get(stage) or {}).get("state", "unknown") or "unknown")
-            if stage_state in {"broken", "unsupported"}:
+            if stage_state == "unsupported":
                 return False
         return True
 

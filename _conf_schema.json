@@ -2,8 +2,8 @@
   "max_workers": {
     "type": "int",
     "description": "[下载配置] 最大并发线程数",
-    "hint": "同时抓取多少个章节。网站较脆弱时建议调小。",
-    "default": 6
+    "hint": "同时抓取多少个章节。默认更保守；站点开始连续报 403/失败时，下载器也会提前停止继续派发新章节。",
+    "default": 3
   },
   "search_max_workers": {
     "type": "int",

@@ -326,6 +326,37 @@ class BookResolutionPhase4Test(unittest.TestCase):
 
 
 class DownloadOrchestratorPhase4Test(unittest.TestCase):
+    def test_orchestrator_default_budget_reaches_success_beyond_first_five_candidates(self):
+        candidates = []
+        for index in range(6):
+            source_id = "late-good" if index == 5 else "broken-{idx}".format(idx=index + 1)
+            book_url = "https://example.com/{source}".format(source=source_id)
+            candidates.append(
+                {
+                    "source_id": source_id,
+                    "source_name": source_id,
+                    "title": "测试书",
+                    "author": "测试作者",
+                    "book_url": book_url,
+                }
+            )
+        resolver = _FakeResolutionService(candidates)
+        downloader = _FakeSourceDownloadService()
+        for index in range(5):
+            source_id = "broken-{idx}".format(idx=index + 1)
+            downloader.preflight_errors[(source_id, "https://example.com/{source}".format(source=source_id))] = RuntimeError(
+                "目录页失败"
+            )
+        orchestrator = DownloadOrchestrator(resolver, downloader)
+
+        payload = orchestrator.auto_download("测试书", output_filename="测试书.txt")
+
+        self.assertEqual(payload["status"], "started")
+        self.assertEqual(payload["attempt_limit"], 12)
+        self.assertEqual(payload["attempted_count"], 6)
+        self.assertEqual(payload["attempts"][-1]["source_id"], "late-good")
+        self.assertEqual(payload["selected"]["source_id"], "late-good")
+
     def test_orchestrator_falls_back_after_sample_failure(self):
         resolver = _FakeResolutionService(
             [

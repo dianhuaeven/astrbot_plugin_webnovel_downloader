@@ -10,7 +10,7 @@ from .source_downloader import SourceDownloadService
 
 @dataclass
 class DownloadOrchestratorConfig:
-    default_attempt_limit: int = 5
+    default_attempt_limit: int = 12
 
 
 class DownloadOrchestrator:

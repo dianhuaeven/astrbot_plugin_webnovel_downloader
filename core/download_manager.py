@@ -55,7 +55,7 @@ class ExtractionRules:
 
 @dataclass
 class RuntimeConfig:
-    max_workers: int = 6
+    max_workers: int = 3
     request_timeout: float = 20.0
     use_env_proxy: bool = False
     max_retries: int = 3
@@ -133,6 +133,7 @@ class NovelDownloadManager:
             }
 
         output_name = sanitize_filename(output_filename or book_name) + ".txt"
+        self._ensure_output_target_available(job_id, output_name)
         manifest = {
             "kind": "manifest",
             "schema_version": SCHEMA_VERSION,
@@ -351,6 +352,7 @@ class NovelDownloadManager:
             "job_id": job_id,
             "book_name": manifest["book_name"],
             "state": replay["last_state"] or "created",
+            "state_details": dict(replay.get("last_state_details") or {}),
             "total_chapters": total,
             "completed_chapters": completed,
             "failed_chapters": failed,
@@ -474,7 +476,7 @@ class NovelDownloadManager:
             raise ValueError("正文提取结果为空，请调整 content_regex")
         return cleaned_title or fallback_title, cleaned_content
 
-    def _build_job_id(self, book_name: str, toc: List[Dict[str, str]]) -> str:
+    def _build_job_id(self, book_name: str, toc: List[Dict[str, Any]]) -> str:
         digest = hashlib.sha1(
             json.dumps(
                 {
@@ -488,11 +490,36 @@ class NovelDownloadManager:
         prefix = sanitize_filename(book_name)[:24]
         return f"{prefix}-{digest}"
 
-    def _normalize_toc(self, toc: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def _ensure_output_target_available(self, job_id: str, output_filename: str) -> None:
+        final_path = self.output_dir / output_filename
+        if final_path.exists():
+            raise FileExistsError(f"输出文件已存在: {final_path}")
+
+        # Also reject names already reserved by another job's manifest so we do not let
+        # two background tasks race toward the same assembled TXT path.
+        for job_dir in sorted(self.jobs_dir.iterdir()):
+            if not job_dir.is_dir() or job_dir.name == job_id:
+                continue
+            journal_path = job_dir / "job.jsonl"
+            if not journal_path.exists():
+                continue
+            manifest, _replay = self._replay_job(job_dir.name)
+            if not manifest:
+                continue
+            if str(manifest.get("output_filename") or "").strip() != output_filename:
+                continue
+            raise FileExistsError(
+                "输出文件名已被任务 {job_id} 占用: {path}".format(
+                    job_id=job_dir.name,
+                    path=final_path,
+                )
+            )
+
+    def _normalize_toc(self, toc: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not isinstance(toc, list) or not toc:
             raise ValueError("toc_json 必须是非空 JSON 数组")
 
-        normalized: List[Dict[str, str]] = []
+        normalized: List[Dict[str, Any]] = []
         for index, chapter in enumerate(toc):
             if not isinstance(chapter, dict):
                 raise ValueError(f"第 {index} 项不是对象")
@@ -500,13 +527,19 @@ class NovelDownloadManager:
             url = str(chapter.get("url") or "").strip()
             if not title or not url:
                 raise ValueError(f"第 {index} 章缺少 title 或 url")
-            normalized.append(
-                {
-                    "index": index,
-                    "title": title,
-                    "url": url,
+            normalized_chapter: Dict[str, Any] = {
+                "index": index,
+                "title": title,
+                "url": url,
+            }
+            rule_vars = chapter.get("_rule_vars")
+            if isinstance(rule_vars, dict) and rule_vars:
+                normalized_chapter["_rule_vars"] = {
+                    str(key): value
+                    for key, value in rule_vars.items()
+                    if str(key or "").strip()
                 }
-            )
+            normalized.append(normalized_chapter)
         return normalized
 
     def _fetch_text(self, url: str, encoding: str = "") -> Tuple[str, str]:
@@ -613,6 +646,7 @@ class NovelDownloadManager:
         completed_indices = set()
         latest_errors: Dict[int, Dict[str, Any]] = {}
         last_state = ""
+        last_state_details: Dict[str, Any] = {}
         corrupt_lines = 0
 
         with open(journal_path, "rb") as handle:
@@ -646,11 +680,17 @@ class NovelDownloadManager:
                     }
                 elif kind == "state":
                     last_state = str(record.get("state") or "")
+                    last_state_details = {
+                        key: value
+                        for key, value in record.items()
+                        if key not in {"kind", "state", "at"}
+                    }
 
         return manifest, {
             "chapter_offsets": chapter_offsets,
             "completed_indices": completed_indices,
             "latest_errors": latest_errors,
             "last_state": last_state,
+            "last_state_details": last_state_details,
             "corrupt_lines": corrupt_lines,
         }

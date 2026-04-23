@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--list-limit", type=int, default=20, help="列书源分页大小")
     parser.add_argument("--list-offset", type=int, default=0, help="列书源分页偏移")
-    parser.add_argument("--max-workers", type=int, default=6, help="并发数")
+    parser.add_argument("--max-workers", type=int, default=3, help="正文下载并发数")
     parser.add_argument(
         "--search-max-workers",
         type=int,

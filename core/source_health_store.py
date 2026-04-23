@@ -51,8 +51,9 @@ class SourceHealthStore:
     def get_many(self, source_ids: Iterable[str] | None = None) -> dict[str, dict[str, Any]]:
         normalized_ids = self._normalize_ids(source_ids)
         with self._lock:
-            self._initialize()
             with connect_sqlite(self.sqlite_path) as connection:
+                # Ensure the table exists on the same connection that will issue the query.
+                self._ensure_schema(connection)
                 if normalized_ids is None:
                     rows = connection.execute(
                         """
@@ -261,41 +262,14 @@ class SourceHealthStore:
     def _initialize(self) -> None:
         with self._lock:
             with connect_sqlite(self.sqlite_path) as connection:
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS source_stage_health (
-                        source_id TEXT NOT NULL,
-                        stage TEXT NOT NULL,
-                        state TEXT NOT NULL DEFAULT 'unknown',
-                        attempts INTEGER NOT NULL DEFAULT 0,
-                        successes INTEGER NOT NULL DEFAULT 0,
-                        failures INTEGER NOT NULL DEFAULT 0,
-                        timeouts INTEGER NOT NULL DEFAULT 0,
-                        avg_ms REAL NOT NULL DEFAULT 0,
-                        last_success_at REAL NOT NULL DEFAULT 0,
-                        last_failure_at REAL NOT NULL DEFAULT 0,
-                        last_error_code TEXT NOT NULL DEFAULT '',
-                        last_error_summary TEXT NOT NULL DEFAULT '',
-                        note TEXT NOT NULL DEFAULT '',
-                        updated_at REAL NOT NULL DEFAULT 0,
-                        metadata_json TEXT NOT NULL DEFAULT '{}',
-                        PRIMARY KEY (source_id, stage)
-                    )
-                    """
-                )
-                connection.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_source_stage_health_state
-                    ON source_stage_health (stage, state, updated_at DESC)
-                    """
-                )
-                connection.execute("PRAGMA user_version = {version}".format(version=HEALTH_SCHEMA_VERSION))
+                self._ensure_schema(connection)
 
     def _migrate_json_if_needed(self) -> None:
         if not self.path.exists():
             return
         with self._lock:
             with connect_sqlite(self.sqlite_path) as connection:
+                self._ensure_schema(connection)
                 existing_count = connection.execute(
                     "SELECT COUNT(*) AS row_count FROM source_stage_health"
                 ).fetchone()["row_count"]
@@ -408,6 +382,7 @@ class SourceHealthStore:
             )
         self._initialize()
         with connect_sqlite(self.sqlite_path) as connection:
+            self._ensure_schema(connection)
             connection.executemany(
                 """
                 INSERT INTO source_stage_health (
@@ -444,6 +419,39 @@ class SourceHealthStore:
                 """,
                 rows,
             )
+
+    def _ensure_schema(self, connection: Any) -> None:
+        # Keep schema creation idempotent so teardown/reload races do not leave readers
+        # talking to a fresh SQLite file without tables.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS source_stage_health (
+                source_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'unknown',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                successes INTEGER NOT NULL DEFAULT 0,
+                failures INTEGER NOT NULL DEFAULT 0,
+                timeouts INTEGER NOT NULL DEFAULT 0,
+                avg_ms REAL NOT NULL DEFAULT 0,
+                last_success_at REAL NOT NULL DEFAULT 0,
+                last_failure_at REAL NOT NULL DEFAULT 0,
+                last_error_code TEXT NOT NULL DEFAULT '',
+                last_error_summary TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                updated_at REAL NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (source_id, stage)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_source_stage_health_state
+            ON source_stage_health (stage, state, updated_at DESC)
+            """
+        )
+        connection.execute("PRAGMA user_version = {version}".format(version=HEALTH_SCHEMA_VERSION))
 
     def _row_to_stage_entry(self, row: Any) -> dict[str, Any]:
         stage_entry = _make_stage_entry()

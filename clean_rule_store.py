@@ -26,7 +26,7 @@ class CleanRuleRepositoryStore:
         rules, skipped_rules = self._parse_rules(raw_text)
         imported_at = time.time()
         name = (repo_name or source_ref or "未命名净化仓库").strip()
-        repo_id = self._build_repo_id(name, source_ref or raw_text, imported_at)
+        repo_id = self._build_repo_id(name, source_ref, raw_text)
         payload = {
             "repo_id": repo_id,
             "name": name,
@@ -66,6 +66,7 @@ class CleanRuleRepositoryStore:
     def load_applicable_cleaners(self, source: dict[str, Any]) -> list[tuple[str, str]]:
         candidates = self._source_match_candidates(source)
         cleaners: list[tuple[str, str]] = []
+        seen_cleaners: set[tuple[str, str]] = set()
         for record in self.list_repositories():
             repo_payload = self._load_repo_payload(record["repo_id"])
             for rule in repo_payload.get("rules") or []:
@@ -79,7 +80,13 @@ class CleanRuleRepositoryStore:
                     continue
                 if not rule.get("is_regex", True):
                     pattern = re.escape(pattern)
-                cleaners.append((pattern, str(rule.get("replacement") or "")))
+                cleaner = (pattern, str(rule.get("replacement") or ""))
+                # The same repository may be re-imported, and multiple repositories may
+                # intentionally share a rule; apply each exact cleaner only once.
+                if cleaner in seen_cleaners:
+                    continue
+                seen_cleaners.add(cleaner)
+                cleaners.append(cleaner)
         return cleaners
 
     def _load_repo_payload(self, repo_id: str) -> dict[str, Any]:
@@ -252,21 +259,25 @@ class CleanRuleRepositoryStore:
         payload.setdefault("repos", [])
         return payload
 
-    def _build_repo_id(self, name: str, source_ref: str, imported_at: float) -> str:
+    def _build_repo_id(self, name: str, source_ref: str, raw_text: str) -> str:
+        normalized_source_ref = str(source_ref or "").strip()
+        # Use a stable identity so re-importing the same repository updates it instead of
+        # stacking duplicate rule packs forever.
+        stable_ref = normalized_source_ref or hashlib.sha1(
+            str(raw_text or "").encode("utf-8")
+        ).hexdigest()
         digest = hashlib.sha1(
             json.dumps(
                 {
                     "name": name,
-                    "source_ref": source_ref,
-                    "imported_at": imported_at,
+                    "source_ref": stable_ref,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()[:10]
         slug = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "-", name).strip("-").lower() or "clean-rules"
-        timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime(imported_at))
-        return "{slug}-{timestamp}-{digest}".format(slug=slug[:24], timestamp=timestamp, digest=digest)
+        return "{slug}-{digest}".format(slug=slug[:24], digest=digest)
 
     def _write_json(self, path: Path, payload: Any) -> None:
         tmp_path = path.with_suffix(path.suffix + ".tmp")

@@ -60,6 +60,7 @@ class RuleEngine:
         "id",
         "style",
         "text",
+        "textNodes",
         "html",
     }
 
@@ -128,7 +129,12 @@ class RuleEngine:
         book_info_rule = source.get("rule_book_info") or {}
         toc_rule = source.get("rule_toc") or {}
         current_context = dict(rule_context or {})
-        self._run_rule_init(payload_kind, payload, book_info_rule.get("init") or "", current_context)
+        payload = self._run_rule_init(
+            payload_kind,
+            payload,
+            book_info_rule.get("init") or "",
+            current_context,
+        )
 
         title = self._extract_scalar(
             payload_kind,
@@ -163,6 +169,12 @@ class RuleEngine:
         )
         toc_page_url = self._make_absolute_url(toc_url, detail_final_url, source) or detail_final_url
         toc = self.fetch_chapter_list(source, toc_page_url, toc_rule, rule_context=current_context)
+        toc = self._filter_non_chapter_toc_items(
+            toc,
+            detail_final_url,
+            toc_page_url,
+            title or fallback_title,
+        )
         if not toc:
             raise RuleEngineError("未解析到目录，请检查 ruleToc")
         return {
@@ -196,7 +208,12 @@ class RuleEngine:
             visited.add(current_url)
             page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
             payload_kind, payload = self._build_payload(page_text, final_url)
-            self._run_rule_init(payload_kind, payload, toc_rule.get("init") or "", shared_context)
+            payload = self._run_rule_init(
+                payload_kind,
+                payload,
+                toc_rule.get("init") or "",
+                shared_context,
+            )
             list_rule = (
                 toc_rule.get("chapterList")
                 or toc_rule.get("list")
@@ -264,6 +281,70 @@ class RuleEngine:
             for index, chapter in enumerate(deduped)
         ]
 
+    def _filter_non_chapter_toc_items(
+        self,
+        toc: List[Dict[str, Any]],
+        book_url: str,
+        toc_url: str,
+        book_name: str,
+    ) -> List[Dict[str, Any]]:
+        if not toc:
+            return []
+
+        normalized_book_url = self._normalize_url_for_compare(book_url)
+        normalized_toc_url = self._normalize_url_for_compare(toc_url)
+        normalized_book_name = self._normalize_text_for_compare(book_name)
+        filtered: List[Dict[str, Any]] = []
+
+        for item in toc:
+            title = str(item.get("title") or "").strip()
+            chapter_url = str(item.get("url") or "").strip()
+            normalized_title = self._normalize_text_for_compare(title)
+            normalized_chapter_url = self._normalize_url_for_compare(chapter_url)
+            if not title or not chapter_url:
+                continue
+            if normalized_chapter_url and normalized_chapter_url == normalized_book_url:
+                continue
+            if normalized_chapter_url and normalized_chapter_url == normalized_toc_url:
+                continue
+            if normalized_book_name and normalized_title == normalized_book_name:
+                continue
+            if normalized_title in {"[正序]", "[倒序]", "正序", "倒序"}:
+                continue
+            filtered.append(dict(item))
+
+        if not filtered:
+            filtered = [dict(item) for item in toc]
+
+        return [
+            {
+                "index": index,
+                "title": str(item.get("title") or "").strip(),
+                "url": str(item.get("url") or "").strip(),
+                "_rule_vars": dict(item.get("_rule_vars") or {}),
+            }
+            for index, item in enumerate(filtered)
+        ]
+
+    def _normalize_text_for_compare(self, value: Any) -> str:
+        return str(value or "").strip().casefold()
+
+    def _normalize_url_for_compare(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        parts = urlsplit(text)
+        path = parts.path.rstrip("/") or "/"
+        return urlunsplit(
+            (
+                parts.scheme.casefold(),
+                parts.netloc.casefold(),
+                path,
+                parts.query,
+                "",
+            )
+        )
+
     def fetch_chapter_content(
         self,
         source: Dict[str, Any],
@@ -289,7 +370,12 @@ class RuleEngine:
             visited.add(current_url)
             page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
             payload_kind, payload = self._build_payload(page_text, final_url)
-            self._run_rule_init(payload_kind, payload, content_rule.get("init") or "", shared_context)
+            payload = self._run_rule_init(
+                payload_kind,
+                payload,
+                content_rule.get("init") or "",
+                shared_context,
+            )
             title = self._extract_scalar(
                 payload_kind,
                 payload,
@@ -681,7 +767,12 @@ class RuleEngine:
     ) -> List[Dict[str, Any]]:
         rule = source.get("rule_search") or {}
         shared_context: dict[str, Any] = {}
-        self._run_rule_init(payload_kind, payload, rule.get("init") or "", shared_context)
+        payload = self._run_rule_init(
+            payload_kind,
+            payload,
+            rule.get("init") or "",
+            shared_context,
+        )
         list_rule = (
             rule.get("bookList")
             or rule.get("booklist")
@@ -1301,7 +1392,7 @@ class RuleEngine:
             if isinstance(item, str):
                 values.append(item)
                 continue
-            if attr == "text":
+            if attr in {"text", "textNodes"}:
                 values.append(self._node_text(item))
             elif attr == "html":
                 values.append(item.get())
@@ -1320,6 +1411,8 @@ class RuleEngine:
         parts = [part.strip() for part in str(step or "").split("@") if part.strip()]
         if not parts:
             return [], ""
+        if len(parts) == 1 and self._is_html_attr_token(parts[0]):
+            return [], parts[0]
         attr = ""
         if len(parts) > 1 and self._is_html_attr_token(parts[-1]):
             attr = parts[-1]
@@ -1383,6 +1476,11 @@ class RuleEngine:
         excluded_indexes: List[int] = []
         slice_range: Tuple[int, int] | None = None
 
+        match = re.match(r"^(.*)\[(-?\d+):(-?\d+)\]$", normalized)
+        if match:
+            normalized = match.group(1).strip()
+            slice_range = (int(match.group(2)), int(match.group(3)))
+
         match = re.match(r"^(.*)\[(-?\d+(?:\s*,\s*-?\d+)*)\]$", normalized)
         if match:
             normalized = match.group(1).strip()
@@ -1406,6 +1504,8 @@ class RuleEngine:
     def _normalize_html_selector_expression(self, expression: str) -> str:
         normalized = str(expression or "").strip()
         lowered = normalized.lower()
+        if lowered.startswith("tag."):
+            return normalized[4:]
         if lowered.startswith("class."):
             class_tokens = [token for token in normalized[6:].split() if token]
             if class_tokens:
@@ -1597,12 +1697,26 @@ class RuleEngine:
         payload: Any,
         init_rule: str,
         rule_context: Dict[str, Any] | None,
-    ) -> None:
-        if not init_rule or rule_context is None:
-            return
+    ) -> Any:
+        if not init_rule:
+            return payload
+        if rule_context is None:
+            return payload
         resolved_rule, _ = self._resolve_context_placeholders(str(init_rule or ""), rule_context)
-        _ignored_base_rule, put_mapping = self._split_put_directives(resolved_rule)
-        self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+        base_rule, put_mapping = self._split_put_directives(resolved_rule)
+        current_payload = payload
+        normalized_base_rule = str(base_rule or "").strip()
+        if normalized_base_rule:
+            selected = self._select_many(
+                payload_kind,
+                payload,
+                normalized_base_rule,
+                rule_context=rule_context,
+            )
+            if selected:
+                current_payload = selected[0]
+        self._apply_put_mapping(payload_kind, current_payload, put_mapping, rule_context)
+        return current_payload
 
     def _apply_put_mapping(
         self,

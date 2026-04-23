@@ -83,7 +83,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         )
 
     runtime_config = RuntimeConfig(
-        max_workers=int(settings.get("max_workers", 6)),
+        max_workers=int(settings.get("max_workers", 3)),
         request_timeout=_parse_positive_float(settings, "request_timeout", 20.0),
         use_env_proxy=bool(settings.get("use_env_proxy", False)),
         max_retries=int(settings.get("max_retries", 3)),
@@ -164,7 +164,7 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         download_extractor,
         manager,
         SourceDownloadConfig(
-            max_workers=max(1, min(8, int(settings.get("max_workers", 6)))),
+            max_workers=max(1, min(6, int(settings.get("max_workers", 3)))),
             sample_chapters=max(1, int(settings.get("download_sample_chapters", 1))),
             sample_min_chars=max(1, int(settings.get("download_sample_min_chars", 1))),
         ),

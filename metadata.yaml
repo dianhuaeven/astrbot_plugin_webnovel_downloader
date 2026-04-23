@@ -1,6 +1,6 @@
 name: astrbot_plugin_webnovel_downloader
 display_name: 网文下载器
 desc: "纯 Python 的网文下载与装订插件，使用单文件 journal 实现断点续传、绝对有序输出，并提供 AstrBot 函数工具。"
-version: 0.1.0
-author: OpenAI
+version: 0.8.0
+author: Dianhua
 repo: https://github.com/dianhuaeven/astrbot_plugin_webnovel_downloader

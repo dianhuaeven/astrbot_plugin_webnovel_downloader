@@ -182,6 +182,30 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(len(chapter_nodes), 2)
         self.assertEqual(kind_values, ["状态", "时间"])
 
+    def test_rule_engine_supports_tag_prefix_in_html_selectors(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = Selector(
+            text="""
+            <html>
+              <body>
+                <div class="detail">
+                  <p class="author">作者：<a href="/author/test">测试作者</a></p>
+                </div>
+                <ul class="read">
+                  <li><a href="/1">第一章</a></li>
+                  <li><a href="/2">第二章</a></li>
+                </ul>
+              </body>
+            </html>
+            """
+        )
+
+        chapter_nodes = engine._select_many("html", payload, "class.read@tag.li")
+        author_values = engine._select_many("html", payload, "class.author@tag.a@text")
+
+        self.assertEqual(len(chapter_nodes), 2)
+        self.assertEqual(author_values, ["测试作者"])
+
     def test_rule_engine_supports_literal_template_fragments_and_modifier_only_steps(self):
         engine = RuleEngine(RuleEngineConfig())
         payload = Selector(
@@ -207,6 +231,27 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(last_value, ["丙"])
         self.assertEqual(sliced_values, ["甲", "乙", "丙"])
         self.assertEqual(excluded_values, [])
+
+    def test_rule_engine_supports_bracket_slice_after_html_selector(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = Selector(
+            text="""
+            <html>
+              <body>
+                <dl class="chapters">
+                  <dd>头部</dd>
+                  <dd>第一章</dd>
+                  <dd>第二章</dd>
+                  <dd>尾部</dd>
+                </dl>
+              </body>
+            </html>
+            """
+        )
+
+        values = engine._select_many("html", payload, ".chapters@dd[1:-2]&&@text")
+
+        self.assertEqual(values, ["第一章", "第二章"])
 
     def test_rule_engine_supports_put_and_get_context_variables(self):
         engine = RuleEngine(RuleEngineConfig())
@@ -243,6 +288,119 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(direct_value, "123")
         self.assertEqual(chapter_url, "https://example.com/book/123/chapter-1")
 
+    def test_rule_engine_init_can_switch_json_context_for_followup_fields(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = {
+            "data": {
+                "bookInfo": {
+                    "bookId": 42,
+                    "bookName": "秒速五厘米",
+                    "authorName": "新海诚",
+                }
+            }
+        }
+        rule_context = {}
+
+        scoped_payload = engine._run_rule_init("json", payload, "data.bookInfo", rule_context)
+        title = engine._extract_scalar("json", scoped_payload, "bookName", rule_context=rule_context)
+        author = engine._extract_scalar("json", scoped_payload, "authorName", rule_context=rule_context)
+        toc_url = engine._extract_scalar(
+            "json",
+            scoped_payload,
+            "/catalog?bookid={{$.bookId}}",
+            rule_context=rule_context,
+        )
+
+        self.assertEqual(title, "秒速五厘米")
+        self.assertEqual(author, "新海诚")
+        self.assertEqual(toc_url, "/catalog?bookid=42")
+
+    def test_rule_engine_supports_bare_html_attr_rules(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = Selector(text='<html><body><a href="/chapter-1">第一章</a></body></html>')
+        link = engine._select_many("html", payload, "a")[0]
+
+        href = engine._extract_scalar("html", link, "href")
+        text = engine._extract_scalar("html", link, "text")
+        text_nodes = engine._extract_scalar("html", link, "textNodes")
+
+        self.assertEqual(href, "/chapter-1")
+        self.assertEqual(text, "第一章")
+        self.assertEqual(text_nodes, "第一章")
+
+    def test_rule_engine_filters_non_chapter_toc_links_before_returning_plan(self):
+        engine = RuleEngine(RuleEngineConfig())
+        toc_path = self.base_dir / "filtered-toc.html"
+        toc_desc_path = self.base_dir / "filtered-toc-desc.html"
+        chapter_1_path = self.base_dir / "filtered-chapter-1.html"
+        chapter_2_path = self.base_dir / "filtered-chapter-2.html"
+        detail_path = self.base_dir / "filtered-detail.html"
+
+        chapter_1_path.write_text(
+            "<html><body><div id='content'>正文1</div></body></html>",
+            encoding="utf-8",
+        )
+        chapter_2_path.write_text(
+            "<html><body><div id='content'>正文2</div></body></html>",
+            encoding="utf-8",
+        )
+        toc_desc_path.write_text(
+            "<html><body>倒序目录占位</body></html>",
+            encoding="utf-8",
+        )
+        toc_path.write_text(
+            "<html><body><div id='list'><dl>"
+            "<a href='{detail}'>兼容测试书</a>"
+            "<a href='{toc}'>[正序]</a>"
+            "<a href='{toc_desc}'>[倒序]</a>"
+            "<a href='{chapter1}'>第一章</a>"
+            "<a href='{chapter2}'>第二章</a>"
+            "</dl></div></body></html>".format(
+                detail=detail_path.resolve().as_uri(),
+                toc=toc_path.resolve().as_uri(),
+                toc_desc=toc_desc_path.resolve().as_uri(),
+                chapter1=chapter_1_path.resolve().as_uri(),
+                chapter2=chapter_2_path.resolve().as_uri(),
+            ),
+            encoding="utf-8",
+        )
+        detail_path.write_text(
+            "<html><head>"
+            "<meta property='og:novel:book_name' content='兼容测试书' />"
+            "<meta property='og:novel:author' content='测试作者' />"
+            "</head><body>"
+            "<a id='toc-link' href='{toc}'>全文目录</a>"
+            "</body></html>".format(toc=toc_path.resolve().as_uri()),
+            encoding="utf-8",
+        )
+        source = {
+            "source_id": "filter-source",
+            "source_url": "https://example.com",
+            "rule_book_info": {
+                "name": "[property=og:novel:book_name]@content",
+                "author": "[property=og:novel:author]@content",
+                "tocUrl": "#toc-link@href",
+            },
+            "rule_toc": {
+                "chapterList": "#list dl a",
+                "chapterName": "text",
+                "chapterUrl": "@href",
+            },
+            "rule_content": {"content": "#content&&text"},
+        }
+
+        plan = engine.build_book_download_plan(
+            source,
+            detail_path.resolve().as_uri(),
+            "",
+        )
+
+        self.assertEqual(plan["book_name"], "兼容测试书")
+        self.assertEqual(plan["author"], "测试作者")
+        self.assertEqual([item["title"] for item in plan["toc"]], ["第一章", "第二章"])
+        self.assertEqual(plan["toc"][0]["index"], 0)
+        self.assertEqual(plan["toc"][1]["index"], 1)
+
     def test_rule_engine_supports_lightweight_js_templates_and_transforms(self):
         engine = RuleEngine(RuleEngineConfig())
         payload = {"name": "A B C"}
@@ -261,7 +419,7 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(rendered, hashlib.md5(b"abc").hexdigest())
         self.assertEqual(transformed, "ABC")
 
-    def test_search_service_uses_runtime_health_to_skip_broken_search_and_hide_broken_download(self):
+    def test_search_service_keeps_broken_runtime_sources_visible_but_lower_priority(self):
         health_store = SourceHealthStore(self.base_dir / "source_health.json")
         health_store.record_failure(
             "broken-search",
@@ -315,13 +473,18 @@ class LegadoPhase5Test(unittest.TestCase):
 
         payload = service.search("测试书", limit=5)
 
-        self.assertEqual(engine.calls, [("good-source", "测试书", 5)])
-        self.assertEqual(payload["skipped_sources"][0]["source_id"], "broken-search")
+        self.assertEqual(
+            engine.calls,
+            [("good-source", "测试书", 5), ("broken-search", "测试书", 5)],
+        )
+        self.assertEqual(payload["skipped_sources"], [])
         self.assertEqual(payload["results"][0]["source_id"], "good-source")
-        self.assertFalse(payload["results"][0]["supports_download"])
+        self.assertTrue(payload["results"][0]["supports_download"])
         self.assertEqual(payload["results"][0]["preflight_health_state"], "broken")
+        self.assertEqual(payload["results"][1]["source_id"], "broken-search")
+        self.assertEqual(payload["results"][1]["search_health_state"], "broken")
 
-    def test_book_resolution_uses_runtime_health_skip_reason(self):
+    def test_book_resolution_keeps_runtime_broken_source_as_lower_priority_candidate(self):
         health_store = SourceHealthStore(self.base_dir / "source_health.json")
         health_store.record_failure(
             "runtime-broken",
@@ -370,8 +533,10 @@ class LegadoPhase5Test(unittest.TestCase):
         payload = resolver.resolve("测试书", author="测试作者", limit=10)
 
         self.assertEqual(payload["candidates"][0]["source_id"], "healthy")
-        self.assertEqual(payload["skipped_candidates"][0]["source_id"], "runtime-broken")
-        self.assertIn("目录预检失败", payload["skipped_candidates"][0]["skip_reason"])
+        self.assertEqual(payload["candidates"][1]["source_id"], "runtime-broken")
+        self.assertEqual(payload["candidates"][1]["preflight_health_state"], "broken")
+        self.assertTrue(payload["candidates"][1]["supports_download"])
+        self.assertEqual(payload["skipped_candidates"], [])
 
 
 if __name__ == "__main__":

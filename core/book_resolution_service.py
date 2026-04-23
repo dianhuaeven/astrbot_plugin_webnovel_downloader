@@ -302,7 +302,7 @@ class BookResolutionService:
             return False
         for stage in ("preflight", "download"):
             stage_state = str((health.get(stage) or {}).get("state", "unknown") or "unknown")
-            if stage_state in {"broken", "unsupported"}:
+            if stage_state == "unsupported":
                 return False
         return True
 
@@ -314,6 +314,6 @@ class BookResolutionService:
         for stage in ("preflight", "download"):
             stage_entry = dict(health.get(stage) or {})
             stage_state = str(stage_entry.get("state", "unknown") or "unknown")
-            if stage_state in {"broken", "unsupported"}:
+            if stage_state == "unsupported":
                 return self._stage_summary(stage_entry)
         return "；".join(source_issues) or "书源当前不支持 TXT 下载"

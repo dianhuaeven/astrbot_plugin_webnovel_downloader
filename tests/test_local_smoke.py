@@ -79,9 +79,18 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         self._install_astrbot_stubs()
         self.module = importlib.import_module("{name}.main".format(name=self.package_name))
-        self.plugin = self.module.JsonlNovelDownloaderPlugin(context=object(), config={})
+        self._managed_plugins = []
+        self.plugin = self._create_plugin()
+        self.addAsyncCleanup(self._terminate_managed_plugins)
 
     def tearDown(self):
+        for plugin in reversed(getattr(self, "_managed_plugins", [])):
+            wait_for_bootstrap = getattr(plugin, "wait_for_bootstrap", None)
+            if callable(wait_for_bootstrap):
+                wait_for_bootstrap(5.0)
+            shutdown_probe = getattr(getattr(plugin, "source_probe_service", None), "shutdown", None)
+            if callable(shutdown_probe):
+                shutdown_probe(5.0)
         for name in list(sys.modules):
             if name.startswith("astrbot"):
                 sys.modules.pop(name, None)
@@ -94,6 +103,21 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             except ValueError:
                 pass
         self.tempdir.cleanup()
+
+    def _create_plugin(self, config=None):
+        plugin = self.module.JsonlNovelDownloaderPlugin(context=object(), config=config or {})
+        self._managed_plugins.append(plugin)
+        return plugin
+
+    async def _terminate_managed_plugins(self):
+        for plugin in reversed(getattr(self, "_managed_plugins", [])):
+            terminate = getattr(plugin, "terminate", None)
+            if inspect.iscoroutinefunction(terminate):
+                await terminate()
+                continue
+            shutdown_probe = getattr(getattr(plugin, "source_probe_service", None), "shutdown", None)
+            if callable(shutdown_probe):
+                shutdown_probe(1.0)
 
     def _install_astrbot_stubs(self):
         astrbot = types.ModuleType("astrbot")
@@ -312,7 +336,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("novel_start_download", tool_names)
         self.assertNotIn("novel_assemble_book", tool_names)
         self.assertNotIn("novel_list_jobs", tool_names)
-        self.assertIn("novel_download", tool_names)
+        self.assertNotIn("novel_download", tool_names)
         self.assertIn("novel_refresh_sources", tool_names)
         self.assertIn("novel_remove_source", tool_names)
         self.assertIn("novel_get_source_detail", tool_names)
@@ -321,7 +345,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("novel_inspect_source_book", tool_names)
         self.assertIn("novel_download_source_book", tool_names)
         self.assertIn("novel_read_search_results", tool_names)
-        self.assertIn("novel_download_cached_result", tool_names)
+        self.assertNotIn("novel_download_cached_result", tool_names)
         self.assertIn("novel_download_status", tool_names)
 
     def test_llm_tool_signature_hides_system_event_parameter(self):
@@ -364,22 +388,16 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             author="",
             source_ids_json="",
             search_limit="",
-            attempt_limit="",
-            output_filename="",
-            auto_assemble="true",
             include_disabled="",
         ):
             recorded["keyword"] = keyword
             recorded["author"] = author
             recorded["source_ids_json"] = source_ids_json
             recorded["search_limit"] = search_limit
-            recorded["attempt_limit"] = attempt_limit
-            recorded["output_filename"] = output_filename
-            recorded["auto_assemble"] = auto_assemble
             recorded["include_disabled"] = include_disabled
             return "ok"
 
-        self.plugin.handle_novel_auto_download = fake_handle
+        self.plugin.handle_novel_prepare_download = fake_handle
         result = await self.plugin.novel_download(
             "瘟疫医生",
             "作者甲",
@@ -394,9 +412,6 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "author": "作者甲",
                 "source_ids_json": "",
                 "search_limit": "",
-                "attempt_limit": "3",
-                "output_filename": "",
-                "auto_assemble": "true",
                 "include_disabled": "",
             },
         )
@@ -664,18 +679,24 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             book_name="",
             output_filename="",
             auto_assemble="true",
+            expected_title="",
+            expected_author="",
         ):
             recorded["source_id"] = source_id
             recorded["book_url"] = book_url
             recorded["book_name"] = book_name
             recorded["output_filename"] = output_filename
             recorded["auto_assemble"] = auto_assemble
+            recorded["expected_title"] = expected_title
+            recorded["expected_author"] = expected_author
             return "ok"
 
         self.plugin.handle_novel_download_book = fake_handle
         result = await self.plugin.novel_download_source_book(
             "source-1",
             "https://example.com/book/1",
+            "测试书",
+            "测试作者",
             auto_assemble="false",
         )
 
@@ -685,11 +706,21 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             {
                 "source_id": "source-1",
                 "book_url": "https://example.com/book/1",
-                "book_name": "",
+                "book_name": "测试书",
                 "output_filename": "",
                 "auto_assemble": "false",
+                "expected_title": "测试书",
+                "expected_author": "测试作者",
             },
         )
+
+    async def test_novel_download_source_book_requires_exact_title_and_author(self):
+        with self.assertRaisesRegex(ValueError, "book_name 和 author"):
+            await self.plugin.novel_download_source_book(
+                "source-1",
+                "https://example.com/book/1",
+                "测试书",
+            )
 
     async def test_novel_read_search_results_accepts_runtime_call_without_event_argument(self):
         recorded = {}
@@ -1189,43 +1220,39 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         self.plugin.auto_probe_on_import = False
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
-        source_id_by_name = {item["name"]: item["source_id"] for item in listed_sources["sources"]}
-        bad_source_id = source_id_by_name["A失败源"]
-        original_preflight = self.plugin.source_download_service.preflight_book
-        try:
-
-            def fake_preflight(source_id, book_url, book_name=""):
-                if source_id == bad_source_id:
-                    raise ValueError("未解析到目录，请检查 ruleToc")
-                return original_preflight(source_id, book_url, book_name)
-
-            self.plugin.source_download_service.preflight_book = fake_preflight
-            auto_result = json.loads(
-                await self._invoke_tool(
-                    self.plugin.novel_download,
-                    "自动下载测试书",
-                    "自动作者",
-                    "",
-                    "10",
-                    "2",
-                    "",
-                    "true",
-                    "false",
-                )
+        prepare_result = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_download,
+                "自动下载测试书",
+                "自动作者",
+                "",
+                "10",
+                "2",
+                "",
+                "true",
+                "false",
             )
-        finally:
-            self.plugin.source_download_service.preflight_book = original_preflight
+        )
+        self.assertEqual(prepare_result["status"], "manual_selection_required")
+        self.assertTrue(prepare_result["download_blocked"])
+        self.assertEqual(prepare_result["recommended_next_tool"], "novel_download_source_book")
+        self.assertGreaterEqual(prepare_result["candidate_count"], 2)
+        self.assertTrue(Path(prepare_result["search_path"]).exists())
 
-        self.assertEqual(auto_result["status"], "started")
-        self.assertEqual(auto_result["attempted_count"], 2)
-        self.assertEqual(auto_result["attempts"][0]["outcome"], "preflight_failed")
-        self.assertEqual(auto_result["attempts"][1]["outcome"], "started")
-        self.assertEqual(auto_result["selected"]["source_name"], "B成功源")
-        self.assertTrue(auto_result["search_id"])
-        self.assertTrue(Path(auto_result["search_path"]).exists())
-
-        job_id = auto_result["job"]["job_id"]
+        selected_candidate = next(
+            item for item in prepare_result["candidates"] if item["source_name"] == "B成功源"
+        )
+        download_text = await self._invoke_tool(
+            self.plugin.novel_download_source_book,
+            selected_candidate["source_id"],
+            selected_candidate["book_url"],
+            selected_candidate["title"],
+            selected_candidate["author"],
+            "",
+            "true",
+        )
+        self.assertIn("已创建并启动任务", download_text)
+        job_id = download_text.splitlines()[0].split(": ", 1)[1]
         await self.plugin._running_tasks[job_id]
         status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
         self.assertIn("状态: assembled", status_text)
@@ -1234,11 +1261,6 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         content = output_path.read_text(encoding="utf-8")
         self.assertIn("自动下载第一章", content)
         self.assertIn("自动下载第二章", content)
-
-        listed_after = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
-        health_by_name = {item["name"]: item for item in listed_after["sources"]}
-        self.assertEqual(health_by_name["A失败源"]["preflight_health_state"], "broken")
-        self.assertEqual(health_by_name["B成功源"]["preflight_health_state"], "healthy")
 
     async def test_query_tools_return_source_detail_candidates_and_inspection(self):
         chapters_dir = self.base_dir / "query-chapters"
@@ -2058,10 +2080,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed_sources["sources"][0]["download_health_state"], "unknown")
 
     async def test_import_sources_can_disable_auto_probe(self):
-        plugin = self.module.JsonlNovelDownloaderPlugin(
-            context=object(),
-            config={"auto_probe_on_import": False},
-        )
+        plugin = self._create_plugin(config={"auto_probe_on_import": False})
         source_json = json.dumps(
             [
                 {
@@ -2470,6 +2489,22 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         repo_list = json.loads(await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0"))
         self.assertEqual(repo_list["repositories"][0]["rule_count"], 1)
         self.assertEqual(repo_list["repositories"][0]["skipped_rule_count"], 2)
+
+    async def test_plugin_terminate_shuts_down_probe_service(self):
+        calls = []
+        original_shutdown = self.plugin.source_probe_service.shutdown
+
+        def fake_shutdown(timeout=None):
+            calls.append(timeout)
+            return True
+
+        self.plugin.source_probe_service.shutdown = fake_shutdown
+        try:
+            await self.plugin.terminate()
+        finally:
+            self.plugin.source_probe_service.shutdown = original_shutdown
+
+        self.assertEqual(calls, [5.0])
 
     async def test_import_rss_like_source_marks_unsupported(self):
         rss_like_source = json.dumps(
