@@ -54,7 +54,9 @@ class CleanRuleRepositoryStore:
             "skipped_rule_count": payload["skipped_rule_count"],
             "path": str(repo_path),
         }
-        index["repos"] = [item for item in index["repos"] if item.get("repo_id") != repo_id]
+        index["repos"] = [
+            item for item in index["repos"] if item.get("repo_id") != repo_id
+        ]
         index["repos"].insert(0, record)
         index["updated_at"] = imported_at
         self._write_json(self.index_path, index)
@@ -108,10 +110,14 @@ class CleanRuleRepositoryStore:
             source.get("group", ""),
             source.get("clean_rule_url", ""),
         ]
-        candidates = [str(item).strip().lower() for item in values if str(item or "").strip()]
+        candidates = [
+            str(item).strip().lower() for item in values if str(item or "").strip()
+        ]
         return candidates
 
-    def _scope_matches(self, scope_tokens: Iterable[str], candidates: list[str]) -> bool:
+    def _scope_matches(
+        self, scope_tokens: Iterable[str], candidates: list[str]
+    ) -> bool:
         haystack = "\n".join(candidates)
         for raw_token in scope_tokens:
             token = str(raw_token or "").strip()
@@ -129,7 +135,9 @@ class CleanRuleRepositoryStore:
                 return True
         return False
 
-    def _parse_rules(self, raw_text: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    def _parse_rules(
+        self, raw_text: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         text = str(raw_text or "").strip()
         if not text:
             raise ValueError("净化规则仓库内容不能为空")
@@ -142,7 +150,9 @@ class CleanRuleRepositoryStore:
             return self._parse_json_rules(parsed)
         return self._parse_text_rules(text)
 
-    def _parse_json_rules(self, payload: Any) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    def _parse_json_rules(
+        self, payload: Any
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         items: list[Any]
         if isinstance(payload, list):
             items = payload
@@ -154,7 +164,9 @@ class CleanRuleRepositoryStore:
                 or payload.get("replaceRules")
             )
             if not isinstance(candidate, list):
-                raise ValueError("净化规则 JSON 必须是数组，或包含 rules/items/data/replaceRules 数组")
+                raise ValueError(
+                    "净化规则 JSON 必须是数组，或包含 rules/items/data/replaceRules 数组"
+                )
             items = candidate
         else:
             raise ValueError("净化规则 JSON 顶层必须是对象或数组")
@@ -167,7 +179,11 @@ class CleanRuleRepositoryStore:
             pattern = str(item.get("pattern") or item.get("regex") or "").strip()
             if not pattern:
                 continue
-            name = str(item.get("name") or item.get("title") or "rule-{index}".format(index=index)).strip()
+            name = str(
+                item.get("name")
+                or item.get("title")
+                or "rule-{index}".format(index=index)
+            ).strip()
             replacement = str(
                 item.get("replacement")
                 or item.get("replace")
@@ -175,12 +191,16 @@ class CleanRuleRepositoryStore:
                 or ""
             )
             if replacement.strip().startswith("@js:"):
-                skipped_rules.append({"name": name, "reason": "JS replacement 当前不支持"})
+                skipped_rules.append(
+                    {"name": name, "reason": "JS replacement 当前不支持"}
+                )
                 continue
             scope_content = item.get("scopeContent")
             scope_title = item.get("scopeTitle")
             if scope_title is True and scope_content is not True:
-                skipped_rules.append({"name": name, "reason": "仅标题净化规则当前不会应用到正文"})
+                skipped_rules.append(
+                    {"name": name, "reason": "仅标题净化规则当前不会应用到正文"}
+                )
                 continue
             scope = self._normalize_scope(
                 item.get("scope")
@@ -192,10 +212,14 @@ class CleanRuleRepositoryStore:
             rules.append(
                 {
                     "name": name,
-                    "group": str(item.get("group") or item.get("category") or "").strip(),
+                    "group": str(
+                        item.get("group") or item.get("category") or ""
+                    ).strip(),
                     "pattern": pattern,
                     "replacement": replacement,
-                    "is_regex": bool(item.get("isRegex", item.get("regexEnabled", True))),
+                    "is_regex": bool(
+                        item.get("isRegex", item.get("regexEnabled", True))
+                    ),
                     "enabled": bool(item.get("enabled", item.get("isEnabled", True))),
                     "scope": scope,
                 }
@@ -204,7 +228,9 @@ class CleanRuleRepositoryStore:
             raise ValueError("净化规则仓库中没有可用规则")
         return rules, skipped_rules
 
-    def _parse_text_rules(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    def _parse_text_rules(
+        self, text: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         rules: list[dict[str, Any]] = []
         for index, line in enumerate(text.splitlines()):
             stripped = line.strip()
@@ -263,9 +289,10 @@ class CleanRuleRepositoryStore:
         normalized_source_ref = str(source_ref or "").strip()
         # Use a stable identity so re-importing the same repository updates it instead of
         # stacking duplicate rule packs forever.
-        stable_ref = normalized_source_ref or hashlib.sha1(
-            str(raw_text or "").encode("utf-8")
-        ).hexdigest()
+        stable_ref = (
+            normalized_source_ref
+            or hashlib.sha1(str(raw_text or "").encode("utf-8")).hexdigest()
+        )
         digest = hashlib.sha1(
             json.dumps(
                 {
@@ -276,7 +303,10 @@ class CleanRuleRepositoryStore:
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()[:10]
-        slug = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "-", name).strip("-").lower() or "clean-rules"
+        slug = (
+            re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "-", name).strip("-").lower()
+            or "clean-rules"
+        )
         return "{slug}-{digest}".format(slug=slug[:24], digest=digest)
 
     def _write_json(self, path: Path, payload: Any) -> None:

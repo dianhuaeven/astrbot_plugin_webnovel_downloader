@@ -132,7 +132,10 @@ class LocalSmokeCliTest(unittest.TestCase):
         first_stdout = io.StringIO()
         first_stderr = io.StringIO()
 
-        with contextlib.redirect_stdout(first_stdout), contextlib.redirect_stderr(first_stderr):
+        with (
+            contextlib.redirect_stdout(first_stdout),
+            contextlib.redirect_stderr(first_stderr),
+        ):
             first_exit_code = local_smoke.main(
                 [
                     "--data-dir",
@@ -145,7 +148,10 @@ class LocalSmokeCliTest(unittest.TestCase):
         self.assertEqual(first_exit_code, 0, first_stderr.getvalue())
         second_stdout = io.StringIO()
         second_stderr = io.StringIO()
-        with contextlib.redirect_stdout(second_stdout), contextlib.redirect_stderr(second_stderr):
+        with (
+            contextlib.redirect_stdout(second_stdout),
+            contextlib.redirect_stderr(second_stderr),
+        ):
             second_exit_code = local_smoke.main(
                 [
                     "--data-dir",

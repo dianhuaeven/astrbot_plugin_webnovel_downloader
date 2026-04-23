@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
@@ -55,7 +54,9 @@ class JavaScriptRuntime:
             self._guard_unsupported_code(normalized_js_lib)
 
         payload_text = self._payload_text(payload)
-        context_values = {str(key): str(value) for key, value in dict(rule_context or {}).items()}
+        context_values = {
+            str(key): str(value) for key, value in dict(rule_context or {}).items()
+        }
 
         ctx = quickjs.Context()
         ctx.set_memory_limit(max(1024 * 1024, int(self.config.memory_limit_bytes)))
@@ -69,7 +70,9 @@ class JavaScriptRuntime:
             "py_get_string",
             lambda expression: self._resolve_selector(selector_resolver, expression),
         )
-        ctx.add_callable("py_md5", lambda text: hashlib.md5(str(text).encode("utf-8")).hexdigest())
+        ctx.add_callable(
+            "py_md5", lambda text: hashlib.md5(str(text).encode("utf-8")).hexdigest()
+        )
         ctx.add_callable("py_time_format", self._time_format)
 
         script = """

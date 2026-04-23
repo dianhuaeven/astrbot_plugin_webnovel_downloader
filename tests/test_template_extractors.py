@@ -9,7 +9,10 @@ from astrbot_plugin_webnovel_downloader.core.extractors import (
     ProfiledExtractor,
     WordpressMadaraLikeExtractor,
 )
-from astrbot_plugin_webnovel_downloader.core.rule_engine import RuleEngine, RuleEngineConfig
+from astrbot_plugin_webnovel_downloader.core.rule_engine import (
+    RuleEngine,
+    RuleEngineConfig,
+)
 from astrbot_plugin_webnovel_downloader.core.session_scraper import ScraperResponse
 
 
@@ -49,15 +52,25 @@ class _ExplodingRuleEngine(RuleEngine):
 
     def search_books(self, source, keyword, limit=20):
         self.calls.append(("search", source["source_id"], keyword, limit))
-        raise AssertionError("fallback should not be called for profiled template success")
+        raise AssertionError(
+            "fallback should not be called for profiled template success"
+        )
 
     def build_book_download_plan(self, source, book_url, fallback_title=""):
         self.calls.append(("preflight", source["source_id"], book_url, fallback_title))
-        raise AssertionError("fallback should not be called for profiled template success")
+        raise AssertionError(
+            "fallback should not be called for profiled template success"
+        )
 
-    def fetch_chapter_content(self, source, chapter_url, fallback_title="", max_pages=5):
-        self.calls.append(("content", source["source_id"], chapter_url, fallback_title, max_pages))
-        raise AssertionError("fallback should not be called for profiled template success")
+    def fetch_chapter_content(
+        self, source, chapter_url, fallback_title="", max_pages=5
+    ):
+        self.calls.append(
+            ("content", source["source_id"], chapter_url, fallback_title, max_pages)
+        )
+        raise AssertionError(
+            "fallback should not be called for profiled template success"
+        )
 
 
 class TemplateExtractorTest(unittest.TestCase):
@@ -90,7 +103,9 @@ class TemplateExtractorTest(unittest.TestCase):
         }
 
         results = extractor.search(source, "测试", limit=3)
-        plan = extractor.preflight(source, "https://wp.example.com/novel/test-book", "测试书")
+        plan = extractor.preflight(
+            source, "https://wp.example.com/novel/test-book", "测试书"
+        )
         chapter = extractor.fetch_content(
             source,
             "https://wp.example.com/novel/test-book/chapter-1",
@@ -98,9 +113,14 @@ class TemplateExtractorTest(unittest.TestCase):
         )
 
         self.assertEqual(results[0]["title"], "测试书")
-        self.assertEqual(plan["toc_count"] if "toc_count" in plan else len(plan["toc"]), 1)
+        self.assertEqual(
+            plan["toc_count"] if "toc_count" in plan else len(plan["toc"]), 1
+        )
         self.assertEqual(plan["toc"][0]["title"], "第一章")
-        self.assertIn(("POST", "https://wp.example.com/novel/test-book/ajax/chapters/"), scraper.calls)
+        self.assertIn(
+            ("POST", "https://wp.example.com/novel/test-book/ajax/chapters/"),
+            scraper.calls,
+        )
         self.assertIn("正文一", chapter["content"])
 
     def test_profiled_extractor_uses_template_before_fallback(self):
@@ -131,7 +151,10 @@ class TemplateExtractorTest(unittest.TestCase):
                     "full-source": {
                         "source_id": "full-source",
                         "template_family": "novelfull_like",
-                        "preferred_extractors": ["template_novelfull_like", "fallback_rule"],
+                        "preferred_extractors": [
+                            "template_novelfull_like",
+                            "fallback_rule",
+                        ],
                     }
                 }
             ),
@@ -148,7 +171,9 @@ class TemplateExtractorTest(unittest.TestCase):
         }
 
         results = profiled.search(source, "测试", limit=3)
-        plan = profiled.preflight(source, "https://full.example.com/novel/test-book", "测试书")
+        plan = profiled.preflight(
+            source, "https://full.example.com/novel/test-book", "测试书"
+        )
         chapter = profiled.fetch_content(
             source,
             "https://full.example.com/novel/test-book/chapter-1",
@@ -185,7 +210,9 @@ class TemplateExtractorTest(unittest.TestCase):
         }
 
         results = extractor.search(source, "测试", limit=3)
-        plan = extractor.preflight(source, "https://pub.example.com/book/test-book", "测试书")
+        plan = extractor.preflight(
+            source, "https://pub.example.com/book/test-book", "测试书"
+        )
         chapter = extractor.fetch_content(
             source,
             "https://pub.example.com/book/test-book/chapter-1",
@@ -194,7 +221,9 @@ class TemplateExtractorTest(unittest.TestCase):
 
         self.assertEqual(results[0]["title"], "测试书")
         self.assertEqual(plan["toc"][0]["title"], "第一章")
-        self.assertIn(("GET", "https://pub.example.com/book/test-book/chapters"), scraper.calls)
+        self.assertIn(
+            ("GET", "https://pub.example.com/book/test-book/chapters"), scraper.calls
+        )
         self.assertIn("章节正文", chapter["content"])
 
     def test_template_content_cleaner_preserves_block_breaks(self):

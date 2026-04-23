@@ -11,8 +11,8 @@ from typing import Any, Dict, Iterable, List
 REGISTRY_SCHEMA_VERSION = 1
 JS_RULE_MARKERS = ("<js>", "@js:")
 WEBVIEW_MARKERS = (
-    "\"webview\":true",
-    "\"webview\": true",
+    '"webview":true',
+    '"webview": true',
     "'webview':true",
     "'webview': true",
 )
@@ -179,9 +179,8 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "enable_js": bool(raw_source.get("enableJs", False)),
         "has_js_lib": bool(_clean_text(raw_source.get("jsLib"))),
         "has_web_js": bool(_clean_text(raw_source.get("webJs"))),
-        "has_login_flow": bool(raw_source.get("loginUi")) or _looks_like_script_or_login_flow(
-            raw_source.get("loginUrl")
-        ),
+        "has_login_flow": bool(raw_source.get("loginUi"))
+        or _looks_like_script_or_login_flow(raw_source.get("loginUrl")),
         "rule_search_uses_js": _contains_js_marker(raw_source.get("ruleSearch")),
         "rule_book_info_uses_js": _contains_js_marker(raw_source.get("ruleBookInfo")),
         "rule_toc_uses_js": _contains_js_marker(raw_source.get("ruleToc")),
@@ -193,9 +192,13 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
                 raw_source.get("header"),
             )
         ),
-        "rule_book_info_uses_webview": _contains_webview_marker(raw_source.get("ruleBookInfo")),
+        "rule_book_info_uses_webview": _contains_webview_marker(
+            raw_source.get("ruleBookInfo")
+        ),
         "rule_toc_uses_webview": _contains_webview_marker(raw_source.get("ruleToc")),
-        "rule_content_uses_webview": _contains_webview_marker(raw_source.get("ruleContent")),
+        "rule_content_uses_webview": _contains_webview_marker(
+            raw_source.get("ruleContent")
+        ),
         "last_imported_at": time.time(),
     }
     return normalized
@@ -233,12 +236,20 @@ class SourceSummary:
         return asdict(self)
 
 
-def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> SourceSummary:
-    has_required_search = bool(normalized.get("search_url")) and bool(normalized.get("rule_search"))
-    has_required_download = bool(normalized.get("rule_book_info")) and bool(normalized.get("rule_toc")) and bool(
-        normalized.get("rule_content")
+def build_source_summary(
+    normalized: Dict[str, Any], updated_at: float
+) -> SourceSummary:
+    has_required_search = bool(normalized.get("search_url")) and bool(
+        normalized.get("rule_search")
     )
-    search_uses_js = bool(normalized.get("enable_js")) or bool(normalized.get("rule_search_uses_js"))
+    has_required_download = (
+        bool(normalized.get("rule_book_info"))
+        and bool(normalized.get("rule_toc"))
+        and bool(normalized.get("rule_content"))
+    )
+    search_uses_js = bool(normalized.get("enable_js")) or bool(
+        normalized.get("rule_search_uses_js")
+    )
     download_uses_js = bool(normalized.get("enable_js")) or any(
         (
             normalized.get("rule_book_info_uses_js"),
@@ -253,11 +264,11 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
         or normalized.get("rule_content_uses_webview")
         or normalized.get("has_web_js")
     )
-    supports_search = has_required_search and not search_uses_js and not search_uses_webview
+    supports_search = (
+        has_required_search and not search_uses_js and not search_uses_webview
+    )
     supports_download = (
-        has_required_download
-        and not download_uses_js
-        and not download_uses_webview
+        has_required_download and not download_uses_js and not download_uses_webview
     )
     issues: List[str] = []
     if normalized.get("single_url") and not has_required_search:
@@ -297,9 +308,13 @@ def build_source_summary(normalized: Dict[str, Any], updated_at: float) -> Sourc
             )
         )
     if normalized.get("has_js_lib"):
-        issues.append("检测到 jsLib 脚本库；当前纯 Python 路线不会执行其中的 JS 辅助逻辑")
+        issues.append(
+            "检测到 jsLib 脚本库；当前纯 Python 路线不会执行其中的 JS 辅助逻辑"
+        )
     if normalized.get("has_login_flow"):
-        issues.append("检测到 loginUrl/loginUi 登录或脚本流程；当前路线 A 不支持登录态与脚本登录")
+        issues.append(
+            "检测到 loginUrl/loginUi 登录或脚本流程；当前路线 A 不支持登录态与脚本登录"
+        )
     if not has_required_search:
         issues.append("缺少 searchUrl 或 ruleSearch，无法按书名搜索")
     if not has_required_download:

@@ -66,7 +66,10 @@ class SessionScraper:
                     ) as response:
                         return ScraperResponse(
                             body=response.read(),
-                            url=str(getattr(response, "url", normalized_url) or normalized_url),
+                            url=str(
+                                getattr(response, "url", normalized_url)
+                                or normalized_url
+                            ),
                             headers=getattr(response, "headers", {}),
                         )
                 except HTTPError as exc:

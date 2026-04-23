@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from astrbot_plugin_webnovel_downloader.core.source_health_store import SourceHealthStore
+from astrbot_plugin_webnovel_downloader.core.source_health_store import (
+    SourceHealthStore,
+)
 
 
 class _FakeRegistry(object):
@@ -47,8 +49,12 @@ class _FakeSearchService(object):
         )
         return {
             "keyword": keyword,
-            "searched_sources": len({item.get("source_id", "") for item in self._results}),
-            "successful_sources": len({item.get("source_id", "") for item in self._results}),
+            "searched_sources": len(
+                {item.get("source_id", "") for item in self._results}
+            ),
+            "successful_sources": len(
+                {item.get("source_id", "") for item in self._results}
+            ),
             "result_count": len(self._results),
             "results": [dict(item) for item in self._results],
             "errors": [],
@@ -152,7 +158,9 @@ class _FakeSourceDownloadService(object):
         plan.setdefault("book_url", book_url)
         plan.setdefault("book_name", book_name or "测试书")
         plan.setdefault("toc_url", book_url + "#toc")
-        plan.setdefault("toc", [{"index": 0, "title": "第一章", "url": book_url + "/1"}])
+        plan.setdefault(
+            "toc", [{"index": 0, "title": "第一章", "url": book_url + "/1"}]
+        )
         plan.setdefault("toc_count", len(plan.get("toc") or []))
         return plan
 
@@ -205,7 +213,9 @@ class _FakeSourceDownloadService(object):
                 "book_name": plan.get("book_name", ""),
                 "book_url": plan.get("book_url", ""),
                 "toc_url": plan.get("toc_url", ""),
-                "toc_count": int(plan.get("toc_count", len(plan.get("toc") or [])) or 0),
+                "toc_count": int(
+                    plan.get("toc_count", len(plan.get("toc") or [])) or 0
+                ),
             },
         }
 
@@ -216,7 +226,9 @@ class _Phase3ContractTestMixin(object):
             module = importlib.import_module(module_name)
         except ModuleNotFoundError as exc:
             if exc.name == module_name:
-                self.skipTest("Phase 3 实现尚未落地: 缺少模块 {name}".format(name=module_name))
+                self.skipTest(
+                    "Phase 3 实现尚未落地: 缺少模块 {name}".format(name=module_name)
+                )
             raise
         phase3_class = getattr(module, class_name, None)
         if phase3_class is None:
@@ -311,7 +323,11 @@ class _Phase3ContractTestMixin(object):
         attempts = payload.get("preflight_attempts")
         if isinstance(attempts, list):
             return attempts
-        self.fail("下载编排结果缺少 attempts/preflight_attempts: {payload!r}".format(payload=payload))
+        self.fail(
+            "下载编排结果缺少 attempts/preflight_attempts: {payload!r}".format(
+                payload=payload
+            )
+        )
 
     def _extract_chosen(self, payload):
         if not isinstance(payload, dict):
@@ -325,7 +341,11 @@ class _Phase3ContractTestMixin(object):
         chosen = payload.get("selected")
         if isinstance(chosen, dict):
             return chosen
-        self.fail("下载编排结果缺少 chosen/chosen_candidate: {payload!r}".format(payload=payload))
+        self.fail(
+            "下载编排结果缺少 chosen/chosen_candidate: {payload!r}".format(
+                payload=payload
+            )
+        )
 
     def _extract_job_info(self, payload):
         if not isinstance(payload, dict):
@@ -517,7 +537,9 @@ class BookResolutionPhase3ContractTest(_Phase3ContractTestMixin, unittest.TestCa
         self.assertIn("partial-downloadable", source_ids)
 
 
-class DownloadOrchestratorPhase3ContractTest(_Phase3ContractTestMixin, unittest.TestCase):
+class DownloadOrchestratorPhase3ContractTest(
+    _Phase3ContractTestMixin, unittest.TestCase
+):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.base_dir = Path(self.tempdir.name)
@@ -608,10 +630,16 @@ class DownloadOrchestratorPhase3ContractTest(_Phase3ContractTestMixin, unittest.
         job_info = self._extract_job_info(payload)
 
         self.assertEqual(len(download_service.preflight_calls), 2)
-        self.assertEqual(download_service.preflight_calls[0]["source_id"], "first-broken")
-        self.assertEqual(download_service.preflight_calls[1]["source_id"], "second-good")
+        self.assertEqual(
+            download_service.preflight_calls[0]["source_id"], "first-broken"
+        )
+        self.assertEqual(
+            download_service.preflight_calls[1]["source_id"], "second-good"
+        )
         self.assertEqual(len(download_service.create_job_calls), 1)
-        self.assertEqual(download_service.create_job_calls[0]["plan"]["source_id"], "second-good")
+        self.assertEqual(
+            download_service.create_job_calls[0]["plan"]["source_id"], "second-good"
+        )
 
         self.assertGreaterEqual(len(attempts), 2)
         self.assertEqual(self._extract_source_id(attempts[0]), "first-broken")

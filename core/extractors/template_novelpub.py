@@ -27,7 +27,9 @@ class NovelPubLikeExtractor(SelectorTemplateExtractor):
         chapter_url = book_url.rstrip("/") + "/chapters"
         try:
             chapter_response = self._fetch(chapter_url)
-            chapter_selector = Selector(text=chapter_response.body.decode("utf-8", errors="replace"))
+            chapter_selector = Selector(
+                text=chapter_response.body.decode("utf-8", errors="replace")
+            )
             if chapter_selector.css("ul.chapter-list li a"):
                 return chapter_selector, chapter_response.url
         except Exception:

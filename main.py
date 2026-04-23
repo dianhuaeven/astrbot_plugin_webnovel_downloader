@@ -12,7 +12,7 @@ from .plugin_support import compat_hidden_tool, compat_llm_tool
     "astrbot_plugin_webnovel_downloader",
     "Dianhua",
     "网文下载器：基于单文件 journal 的纯 Python 网文下载与装订插件，支持断点续传、绝对有序输出与函数工具调用",
-    "0.8.0",
+    "0.0.1",
     "https://github.com/dianhuaeven/astrbot_plugin_webnovel_downloader",
 )
 class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
@@ -63,7 +63,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         return await self.handle_novel_fetch_preview(url, encoding, max_chars)
 
     @compat_llm_tool(name="novel_import_sources")
-    async def novel_import_sources(self, event: AstrMessageEvent, source_json: str) -> str:
+    async def novel_import_sources(
+        self, event: AstrMessageEvent, source_json: str
+    ) -> str:
         """
         导入一批 Legado/阅读风格书源，并写入本地书源注册表供后续搜索和下载使用。
 
@@ -91,7 +93,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         return await self.handle_novel_list_sources(enabled_only, limit, offset)
 
     @compat_llm_tool(name="novel_get_source_detail")
-    async def novel_get_source_detail(self, event: AstrMessageEvent, source_id: str) -> str:
+    async def novel_get_source_detail(
+        self, event: AstrMessageEvent, source_id: str
+    ) -> str:
         """
         查看单个书源的详细信息，包括静态能力、健康状态、编译后的 profile 和关键规则摘要。
 
@@ -114,7 +118,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             source_ids_json(string): 可选，JSON 数组或逗号分隔的书源 ID 列表；留空时刷新全部启用书源。
             include_disabled(string): 是否连禁用书源一起加入刷新队列，支持 true/false/1/0/yes/no。
         """
-        return await self.handle_novel_refresh_sources(source_ids_json, include_disabled)
+        return await self.handle_novel_refresh_sources(
+            source_ids_json, include_disabled
+        )
 
     @compat_llm_tool(name="novel_remove_source")
     async def novel_remove_source(self, event: AstrMessageEvent, source_id: str) -> str:
@@ -566,12 +572,18 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         yield event.plain_result(await self.handle_novel_import_sources(source_json))
 
     @filter.command("novel_import_clean")
-    async def novel_import_clean_command(self, event, repo_json: str, repo_name: str = ""):
-        yield event.plain_result(await self.handle_novel_import_clean_rules(repo_json, repo_name))
+    async def novel_import_clean_command(
+        self, event, repo_json: str, repo_name: str = ""
+    ):
+        yield event.plain_result(
+            await self.handle_novel_import_clean_rules(repo_json, repo_name)
+        )
 
     @filter.command("novel_clean_rules")
     async def novel_clean_rules_command(self, event, limit: str = "", offset: str = ""):
-        yield event.plain_result(await self.handle_novel_list_clean_rules(limit, offset))
+        yield event.plain_result(
+            await self.handle_novel_list_clean_rules(limit, offset)
+        )
 
     @filter.command("novel_search")
     async def novel_search_command(
@@ -603,7 +615,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         limit: str = "",
         offset: str = "",
     ):
-        yield event.plain_result(await self.handle_novel_get_search_results(search_id, limit, offset))
+        yield event.plain_result(
+            await self.handle_novel_get_search_results(search_id, limit, offset)
+        )
 
     @filter.command("novel_download_result")
     async def novel_download_result_command(
@@ -670,7 +684,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         limit: str = "",
         offset: str = "",
     ):
-        yield event.plain_result(await self.handle_novel_download_status(job_id, limit, offset))
+        yield event.plain_result(
+            await self.handle_novel_download_status(job_id, limit, offset)
+        )
 
     @filter.command("novel_remove")
     async def novel_remove_command(self, event, source_id: str):
@@ -684,7 +700,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         encoding: str = "",
         max_chars: str = "",
     ):
-        yield event.plain_result(await self.handle_novel_fetch_preview(url, encoding, max_chars))
+        yield event.plain_result(
+            await self.handle_novel_fetch_preview(url, encoding, max_chars)
+        )
 
 
 __all__ = ["ExtractionRules", "JsonlNovelDownloaderPlugin"]

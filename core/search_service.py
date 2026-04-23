@@ -38,7 +38,9 @@ class SearchService:
         self._health_lock = threading.RLock()
         health_path = self.config.health_path
         self._health_path = Path(health_path) if health_path else None
-        self._stats_store = SearchStatsStore(self._health_path) if self._health_path else None
+        self._stats_store = (
+            SearchStatsStore(self._health_path) if self._health_path else None
+        )
         self._source_health = self._load_source_health()
 
     def search(
@@ -71,7 +73,10 @@ class SearchService:
         searchable_summaries = [
             item
             for item in source_summaries
-            if self._search_skip_reason(item, runtime_health.get(str(item.get("source_id") or ""), {})) == ""
+            if self._search_skip_reason(
+                item, runtime_health.get(str(item.get("source_id") or ""), {})
+            )
+            == ""
         ]
         summary_by_source_id = {
             str(item.get("source_id") or ""): item for item in searchable_summaries
@@ -108,13 +113,17 @@ class SearchService:
         )
         sources = sorted(
             sources,
-            key=lambda item: self._source_priority_key(item, summary_by_source_id, runtime_health),
+            key=lambda item: self._source_priority_key(
+                item, summary_by_source_id, runtime_health
+            ),
         )
 
         results: List[Dict[str, Any]] = []
         errors: List[Dict[str, str]] = []
         max_workers = min(max(1, self.config.max_workers), len(sources))
-        dispatch_window = max_workers if max_workers <= 1 else min(len(sources), max_workers * 2)
+        dispatch_window = (
+            max_workers if max_workers <= 1 else min(len(sources), max_workers * 2)
+        )
         completed_sources = 0
         dispatched_sources = 0
         timed_out_sources = 0
@@ -231,7 +240,9 @@ class SearchService:
                     results.extend(
                         self._attach_source_summary_fields(
                             source_results,
-                            summary_by_source_id.get(str(source.get("source_id") or ""), {}),
+                            summary_by_source_id.get(
+                                str(source.get("source_id") or ""), {}
+                            ),
                             runtime_health.get(str(source.get("source_id") or ""), {}),
                         )
                     )
@@ -302,17 +313,25 @@ class SearchService:
     ) -> List[Dict[str, Any]]:
         enriched: List[Dict[str, Any]] = []
         supports_download = self._supports_download_with_runtime(summary, health_entry)
-        issues = [str(issue).strip() for issue in list(summary.get("issues") or []) if str(issue).strip()]
+        issues = [
+            str(issue).strip()
+            for issue in list(summary.get("issues") or [])
+            if str(issue).strip()
+        ]
         for item in items:
             current = dict(item)
             current["supports_download"] = supports_download
-            current["static_supports_download"] = bool(summary.get("supports_download", False))
+            current["static_supports_download"] = bool(
+                summary.get("supports_download", False)
+            )
             for stage in ("search", "preflight", "download"):
                 stage_entry = dict(health_entry.get(stage) or {})
                 current["{stage}_health_state".format(stage=stage)] = str(
                     stage_entry.get("state", "unknown") or "unknown"
                 )
-                current["{stage}_health_summary".format(stage=stage)] = self._stage_summary(stage_entry)
+                current["{stage}_health_summary".format(stage=stage)] = (
+                    self._stage_summary(stage_entry)
+                )
             if issues:
                 current["source_issues"] = issues[:3]
             enriched.append(current)
@@ -341,7 +360,9 @@ class SearchService:
             dispatched_sources += 1
         return source_index, dispatched_sources
 
-    def _should_stop_early(self, results: list[Dict[str, Any]], keyword: str, limit: int) -> bool:
+    def _should_stop_early(
+        self, results: list[Dict[str, Any]], keyword: str, limit: int
+    ) -> bool:
         normalized_keyword = keyword.lower()
         exact_match_count = 0
         for item in results:
@@ -447,7 +468,9 @@ class SearchService:
             entry["timeouts"] = int(entry.get("timeouts", 0)) + 1
         entry["last_failure_at"] = recorded_at
 
-    def _rolling_average(self, current: float, value: float, sample_count: int) -> float:
+    def _rolling_average(
+        self, current: float, value: float, sample_count: int
+    ) -> float:
         if sample_count <= 1:
             return round(value, 3)
         return round(((current * (sample_count - 1)) + value) / sample_count, 3)
@@ -473,12 +496,24 @@ class SearchService:
         supports_download_rank = 0 if summary.get("supports_download", False) else 1
         runtime_rank = self._search_health_rank(runtime_health.get("search", {}))
         if not entry:
-            return (runtime_rank, supports_download_rank, profile_rank, 1, 0, float("inf"), 0.0)
+            return (
+                runtime_rank,
+                supports_download_rank,
+                profile_rank,
+                1,
+                0,
+                float("inf"),
+                0.0,
+            )
         successes = max(0, int(entry.get("successes", 0) or 0))
         failures = max(0, int(entry.get("failures", 0) or 0))
         timeouts = max(0, int(entry.get("timeouts", 0) or 0))
-        avg_duration_ms = float(entry.get("avg_duration_ms", 0.0) or 0.0) or float("inf")
-        avg_success_ms = float(entry.get("avg_success_ms", 0.0) or 0.0) or avg_duration_ms
+        avg_duration_ms = float(entry.get("avg_duration_ms", 0.0) or 0.0) or float(
+            "inf"
+        )
+        avg_success_ms = (
+            float(entry.get("avg_success_ms", 0.0) or 0.0) or avg_duration_ms
+        )
         last_success_at = float(entry.get("last_success_at", 0.0) or 0.0)
         last_failure_at = float(entry.get("last_failure_at", 0.0) or 0.0)
         if successes > 0:
@@ -502,7 +537,9 @@ class SearchService:
             last_failure_at,
         )
 
-    def _load_runtime_health(self, source_summaries: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    def _load_runtime_health(
+        self, source_summaries: List[Dict[str, Any]]
+    ) -> Dict[str, Dict[str, Any]]:
         if self.source_health_store is None:
             return {}
         source_ids = [
@@ -523,9 +560,13 @@ class SearchService:
         except Exception:
             return {}
 
-    def _search_skip_reason(self, summary: Dict[str, Any], health_entry: Dict[str, Any]) -> str:
+    def _search_skip_reason(
+        self, summary: Dict[str, Any], health_entry: Dict[str, Any]
+    ) -> str:
         if not summary.get("supports_search"):
-            return "；".join(summary.get("issues") or []) or "当前书源不支持 route A 搜索"
+            return (
+                "；".join(summary.get("issues") or []) or "当前书源不支持 route A 搜索"
+            )
         stage_entry = dict(health_entry.get("search") or {})
         state = str(stage_entry.get("state", "unknown") or "unknown")
         if state == "unsupported":
@@ -540,7 +581,9 @@ class SearchService:
         if not bool(summary.get("supports_download", False)):
             return False
         for stage in ("preflight", "download"):
-            stage_state = str((health_entry.get(stage) or {}).get("state", "unknown") or "unknown")
+            stage_state = str(
+                (health_entry.get(stage) or {}).get("state", "unknown") or "unknown"
+            )
             if stage_state == "unsupported":
                 return False
         return True

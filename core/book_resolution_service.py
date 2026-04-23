@@ -41,7 +41,9 @@ class BookResolutionService:
     ) -> Dict[str, Any]:
         normalized_keyword = str(keyword or "").strip()
         normalized_author = str(author or "").strip()
-        candidate_limit = max(1, min(int(limit or 0) or self.config.candidate_limit, 200))
+        candidate_limit = max(
+            1, min(int(limit or 0) or self.config.candidate_limit, 200)
+        )
         search_result = self.search_service.search(
             normalized_keyword,
             source_ids,
@@ -86,7 +88,11 @@ class BookResolutionService:
         return {
             "keyword": normalized_keyword,
             "author": normalized_author,
-            "source_ids": [str(item).strip() for item in list(source_ids or []) if str(item).strip()],
+            "source_ids": [
+                str(item).strip()
+                for item in list(source_ids or [])
+                if str(item).strip()
+            ],
             "include_disabled": bool(include_disabled),
             "limit": candidate_limit,
             "search_result": search_result,
@@ -121,7 +127,9 @@ class BookResolutionService:
     ) -> dict[str, Any]:
         source_id = str(item.get("source_id") or "").strip()
         summary = self._safe_get_source_summary(source_id)
-        source_name = str(item.get("source_name") or summary.get("name") or source_id).strip()
+        source_name = str(
+            item.get("source_name") or summary.get("name") or source_id
+        ).strip()
         title = str(item.get("title") or "").strip()
         candidate_author = str(item.get("author") or "").strip()
         book_url = str(item.get("book_url") or "").strip()
@@ -153,7 +161,9 @@ class BookResolutionService:
             "title_match": self._match_title(keyword, title),
             "author_match": self._match_author(author, candidate_author),
             "template_family": str(profile.get("template_family") or "").strip(),
-            "preferred_extractor": str(preferred_extractors[0] if preferred_extractors else "").strip(),
+            "preferred_extractor": str(
+                preferred_extractors[0] if preferred_extractors else ""
+            ).strip(),
             "search_strategy_mode": str(
                 (profile.get("search_strategy") or {}).get("mode") or ""
             ).strip(),
@@ -167,7 +177,9 @@ class BookResolutionService:
             candidate["{stage}_health_state".format(stage=stage)] = str(
                 stage_entry.get("state", "unknown") or "unknown"
             )
-            candidate["{stage}_health_summary".format(stage=stage)] = self._stage_summary(stage_entry)
+            candidate["{stage}_health_summary".format(stage=stage)] = (
+                self._stage_summary(stage_entry)
+            )
 
         if not book_url:
             candidate["skip_reason"] = "搜索结果缺少 book_url，无法自动下载"
@@ -177,7 +189,9 @@ class BookResolutionService:
             candidate["skip_reason"] = ""
         return candidate
 
-    def _candidate_dedupe_key(self, candidate: dict[str, Any]) -> tuple[str, str, str, str]:
+    def _candidate_dedupe_key(
+        self, candidate: dict[str, Any]
+    ) -> tuple[str, str, str, str]:
         source_id = str(candidate.get("source_id") or "").strip()
         book_url = str(candidate.get("book_url") or "").strip()
         title = self._normalize_text(candidate.get("title"))
@@ -210,7 +224,10 @@ class BookResolutionService:
         if self.source_profile_service is None or not source_id:
             return {}
         try:
-            return dict(self.source_profile_service.get(source_id, compile_if_missing=True) or {})
+            return dict(
+                self.source_profile_service.get(source_id, compile_if_missing=True)
+                or {}
+            )
         except Exception:
             return {}
 
@@ -252,7 +269,10 @@ class BookResolutionService:
             return "missing"
         if normalized_actual == normalized_expected:
             return "exact"
-        if normalized_expected in normalized_actual or normalized_actual in normalized_expected:
+        if (
+            normalized_expected in normalized_actual
+            or normalized_actual in normalized_expected
+        ):
             return "contains"
         return "mismatch"
 
@@ -298,10 +318,14 @@ class BookResolutionService:
         summary: dict[str, Any],
         health: dict[str, dict[str, Any]],
     ) -> bool:
-        if not bool(item.get("supports_download", summary.get("supports_download", False))):
+        if not bool(
+            item.get("supports_download", summary.get("supports_download", False))
+        ):
             return False
         for stage in ("preflight", "download"):
-            stage_state = str((health.get(stage) or {}).get("state", "unknown") or "unknown")
+            stage_state = str(
+                (health.get(stage) or {}).get("state", "unknown") or "unknown"
+            )
             if stage_state == "unsupported":
                 return False
         return True

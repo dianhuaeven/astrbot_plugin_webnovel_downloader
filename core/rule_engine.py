@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from html import unescape
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from .js_runtime import JavaScriptRuntime, JavaScriptRuntimeConfig
@@ -73,7 +73,9 @@ class RuleEngine:
                 use_env_proxy=self.config.use_env_proxy,
             )
         )
-        self.js_runtime = config.js_runtime or JavaScriptRuntime(JavaScriptRuntimeConfig())
+        self.js_runtime = config.js_runtime or JavaScriptRuntime(
+            JavaScriptRuntimeConfig()
+        )
 
     def search_books(
         self,
@@ -102,7 +104,9 @@ class RuleEngine:
         request_spec = self._build_request_spec(source, rendered_url)
         response_text, final_url = self._fetch_text(
             request_spec.url,
-            headers=self._merge_headers(source.get("headers") or {}, request_spec.headers or {}),
+            headers=self._merge_headers(
+                source.get("headers") or {}, request_spec.headers or {}
+            ),
             method=request_spec.method,
             body=request_spec.body,
             request_encoding=request_spec.request_encoding,
@@ -124,7 +128,9 @@ class RuleEngine:
         fallback_title: str = "",
         rule_context: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        detail_text, detail_final_url = self._fetch_text(book_url, headers=source.get("headers") or {})
+        detail_text, detail_final_url = self._fetch_text(
+            book_url, headers=source.get("headers") or {}
+        )
         payload_kind, payload = self._build_payload(detail_text, detail_final_url)
         book_info_rule = source.get("rule_book_info") or {}
         toc_rule = source.get("rule_toc") or {}
@@ -136,15 +142,18 @@ class RuleEngine:
             current_context,
         )
 
-        title = self._extract_scalar(
-            payload_kind,
-            payload,
-            book_info_rule.get("name")
-            or book_info_rule.get("bookName")
-            or book_info_rule.get("title")
-            or "",
-            rule_context=current_context,
-        ) or fallback_title
+        title = (
+            self._extract_scalar(
+                payload_kind,
+                payload,
+                book_info_rule.get("name")
+                or book_info_rule.get("bookName")
+                or book_info_rule.get("title")
+                or "",
+                rule_context=current_context,
+            )
+            or fallback_title
+        )
         author = self._extract_scalar(
             payload_kind,
             payload,
@@ -167,8 +176,13 @@ class RuleEngine:
             or "",
             rule_context=current_context,
         )
-        toc_page_url = self._make_absolute_url(toc_url, detail_final_url, source) or detail_final_url
-        toc = self.fetch_chapter_list(source, toc_page_url, toc_rule, rule_context=current_context)
+        toc_page_url = (
+            self._make_absolute_url(toc_url, detail_final_url, source)
+            or detail_final_url
+        )
+        toc = self.fetch_chapter_list(
+            source, toc_page_url, toc_rule, rule_context=current_context
+        )
         toc = self._filter_non_chapter_toc_items(
             toc,
             detail_final_url,
@@ -206,7 +220,9 @@ class RuleEngine:
             if not current_url or current_url in visited:
                 break
             visited.add(current_url)
-            page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
+            page_text, final_url = self._fetch_text(
+                current_url, headers=source.get("headers") or {}
+            )
             payload_kind, payload = self._build_payload(page_text, final_url)
             payload = self._run_rule_init(
                 payload_kind,
@@ -222,7 +238,9 @@ class RuleEngine:
                 or "$"
             )
             items = self._flatten_result_items(
-                self._select_many(payload_kind, payload, list_rule, rule_context=shared_context)
+                self._select_many(
+                    payload_kind, payload, list_rule, rule_context=shared_context
+                )
             )
             for item in items:
                 item_context = dict(shared_context)
@@ -262,7 +280,11 @@ class RuleEngine:
                 toc_rule.get("nextTocUrl") or toc_rule.get("nextUrl") or "",
                 rule_context=shared_context,
             )
-            current_url = self._make_absolute_url(next_toc_url, final_url, source) if next_toc_url else ""
+            current_url = (
+                self._make_absolute_url(next_toc_url, final_url, source)
+                if next_toc_url
+                else ""
+            )
 
         deduped: List[Dict[str, Any]] = []
         seen_urls = set()
@@ -368,7 +390,9 @@ class RuleEngine:
             if not current_url or current_url in visited:
                 break
             visited.add(current_url)
-            page_text, final_url = self._fetch_text(current_url, headers=source.get("headers") or {})
+            page_text, final_url = self._fetch_text(
+                current_url, headers=source.get("headers") or {}
+            )
             payload_kind, payload = self._build_payload(page_text, final_url)
             payload = self._run_rule_init(
                 payload_kind,
@@ -410,10 +434,14 @@ class RuleEngine:
                 break
             current_url = self._make_absolute_url(next_content_url, final_url, source)
 
-        merged_content = "\n\n".join([segment for segment in segments if segment.strip()])
+        merged_content = "\n\n".join(
+            [segment for segment in segments if segment.strip()]
+        )
         merged_content = self._apply_rule_content_filters(content_rule, merged_content)
         merged_content = self.apply_content_cleaners(source, merged_content)
-        merged_content = self._remove_duplicate_leading_title(merged_content, chosen_title or fallback_title)
+        merged_content = self._remove_duplicate_leading_title(
+            merged_content, chosen_title or fallback_title
+        )
         merged_content = self._format_chapter_content(merged_content)
         if not merged_content:
             raise RuleEngineError("未解析到正文，请检查 ruleContent")
@@ -446,13 +474,19 @@ class RuleEngine:
     ) -> Tuple[str, str]:
         inline_url, inline_options = self._split_request_options(url)
         self._raise_for_unsupported_request_options(inline_options)
-        request_encoding = str(
-            inline_options.get("charset")
-            or inline_options.get("encoding")
-            or request_encoding
+        request_encoding = (
+            str(
+                inline_options.get("charset")
+                or inline_options.get("encoding")
+                or request_encoding
+                or "utf-8"
+            ).strip()
             or "utf-8"
-        ).strip() or "utf-8"
-        method = str(inline_options.get("method") or method or "GET").strip().upper() or "GET"
+        )
+        method = (
+            str(inline_options.get("method") or method or "GET").strip().upper()
+            or "GET"
+        )
         inline_headers = self._normalize_request_headers(inline_options.get("headers"))
         if body is None:
             body = self._encode_request_body(
@@ -464,7 +498,9 @@ class RuleEngine:
 
         merged_headers = self._merge_headers(headers, inline_headers)
         referer = merged_headers.get("Referer", "") or ""
-        absolute_url = urljoin(referer, inline_url) if "://" not in inline_url else inline_url
+        absolute_url = (
+            urljoin(referer, inline_url) if "://" not in inline_url else inline_url
+        )
         normalized_url = self._normalize_request_url(
             absolute_url,
             request_encoding or "utf-8",
@@ -494,9 +530,13 @@ class RuleEngine:
                 or "utf-8"
             )
         except HTTPError as exc:
-            raise RuleEngineError("HTTP {code}: {reason}".format(code=exc.code, reason=exc.reason)) from exc
+            raise RuleEngineError(
+                "HTTP {code}: {reason}".format(code=exc.code, reason=exc.reason)
+            ) from exc
         except URLError as exc:
-            raise RuleEngineError("网络错误: {reason}".format(reason=exc.reason)) from exc
+            raise RuleEngineError(
+                "网络错误: {reason}".format(reason=exc.reason)
+            ) from exc
 
         for candidate in self._candidate_encodings(encoding):
             try:
@@ -505,14 +545,15 @@ class RuleEngine:
                 continue
         return body.decode("utf-8", errors="replace"), final_url
 
-    def _build_request_spec(self, source: Dict[str, Any], rendered_url: str) -> RequestSpec:
+    def _build_request_spec(
+        self, source: Dict[str, Any], rendered_url: str
+    ) -> RequestSpec:
         base_url, options = self._split_request_options(rendered_url)
         self._raise_for_unsupported_request_options(options)
-        request_encoding = str(
-            options.get("charset")
-            or options.get("encoding")
+        request_encoding = (
+            str(options.get("charset") or options.get("encoding") or "utf-8").strip()
             or "utf-8"
-        ).strip() or "utf-8"
+        )
         method = str(options.get("method") or "GET").strip().upper() or "GET"
         headers = self._normalize_request_headers(options.get("headers"))
         body = self._encode_request_body(
@@ -654,7 +695,9 @@ class RuleEngine:
     def _normalize_request_url(self, url: str, request_encoding: str) -> str:
         split = urlsplit(url)
         path = quote(split.path or "", safe="/%:@", encoding=request_encoding)
-        query = quote(split.query or "", safe="=&;%:+,/?%@[]", encoding=request_encoding)
+        query = quote(
+            split.query or "", safe="=&;%:+,/?%@[]", encoding=request_encoding
+        )
         fragment = quote(split.fragment or "", safe="%:@", encoding=request_encoding)
         return urlunsplit((split.scheme, split.netloc, path, query, fragment))
 
@@ -698,8 +741,12 @@ class RuleEngine:
         if isinstance(parsed, list):
             for item in parsed:
                 if isinstance(item, dict):
-                    pattern = str(item.get("regex") or item.get("pattern") or "").strip()
-                    replacement = str(item.get("replacement") or item.get("replace") or "")
+                    pattern = str(
+                        item.get("regex") or item.get("pattern") or ""
+                    ).strip()
+                    replacement = str(
+                        item.get("replacement") or item.get("replace") or ""
+                    )
                     if pattern:
                         cleaners.append((pattern, replacement))
         elif isinstance(parsed, dict):
@@ -707,8 +754,12 @@ class RuleEngine:
             if isinstance(rules, list):
                 for item in rules:
                     if isinstance(item, dict):
-                        pattern = str(item.get("regex") or item.get("pattern") or "").strip()
-                        replacement = str(item.get("replacement") or item.get("replace") or "")
+                        pattern = str(
+                            item.get("regex") or item.get("pattern") or ""
+                        ).strip()
+                        replacement = str(
+                            item.get("replacement") or item.get("replace") or ""
+                        )
                         if pattern:
                             cleaners.append((pattern, replacement))
 
@@ -781,7 +832,9 @@ class RuleEngine:
             or rule.get("__default__")
             or "$"
         )
-        items = self._select_many(payload_kind, payload, list_rule, rule_context=shared_context)
+        items = self._select_many(
+            payload_kind, payload, list_rule, rule_context=shared_context
+        )
         items = self._flatten_result_items(items)
         results: List[Dict[str, Any]] = []
 
@@ -908,7 +961,9 @@ class RuleEngine:
                     base_rule,
                     rule_context=rule_context,
                 )
-                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                self._apply_put_mapping(
+                    payload_kind, payload, put_mapping, rule_context
+                )
                 if cleaners:
                     rendered = self._apply_cleaners(rendered, cleaners)
                 if js_code:
@@ -925,7 +980,9 @@ class RuleEngine:
                     return self._normalize_text(rendered)
                 continue
             if had_get_placeholder and self._is_context_literal_rule(candidate_rule):
-                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                self._apply_put_mapping(
+                    payload_kind, payload, put_mapping, rule_context
+                )
                 literal_value = base_rule.strip()
                 if cleaners:
                     literal_value = self._apply_cleaners(literal_value, cleaners)
@@ -992,7 +1049,9 @@ class RuleEngine:
                     base_rule,
                     rule_context=rule_context,
                 )
-                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                self._apply_put_mapping(
+                    payload_kind, payload, put_mapping, rule_context
+                )
                 if cleaners:
                     rendered = self._apply_cleaners(rendered, cleaners)
                 if js_code:
@@ -1009,7 +1068,9 @@ class RuleEngine:
                     return rendered.strip()
                 continue
             if had_get_placeholder and self._is_context_literal_rule(candidate_rule):
-                self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
+                self._apply_put_mapping(
+                    payload_kind, payload, put_mapping, rule_context
+                )
                 literal_value = base_rule.strip()
                 if cleaners:
                     literal_value = self._apply_cleaners(literal_value, cleaners)
@@ -1043,7 +1104,9 @@ class RuleEngine:
                 joined = self._stringify_js_result(
                     self._execute_js(
                         js_code,
-                        result=values if len(values) > 1 else (values[0] if values else joined),
+                        result=values
+                        if len(values) > 1
+                        else (values[0] if values else joined),
                         payload_kind=payload_kind,
                         payload=payload,
                         rule_context=rule_context,
@@ -1060,7 +1123,9 @@ class RuleEngine:
         rule_text: str,
         rule_context: Dict[str, Any] | None = None,
     ) -> List[Any]:
-        resolved_rule, _ = self._resolve_context_placeholders(str(rule_text or ""), rule_context)
+        resolved_rule, _ = self._resolve_context_placeholders(
+            str(rule_text or ""), rule_context
+        )
         base_rule, js_code = self._split_js_rule(resolved_rule)
         base_rule, put_mapping = self._split_put_directives(base_rule)
         base_rule, cleaners = self._split_cleaners(base_rule)
@@ -1075,7 +1140,11 @@ class RuleEngine:
             if values:
                 js_input = values if len(values) > 1 else values[0]
             else:
-                js_input = payload if payload_kind == "json" else (payload.get() if hasattr(payload, "get") else "")
+                js_input = (
+                    payload
+                    if payload_kind == "json"
+                    else (payload.get() if hasattr(payload, "get") else "")
+                )
             js_output = self._execute_js(
                 js_code,
                 result=js_input,
@@ -1151,7 +1220,9 @@ class RuleEngine:
                 continue
         return cleaned.strip()
 
-    def _apply_rule_content_filters(self, content_rule: Dict[str, Any], content: str) -> str:
+    def _apply_rule_content_filters(
+        self, content_rule: Dict[str, Any], content: str
+    ) -> str:
         cleaned = str(content or "")
         if not cleaned:
             return ""
@@ -1243,7 +1314,9 @@ class RuleEngine:
                 continue
             paragraphs.append(line)
         formatted = [
-            "{indent}{paragraph}".format(indent="\u3000\u3000", paragraph=paragraph.strip())
+            "{indent}{paragraph}".format(
+                indent="\u3000\u3000", paragraph=paragraph.strip()
+            )
             for paragraph in paragraphs
             if paragraph.strip()
         ]
@@ -1271,7 +1344,10 @@ class RuleEngine:
         stripped = str(text or "").strip()
         if not stripped:
             return False
-        if re.match(r"^第[0-9零一二三四五六七八九十百千两〇○１２３４５６７８９０]+[章节回部卷篇集幕].*", stripped):
+        if re.match(
+            r"^第[0-9零一二三四五六七八九十百千两〇○１２３４５６７８９０]+[章节回部卷篇集幕].*",
+            stripped,
+        ):
             return True
         if stripped.startswith(("注：", "说明：", "PS", "ps", "——", "--")):
             return True
@@ -1284,7 +1360,7 @@ class RuleEngine:
             return curr
         if not curr:
             return prev
-        if prev.endswith(("“", "\"", "'", "‘")):
+        if prev.endswith(("“", '"', "'", "‘")):
             return prev + curr
         return prev + curr
 
@@ -1442,7 +1518,9 @@ class RuleEngine:
             selected = self._select_html_by_text(node, selector_expression[5:].strip())
         else:
             try:
-                selected = list(node.css(self._normalize_css_selector(selector_expression)))
+                selected = list(
+                    node.css(self._normalize_css_selector(selector_expression))
+                )
             except Exception as exc:
                 raise RuleEngineError(
                     "HTML 规则选择器暂不兼容: {expression}".format(
@@ -1587,7 +1665,13 @@ class RuleEngine:
         )
         if link_matches:
             return link_matches
-        return list(node.xpath(".//*[contains(normalize-space(string(.)), {text})]".format(text=literal)))
+        return list(
+            node.xpath(
+                ".//*[contains(normalize-space(string(.)), {text})]".format(
+                    text=literal
+                )
+            )
+        )
 
     def _normalize_css_selector(self, expression: str) -> str:
         def replace_attr(match: re.Match) -> str:
@@ -1597,12 +1681,12 @@ class RuleEngine:
                     continue
                 left, right = body.split(operator, 1)
                 value = right.strip()
-                if not value or value.startswith(("\"", "'")):
+                if not value or value.startswith(('"', "'")):
                     return "[{body}]".format(body=body)
                 if re.fullmatch(r"-?\d+(\.\d+)?", value):
                     return "[{body}]".format(body=body)
-                escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
-                return "[{left}{operator}\"{value}\"]".format(
+                escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+                return '[{left}{operator}"{value}"]'.format(
                     left=left.rstrip(),
                     operator=operator,
                     value=escaped,
@@ -1702,7 +1786,9 @@ class RuleEngine:
             return payload
         if rule_context is None:
             return payload
-        resolved_rule, _ = self._resolve_context_placeholders(str(init_rule or ""), rule_context)
+        resolved_rule, _ = self._resolve_context_placeholders(
+            str(init_rule or ""), rule_context
+        )
         base_rule, put_mapping = self._split_put_directives(resolved_rule)
         current_payload = payload
         normalized_base_rule = str(base_rule or "").strip()
@@ -1715,7 +1801,9 @@ class RuleEngine:
             )
             if selected:
                 current_payload = selected[0]
-        self._apply_put_mapping(payload_kind, current_payload, put_mapping, rule_context)
+        self._apply_put_mapping(
+            payload_kind, current_payload, put_mapping, rule_context
+        )
         return current_payload
 
     def _apply_put_mapping(
@@ -1731,9 +1819,11 @@ class RuleEngine:
             normalized_key = str(key or "").strip()
             if not normalized_key:
                 continue
-            resolved_expression, had_get_placeholder = self._resolve_context_placeholders(
-                expression,
-                rule_context,
+            resolved_expression, had_get_placeholder = (
+                self._resolve_context_placeholders(
+                    expression,
+                    rule_context,
+                )
             )
             if "{{" in resolved_expression and "}}" in resolved_expression:
                 value = self._render_rule_template(
@@ -1827,7 +1917,7 @@ class RuleEngine:
                     quote_char = ""
                 index += 1
                 continue
-            if char in ("'", "\""):
+            if char in ("'", '"'):
                 quote_char = char
                 buffer.append(char)
                 index += 1
@@ -1859,7 +1949,9 @@ class RuleEngine:
         parts.append("".join(buffer))
         return parts
 
-    def _split_first_top_level(self, text: str, delimiter: str) -> Tuple[str, str | None]:
+    def _split_first_top_level(
+        self, text: str, delimiter: str
+    ) -> Tuple[str, str | None]:
         parts = self._split_top_level(text, delimiter)
         if len(parts) <= 1:
             return text, None
@@ -1881,7 +1973,7 @@ class RuleEngine:
                 elif char == quote_char:
                     quote_char = ""
                 continue
-            if char in ("'", "\""):
+            if char in ("'", '"'):
                 quote_char = char
                 continue
             if char == "{":
@@ -1895,7 +1987,7 @@ class RuleEngine:
 
     def _strip_wrapping_quotes(self, text: str) -> str:
         value = str(text or "").strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", "\""):
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             try:
                 parsed = ast.literal_eval(value)
             except Exception:
@@ -1935,7 +2027,9 @@ class RuleEngine:
         except Exception:
             return None
 
-    def _looks_like_selector_template_expression(self, expression: str, payload_kind: str) -> bool:
+    def _looks_like_selector_template_expression(
+        self, expression: str, payload_kind: str
+    ) -> bool:
         normalized = str(expression or "").strip()
         if not normalized:
             return False
@@ -1958,7 +2052,9 @@ class RuleEngine:
         if payload_kind == "json":
             if normalized.startswith("$"):
                 return True
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", normalized):
+            if re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", normalized
+            ):
                 return True
         return False
 
@@ -2021,17 +2117,23 @@ class RuleEngine:
                 return literal_value
             if expression.startswith("@@"):
                 expression = expression[2:].strip()
-            resolved_expression, had_get_placeholder = self._resolve_context_placeholders(
-                expression,
-                rule_context,
+            resolved_expression, had_get_placeholder = (
+                self._resolve_context_placeholders(
+                    expression,
+                    rule_context,
+                )
             )
             if had_get_placeholder and self._is_context_literal_rule(expression):
                 return resolved_expression
-            if not self._looks_like_selector_template_expression(resolved_expression, payload_kind):
+            if not self._looks_like_selector_template_expression(
+                resolved_expression, payload_kind
+            ):
                 return self._stringify_js_result(
                     self._execute_js(
                         resolved_expression,
-                        result=payload if payload_kind == "json" else (payload.get() if hasattr(payload, "get") else ""),
+                        result=payload
+                        if payload_kind == "json"
+                        else (payload.get() if hasattr(payload, "get") else ""),
                         payload_kind=payload_kind,
                         payload=payload,
                         rule_context=rule_context,

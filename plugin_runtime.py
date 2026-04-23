@@ -65,7 +65,9 @@ def _parse_string_list(value: object, default: tuple[str, ...]) -> tuple[str, ..
     return tuple(items)
 
 
-def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> PluginRuntime:
+def build_plugin_runtime(
+    base_dir: str | Path, config: dict | None = None
+) -> PluginRuntime:
     settings = config or {}
     plugin_data_dir = Path(base_dir)
     plugin_data_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +76,9 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         "search_request_timeout",
         _parse_positive_float(settings, "request_timeout", 20.0),
     )
-    search_max_workers = int(settings.get("search_max_workers", settings.get("max_workers", 6)))
+    search_max_workers = int(
+        settings.get("search_max_workers", settings.get("max_workers", 6))
+    )
     if search_max_workers <= 0:
         raise ValueError(
             "配置项 search_max_workers 必须大于 0，当前值: {value}".format(
@@ -95,7 +99,8 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         cleanup_journal_after_assemble=bool(
             settings.get("cleanup_journal_after_assemble", False)
         ),
-        user_agent=str(settings.get("user_agent", "")).strip() or RuntimeConfig().user_agent,
+        user_agent=str(settings.get("user_agent", "")).strip()
+        or RuntimeConfig().user_agent,
     )
     shared_scraper = SessionScraper(
         SessionScraperConfig(
@@ -105,7 +110,9 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
             retry_backoff=runtime_config.retry_backoff,
         )
     )
-    manager = NovelDownloadManager(plugin_data_dir, runtime_config, scraper=shared_scraper)
+    manager = NovelDownloadManager(
+        plugin_data_dir, runtime_config, scraper=shared_scraper
+    )
     source_registry = SourceRegistry(plugin_data_dir)
     clean_rule_store = CleanRuleRepositoryStore(plugin_data_dir)
     source_health_store = SourceHealthStore(plugin_data_dir / "source_health.json")
@@ -153,7 +160,9 @@ def build_plugin_runtime(base_dir: str | Path, config: dict | None = None) -> Pl
         search_extractor,
         SearchServiceConfig(
             max_workers=search_max_workers,
-            time_budget_seconds=_parse_positive_float(settings, "search_time_budget", 45.0),
+            time_budget_seconds=_parse_positive_float(
+                settings, "search_time_budget", 45.0
+            ),
             health_path=plugin_data_dir / "search_source_health.json",
         ),
         source_profile_service=source_profile_service,

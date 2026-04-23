@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from astrbot_plugin_webnovel_downloader.core.source_health_store import SourceHealthStore
+from astrbot_plugin_webnovel_downloader.core.source_health_store import (
+    SourceHealthStore,
+)
 from astrbot_plugin_webnovel_downloader.core.source_probe_service import (
     SourceProbeService,
     SourceProbeServiceConfig,
@@ -162,7 +164,9 @@ class SourceProbeServiceTest(unittest.TestCase):
         self.assertEqual(entry["search"]["state"], "healthy")
         self.assertEqual(entry["preflight"]["state"], "healthy")
         self.assertEqual(entry["download"]["state"], "unknown")
-        self.assertEqual(entry["preflight"]["sample_book_url"], "https://example.com/book/1")
+        self.assertEqual(
+            entry["preflight"]["sample_book_url"], "https://example.com/book/1"
+        )
         self.assertEqual(len(engine.preflight_calls), 1)
 
     def test_probe_can_record_download_sample_success_when_sampler_is_available(self):

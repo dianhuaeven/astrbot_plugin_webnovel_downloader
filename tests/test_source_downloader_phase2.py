@@ -9,7 +9,9 @@ from astrbot_plugin_webnovel_downloader.core.download_manager import (
     NovelDownloadManager,
     RuntimeConfig,
 )
-from astrbot_plugin_webnovel_downloader.core.source_downloader import SourceDownloadService
+from astrbot_plugin_webnovel_downloader.core.source_downloader import (
+    SourceDownloadService,
+)
 
 
 class _FakeRegistry(object):
@@ -77,7 +79,9 @@ class SourceDownloaderPhase2Test(unittest.TestCase):
         service = SourceDownloadService(registry, _FakeEngine(), self.manager)
 
         with self.assertRaisesRegex(ValueError, "不支持 TXT 下载"):
-            service.preflight_book("unsupported", "https://example.com/book/1", "测试书")
+            service.preflight_book(
+                "unsupported", "https://example.com/book/1", "测试书"
+            )
 
     def test_preflight_book_returns_rich_plan_summary(self):
         registry = _FakeRegistry(
@@ -94,7 +98,9 @@ class SourceDownloaderPhase2Test(unittest.TestCase):
         )
         service = SourceDownloadService(registry, _FakeEngine(), self.manager)
 
-        plan = service.preflight_book("supported", "https://example.com/book/1", "测试书")
+        plan = service.preflight_book(
+            "supported", "https://example.com/book/1", "测试书"
+        )
 
         self.assertEqual(plan["source_id"], "supported")
         self.assertEqual(plan["source_name"], "可下载源")
@@ -147,14 +153,18 @@ class SourceDownloaderPhase2Test(unittest.TestCase):
         engine = _FakeEngine()
         service = SourceDownloadService(registry, engine, self.manager)
 
-        job_info = service.create_book_job("supported", "https://example.com/book/1", "测试书", "")
+        job_info = service.create_book_job(
+            "supported", "https://example.com/book/1", "测试书", ""
+        )
 
         self.assertEqual(len(engine.calls), 1)
         self.assertEqual(job_info["source_name"], "可下载源")
         self.assertEqual(job_info["toc_count"], 1)
 
     def test_create_job_rejects_existing_output_file(self):
-        (self.manager.output_dir / "共享输出.txt").write_text("existing", encoding="utf-8")
+        (self.manager.output_dir / "共享输出.txt").write_text(
+            "existing", encoding="utf-8"
+        )
 
         with self.assertRaisesRegex(FileExistsError, "输出文件已存在"):
             self.manager.create_job(

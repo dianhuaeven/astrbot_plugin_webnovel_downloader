@@ -20,18 +20,18 @@ from astrbot_plugin_webnovel_downloader.core.search_service import (
     SearchService,
     SearchServiceConfig,
 )
-from astrbot_plugin_webnovel_downloader.core.source_downloader import SourceDownloadService
+from astrbot_plugin_webnovel_downloader.core.source_downloader import (
+    SourceDownloadService,
+)
 
 
 class _FakeRegistry(object):
     def __init__(self, summaries, sources):
         self._summaries = {
-            str(item["source_id"]): dict(item)
-            for item in list(summaries or [])
+            str(item["source_id"]): dict(item) for item in list(summaries or [])
         }
         self._sources = {
-            str(item["source_id"]): dict(item)
-            for item in list(sources or [])
+            str(item["source_id"]): dict(item) for item in list(sources or [])
         }
 
     def load_enabled_source_summaries(self, source_ids=None, include_disabled=False):
@@ -110,7 +110,9 @@ class _SpyRuleEngine(RuleEngine):
             ],
         }
 
-    def fetch_chapter_content(self, source, chapter_url, fallback_title="", max_pages=5):
+    def fetch_chapter_content(
+        self, source, chapter_url, fallback_title="", max_pages=5
+    ):
         self.calls.append(
             (
                 "fetch_chapter_content",
@@ -266,7 +268,9 @@ class FallbackRuleExtractorDownloadIntegrationTest(unittest.TestCase):
         extractor = FallbackRuleExtractor(engine)
         service = SourceDownloadService(self.registry, extractor, self.manager)
 
-        plan = service.preflight_book("source-1", "https://example.com/book/1", "测试书")
+        plan = service.preflight_book(
+            "source-1", "https://example.com/book/1", "测试书"
+        )
         job_info = service.create_job_from_plan(plan)
         status = service.resume_book_job(job_info["job_id"], auto_assemble=False)
 

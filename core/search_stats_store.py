@@ -36,7 +36,9 @@ class SearchStatsStore:
     def load_all(self) -> dict[str, dict[str, Any]]:
         return self.get_many()
 
-    def get_many(self, source_ids: Iterable[str] | None = None) -> dict[str, dict[str, Any]]:
+    def get_many(
+        self, source_ids: Iterable[str] | None = None
+    ) -> dict[str, dict[str, Any]]:
         normalized_ids = self._normalize_ids(source_ids)
         with self._lock:
             self._initialize()
@@ -85,7 +87,9 @@ class SearchStatsStore:
             result[str(row["source_id"])] = self._row_to_entry(row)
         return result
 
-    def apply_outcomes(self, outcomes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    def apply_outcomes(
+        self, outcomes: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
         normalized_outcomes = [
             dict(item)
             for item in list(outcomes or [])
@@ -93,7 +97,9 @@ class SearchStatsStore:
         ]
         if not normalized_outcomes:
             return {}
-        source_ids = sorted({str(item.get("source_id") or "").strip() for item in normalized_outcomes})
+        source_ids = sorted(
+            {str(item.get("source_id") or "").strip() for item in normalized_outcomes}
+        )
         with self._lock:
             self._initialize()
             existing = self.get_many(source_ids)
@@ -166,7 +172,11 @@ class SearchStatsStore:
                     )
                     """
                 )
-                connection.execute("PRAGMA user_version = {version}".format(version=SEARCH_STATS_SCHEMA_VERSION))
+                connection.execute(
+                    "PRAGMA user_version = {version}".format(
+                        version=SEARCH_STATS_SCHEMA_VERSION
+                    )
+                )
 
     def _migrate_json_if_needed(self) -> None:
         if not self.path.exists():
@@ -282,7 +292,9 @@ class SearchStatsStore:
             normalized.append(current)
         return normalized
 
-    def _rolling_average(self, current: float, value: float, sample_count: int) -> float:
+    def _rolling_average(
+        self, current: float, value: float, sample_count: int
+    ) -> float:
         if sample_count <= 1:
             return round(value, 3)
         return round(((current * (sample_count - 1)) + value) / sample_count, 3)

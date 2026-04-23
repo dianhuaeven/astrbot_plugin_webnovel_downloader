@@ -4,10 +4,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from astrbot_plugin_webnovel_downloader.core.book_resolution_service import BookResolutionService
-from astrbot_plugin_webnovel_downloader.core.download_orchestrator import DownloadOrchestrator
-from astrbot_plugin_webnovel_downloader.core.search_service import SearchService, SearchServiceConfig
-from astrbot_plugin_webnovel_downloader.core.source_health_store import SourceHealthStore
+from astrbot_plugin_webnovel_downloader.core.book_resolution_service import (
+    BookResolutionService,
+)
+from astrbot_plugin_webnovel_downloader.core.download_orchestrator import (
+    DownloadOrchestrator,
+)
+from astrbot_plugin_webnovel_downloader.core.search_service import (
+    SearchService,
+    SearchServiceConfig,
+)
+from astrbot_plugin_webnovel_downloader.core.source_health_store import (
+    SourceHealthStore,
+)
 
 
 class _FakeProfileService(object):
@@ -122,7 +131,9 @@ class _FakeResolutionService(object):
     def __init__(self, candidates):
         self.candidates = [dict(item) for item in list(candidates or [])]
 
-    def resolve(self, keyword, author="", source_ids=None, limit=20, include_disabled=False):
+    def resolve(
+        self, keyword, author="", source_ids=None, limit=20, include_disabled=False
+    ):
         del keyword, author, source_ids, limit, include_disabled
         return {
             "keyword": "测试书",
@@ -233,13 +244,19 @@ class SearchServicePhase4Test(unittest.TestCase):
         )
         engine = _FakeSearchEngine(
             {
-                "template-source": [{"source_id": "template-source", "title": "测试书"}],
-                "fallback-source": [{"source_id": "fallback-source", "title": "测试书"}],
+                "template-source": [
+                    {"source_id": "template-source", "title": "测试书"}
+                ],
+                "fallback-source": [
+                    {"source_id": "fallback-source", "title": "测试书"}
+                ],
             }
         )
         profile_service = _FakeProfileService(
             {
-                "template-source": {"preferred_extractors": ["template_novelfull_like"]},
+                "template-source": {
+                    "preferred_extractors": ["template_novelfull_like"]
+                },
                 "fallback-source": {"preferred_extractors": ["fallback_rule"]},
             }
         )
@@ -303,7 +320,10 @@ class BookResolutionPhase4Test(unittest.TestCase):
         profile_service = _FakeProfileService(
             {
                 "template-source": {
-                    "preferred_extractors": ["template_novelfull_like", "fallback_rule"],
+                    "preferred_extractors": [
+                        "template_novelfull_like",
+                        "fallback_rule",
+                    ],
                     "template_family": "novelfull_like",
                 },
                 "fallback-source": {
@@ -322,14 +342,20 @@ class BookResolutionPhase4Test(unittest.TestCase):
         payload = resolver.resolve("测试书", author="测试作者", limit=10)
 
         self.assertEqual(payload["candidates"][0]["source_id"], "template-source")
-        self.assertEqual(payload["candidates"][0]["preferred_extractor"], "template_novelfull_like")
+        self.assertEqual(
+            payload["candidates"][0]["preferred_extractor"], "template_novelfull_like"
+        )
 
 
 class DownloadOrchestratorPhase4Test(unittest.TestCase):
-    def test_orchestrator_default_budget_reaches_success_beyond_first_five_candidates(self):
+    def test_orchestrator_default_budget_reaches_success_beyond_first_five_candidates(
+        self,
+    ):
         candidates = []
         for index in range(6):
-            source_id = "late-good" if index == 5 else "broken-{idx}".format(idx=index + 1)
+            source_id = (
+                "late-good" if index == 5 else "broken-{idx}".format(idx=index + 1)
+            )
             book_url = "https://example.com/{source}".format(source=source_id)
             candidates.append(
                 {
@@ -344,9 +370,9 @@ class DownloadOrchestratorPhase4Test(unittest.TestCase):
         downloader = _FakeSourceDownloadService()
         for index in range(5):
             source_id = "broken-{idx}".format(idx=index + 1)
-            downloader.preflight_errors[(source_id, "https://example.com/{source}".format(source=source_id))] = RuntimeError(
-                "目录页失败"
-            )
+            downloader.preflight_errors[
+                (source_id, "https://example.com/{source}".format(source=source_id))
+            ] = RuntimeError("目录页失败")
         orchestrator = DownloadOrchestrator(resolver, downloader)
 
         payload = orchestrator.auto_download("测试书", output_filename="测试书.txt")
@@ -377,8 +403,8 @@ class DownloadOrchestratorPhase4Test(unittest.TestCase):
             ]
         )
         downloader = _FakeSourceDownloadService()
-        downloader.sample_errors[("broken-sample", "https://example.com/broken")] = RuntimeError(
-            "正文抽样失败"
+        downloader.sample_errors[("broken-sample", "https://example.com/broken")] = (
+            RuntimeError("正文抽样失败")
         )
         profile_service = _FakeProfileService()
         orchestrator = DownloadOrchestrator(
@@ -394,11 +420,15 @@ class DownloadOrchestratorPhase4Test(unittest.TestCase):
         self.assertEqual(payload["attempts"][1]["outcome"], "started")
         self.assertEqual(payload["selected"]["source_id"], "good-source")
         self.assertEqual(
-            profile_service.profiles["broken-sample"]["download_strategy"]["last_sample_state"],
+            profile_service.profiles["broken-sample"]["download_strategy"][
+                "last_sample_state"
+            ],
             "failed",
         )
         self.assertEqual(
-            profile_service.profiles["good-source"]["download_strategy"]["last_sample_state"],
+            profile_service.profiles["good-source"]["download_strategy"][
+                "last_sample_state"
+            ],
             "healthy",
         )
 
@@ -422,8 +452,8 @@ class DownloadOrchestratorPhase4Test(unittest.TestCase):
             ]
         )
         downloader = _FakeSourceDownloadService()
-        downloader.job_errors[("job-broken", "https://example.com/job-broken")] = RuntimeError(
-            "创建任务失败"
+        downloader.job_errors[("job-broken", "https://example.com/job-broken")] = (
+            RuntimeError("创建任务失败")
         )
         orchestrator = DownloadOrchestrator(resolver, downloader)
 

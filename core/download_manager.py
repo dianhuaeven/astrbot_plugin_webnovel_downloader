@@ -266,7 +266,8 @@ class NovelDownloadManager:
             max_workers=max(1, self.config.max_workers)
         ) as executor:
             futures = [
-                executor.submit(self._download_one, manifest, chapter) for chapter in missing
+                executor.submit(self._download_one, manifest, chapter)
+                for chapter in missing
             ]
             for future in concurrent.futures.as_completed(futures):
                 future.result()
@@ -441,7 +442,7 @@ class NovelDownloadManager:
                     },
                 )
                 if attempt < attempts:
-                    time.sleep(self.config.retry_backoff ** attempt)
+                    time.sleep(self.config.retry_backoff**attempt)
 
         raise RuntimeError(
             f"章节下载失败 index={chapter['index']} title={chapter['title']} error={last_error}"
@@ -490,7 +491,9 @@ class NovelDownloadManager:
         prefix = sanitize_filename(book_name)[:24]
         return f"{prefix}-{digest}"
 
-    def _ensure_output_target_available(self, job_id: str, output_filename: str) -> None:
+    def _ensure_output_target_available(
+        self, job_id: str, output_filename: str
+    ) -> None:
         final_path = self.output_dir / output_filename
         if final_path.exists():
             raise FileExistsError(f"输出文件已存在: {final_path}")
@@ -636,7 +639,9 @@ class NovelDownloadManager:
     def _journal_path(self, job_id: str) -> Path:
         return self.jobs_dir / job_id / "job.jsonl"
 
-    def _replay_job(self, job_id: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    def _replay_job(
+        self, job_id: str
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         journal_path = self._journal_path(job_id)
         if not journal_path.exists():
             return None, {}

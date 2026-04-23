@@ -4,7 +4,9 @@ import sqlite3
 from pathlib import Path
 
 
-def derive_sqlite_path(path: str | Path, default_name: str = "plugin_state.sqlite3") -> Path:
+def derive_sqlite_path(
+    path: str | Path, default_name: str = "plugin_state.sqlite3"
+) -> Path:
     raw_path = Path(path)
     if raw_path.suffix:
         return raw_path.with_suffix(".sqlite3")

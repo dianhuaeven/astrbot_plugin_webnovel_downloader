@@ -45,7 +45,9 @@ class SourceProfileService:
         storage_path: str | Path | None = None,
     ):
         self.registry = registry
-        self.storage_path = Path(storage_path or (self.registry.sources_dir / "source_profiles.json"))
+        self.storage_path = Path(
+            storage_path or (self.registry.sources_dir / "source_profiles.json")
+        )
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
@@ -55,12 +57,16 @@ class SourceProfileService:
             normalized = self.registry.load_normalized_source(source_id)
             compiled_at = time.time()
             template_family = self._detect_template_family(summary, normalized)
-            preferred_extractors = self._detect_preferred_extractors(summary, normalized)
+            preferred_extractors = self._detect_preferred_extractors(
+                summary, normalized
+            )
             profile = SourceProfile(
                 source_id=source_id,
                 template_family=template_family,
                 preferred_extractors=preferred_extractors,
-                search_strategy=self._build_search_strategy(summary, normalized, preferred_extractors),
+                search_strategy=self._build_search_strategy(
+                    summary, normalized, preferred_extractors
+                ),
                 download_strategy=self._build_download_strategy(
                     summary,
                     normalized,
@@ -84,10 +90,14 @@ class SourceProfileService:
             if current is None:
                 current = self.compile(source_id)
 
-            unknown_keys = sorted(set(patch) - (_PROFILE_KEYS - {"source_id", "updated_at"}))
+            unknown_keys = sorted(
+                set(patch) - (_PROFILE_KEYS - {"source_id", "updated_at"})
+            )
             if unknown_keys:
                 raise ValueError(
-                    "profile patch 含未知字段: {keys}".format(keys=", ".join(unknown_keys))
+                    "profile patch 含未知字段: {keys}".format(
+                        keys=", ".join(unknown_keys)
+                    )
                 )
 
             merged = dict(current)
@@ -113,7 +123,9 @@ class SourceProfileService:
             self._write_store(store)
             return dict(merged)
 
-    def get(self, source_id: str, compile_if_missing: bool = False) -> Dict[str, Any] | None:
+    def get(
+        self, source_id: str, compile_if_missing: bool = False
+    ) -> Dict[str, Any] | None:
         with self._lock:
             store = self._load_store()
             profile = store["profiles"].get(source_id)
@@ -196,19 +208,31 @@ class SourceProfileService:
             "supports_download": supports_download,
             "requires_js": bool(summary.get("download_uses_js", False)),
             "requires_webview": bool(summary.get("download_uses_webview", False)),
-            "rule_book_info_keys": sorted((normalized.get("rule_book_info") or {}).keys()),
+            "rule_book_info_keys": sorted(
+                (normalized.get("rule_book_info") or {}).keys()
+            ),
             "rule_toc_keys": sorted((normalized.get("rule_toc") or {}).keys()),
             "rule_content_keys": sorted((normalized.get("rule_content") or {}).keys()),
             "preferred_extractor": preferred_extractors[0],
         }
 
-    def _detect_template_family(self, summary: Dict[str, Any], normalized: Dict[str, Any]) -> str:
+    def _detect_template_family(
+        self, summary: Dict[str, Any], normalized: Dict[str, Any]
+    ) -> str:
         source_text = self._collect_rule_text(normalized)
         if normalized.get("single_url"):
             return "single_url"
-        if summary.get("search_uses_webview") or summary.get("download_uses_webview") or normalized.get("has_web_js"):
+        if (
+            summary.get("search_uses_webview")
+            or summary.get("download_uses_webview")
+            or normalized.get("has_web_js")
+        ):
             return "webview_dynamic"
-        if summary.get("search_uses_js") or summary.get("download_uses_js") or normalized.get("enable_js"):
+        if (
+            summary.get("search_uses_js")
+            or summary.get("download_uses_js")
+            or normalized.get("enable_js")
+        ):
             return "javascript_dynamic"
         if summary.get("has_login_flow"):
             return "authenticated_html"
@@ -285,7 +309,9 @@ class SourceProfileService:
             normalized.append(value)
         return normalized or ["fallback_rule"]
 
-    def _merge_dicts(self, base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge_dicts(
+        self, base: Dict[str, Any], patch: Dict[str, Any]
+    ) -> Dict[str, Any]:
         merged = dict(base)
         for key, value in patch.items():
             if isinstance(value, dict) and isinstance(merged.get(key), dict):

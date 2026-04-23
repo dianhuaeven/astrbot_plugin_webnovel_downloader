@@ -43,7 +43,9 @@ class SearchCacheStore:
             "successful_sources": result.get("successful_sources", 0),
             "result_count": len(result.get("results") or []),
             "error_count": len(result.get("errors") or []),
-            "path": str(self.searches_dir / "{search_id}.json".format(search_id=search_id)),
+            "path": str(
+                self.searches_dir / "{search_id}.json".format(search_id=search_id)
+            ),
         }
         stored = {
             "record": record,
@@ -52,7 +54,9 @@ class SearchCacheStore:
         self._write_json(Path(record["path"]), stored)
 
         index = self._load_index()
-        index["searches"] = [item for item in index["searches"] if item.get("search_id") != search_id]
+        index["searches"] = [
+            item for item in index["searches"] if item.get("search_id") != search_id
+        ]
         index["searches"].insert(0, record)
         index["updated_at"] = created_at
         self._write_json(self.index_path, index)
@@ -74,7 +78,9 @@ class SearchCacheStore:
         payload.setdefault("result", {})
         return payload
 
-    def get_search_result_item(self, search_id: str, result_index: int) -> dict[str, Any]:
+    def get_search_result_item(
+        self, search_id: str, result_index: int
+    ) -> dict[str, Any]:
         payload = self.load_search(search_id)
         results = list(payload.get("result", {}).get("results") or [])
         if result_index < 0 or result_index >= len(results):
@@ -103,7 +109,9 @@ class SearchCacheStore:
         data.setdefault("searches", [])
         return data
 
-    def _build_search_id(self, keyword: str, payload: dict[str, Any], created_at: float) -> str:
+    def _build_search_id(
+        self, keyword: str, payload: dict[str, Any], created_at: float
+    ) -> str:
         digest = hashlib.sha1(
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()[:10]

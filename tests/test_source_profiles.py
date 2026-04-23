@@ -68,11 +68,15 @@ class SourceProfileServiceTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def _import_source(self, payload: dict[str, object]) -> str:
-        result = self.registry.import_sources_from_text(json.dumps([payload], ensure_ascii=False))
+        result = self.registry.import_sources_from_text(
+            json.dumps([payload], ensure_ascii=False)
+        )
         return str(result["sources"][0]["source_id"])
 
     def test_compile_persists_profile_and_compiled_strategies(self):
-        source_id = self._import_source(_build_html_source("示例源", "https://example.com"))
+        source_id = self._import_source(
+            _build_html_source("示例源", "https://example.com")
+        )
 
         profile = self.service.compile(source_id)
 
@@ -81,13 +85,17 @@ class SourceProfileServiceTest(unittest.TestCase):
         self.assertEqual(profile["preferred_extractors"], ["fallback_rule"])
         self.assertEqual(profile["search_strategy"]["mode"], "keyword_search")
         self.assertEqual(profile["download_strategy"]["mode"], "chapter_list")
-        self.assertEqual(profile["search_strategy"]["preferred_extractor"], "fallback_rule")
+        self.assertEqual(
+            profile["search_strategy"]["preferred_extractor"], "fallback_rule"
+        )
         self.assertGreater(profile["compiled_at"], 0)
         self.assertEqual(profile["compiled_at"], profile["updated_at"])
         self.assertTrue((self.base_dir / "sources" / "source_profiles.json").exists())
 
     def test_get_can_compile_missing_profile_on_demand(self):
-        source_id = self._import_source(_build_html_source("按需编译源", "https://example.org"))
+        source_id = self._import_source(
+            _build_html_source("按需编译源", "https://example.org")
+        )
 
         self.assertIsNone(self.service.get(source_id))
 
@@ -99,7 +107,9 @@ class SourceProfileServiceTest(unittest.TestCase):
         self.assertEqual(self.service.get(source_id)["source_id"], source_id)
 
     def test_update_merges_nested_fields_without_recompiling(self):
-        source_id = self._import_source(_build_html_source("可更新源", "https://example.net"))
+        source_id = self._import_source(
+            _build_html_source("可更新源", "https://example.net")
+        )
         profile = self.service.compile(source_id)
         time.sleep(0.01)
 
@@ -129,7 +139,9 @@ class SourceProfileServiceTest(unittest.TestCase):
         self.assertEqual(updated["download_strategy"]["notes"]["phase"], "3")
 
     def test_compile_keeps_registry_unchanged_and_marks_js_profiles(self):
-        source_id = self._import_source(_build_js_source("JS源", "https://dynamic.example.com"))
+        source_id = self._import_source(
+            _build_js_source("JS源", "https://dynamic.example.com")
+        )
         summary_before = self.registry.get_source_summary(source_id)
 
         profile = self.service.compile(source_id)

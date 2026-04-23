@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from urllib.parse import urljoin
-
 from parsel import Selector
 
 from .template_common import SelectorTemplateExtractor
@@ -29,7 +27,9 @@ class WordpressMadaraLikeExtractor(SelectorTemplateExtractor):
         ajax_url = response.url.split("?")[0].rstrip("/") + "/ajax/chapters/"
         try:
             ajax_response = self._fetch(ajax_url, method="POST")
-            ajax_selector = Selector(text=ajax_response.body.decode("utf-8", errors="replace"))
+            ajax_selector = Selector(
+                text=ajax_response.body.decode("utf-8", errors="replace")
+            )
             if ajax_selector.css("li.wp-manga-chapter a"):
                 return ajax_selector, ajax_response.url
         except Exception:

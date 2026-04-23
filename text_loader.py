@@ -52,11 +52,17 @@ def fetch_raw_text(
         },
     )
     try:
-        with open_url(request, request_timeout, use_env_proxy=use_env_proxy) as response:
+        with open_url(
+            request, request_timeout, use_env_proxy=use_env_proxy
+        ) as response:
             body = response.read()
-            encoding = response.headers.get_content_charset() or default_encoding or "utf-8"
+            encoding = (
+                response.headers.get_content_charset() or default_encoding or "utf-8"
+            )
     except HTTPError as exc:
-        raise ValueError(format_remote_fetch_error(url, exc.code, str(exc.reason))) from exc
+        raise ValueError(
+            format_remote_fetch_error(url, exc.code, str(exc.reason))
+        ) from exc
     except URLError as exc:
         raise ValueError(
             format_network_fetch_error(url, exc.reason, use_env_proxy=use_env_proxy)
@@ -100,7 +106,10 @@ def format_network_fetch_error(
     normalized_reason = reason_text.lower()
     tips: list[str] = []
 
-    if "network is unreachable" in normalized_reason or "errno 101" in normalized_reason:
+    if (
+        "network is unreachable" in normalized_reason
+        or "errno 101" in normalized_reason
+    ):
         tips.append("当前宿主环境无法直连目标地址")
         if use_env_proxy:
             tips.append(

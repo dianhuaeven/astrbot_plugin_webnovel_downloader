@@ -69,7 +69,9 @@ class DownloadOrchestrator:
             started_at = time.monotonic()
             source_id = str(candidate.get("source_id") or "").strip()
             book_url = str(candidate.get("book_url") or "").strip()
-            book_name = str(candidate.get("title") or resolution.get("keyword") or "").strip()
+            book_name = str(
+                candidate.get("title") or resolution.get("keyword") or ""
+            ).strip()
             try:
                 try:
                     preflight = self.source_download_service.preflight_book(
@@ -91,13 +93,17 @@ class DownloadOrchestrator:
                     {
                         "attempt_index": attempt_index,
                         "source_id": source_id,
-                        "source_name": str(candidate.get("source_name") or source_id).strip(),
+                        "source_name": str(
+                            candidate.get("source_name") or source_id
+                        ).strip(),
                         "title": book_name,
                         "author": str(candidate.get("author") or "").strip(),
                         "book_url": book_url,
                         "outcome": "preflight_failed",
                         "error": str(exc),
-                        "elapsed_ms": round((time.monotonic() - started_at) * 1000.0, 3),
+                        "elapsed_ms": round(
+                            (time.monotonic() - started_at) * 1000.0, 3
+                        ),
                     }
                 )
                 continue
@@ -112,13 +118,17 @@ class DownloadOrchestrator:
                     {
                         "attempt_index": attempt_index,
                         "source_id": source_id,
-                        "source_name": str(candidate.get("source_name") or source_id).strip(),
+                        "source_name": str(
+                            candidate.get("source_name") or source_id
+                        ).strip(),
                         "title": book_name,
                         "author": str(candidate.get("author") or "").strip(),
                         "book_url": book_url,
                         "outcome": "sample_failed",
                         "error": str(exc),
-                        "elapsed_ms": round((time.monotonic() - started_at) * 1000.0, 3),
+                        "elapsed_ms": round(
+                            (time.monotonic() - started_at) * 1000.0, 3
+                        ),
                         "preflight": preflight,
                     }
                 )
@@ -128,13 +138,17 @@ class DownloadOrchestrator:
             validated_plan = dict(preflight)
             validated_plan.update(sample)
             try:
-                job = self.source_download_service.create_job_from_plan(validated_plan, output_filename)
+                job = self.source_download_service.create_job_from_plan(
+                    validated_plan, output_filename
+                )
             except Exception as exc:
                 attempts.append(
                     {
                         "attempt_index": attempt_index,
                         "source_id": source_id,
-                        "source_name": str(candidate.get("source_name") or source_id).strip(),
+                        "source_name": str(
+                            candidate.get("source_name") or source_id
+                        ).strip(),
                         "title": book_name,
                         "author": str(candidate.get("author") or "").strip(),
                         "book_url": book_url,
@@ -142,7 +156,9 @@ class DownloadOrchestrator:
                         "error": str(exc),
                         "elapsed_ms": preflight_elapsed_ms,
                         "preflight": validated_plan,
-                        "sampled_chapter_count": int(sample.get("sampled_chapter_count", 0) or 0),
+                        "sampled_chapter_count": int(
+                            sample.get("sampled_chapter_count", 0) or 0
+                        ),
                     }
                 )
                 continue
@@ -151,7 +167,9 @@ class DownloadOrchestrator:
                 {
                     "attempt_index": attempt_index,
                     "source_id": source_id,
-                    "source_name": str(candidate.get("source_name") or source_id).strip(),
+                    "source_name": str(
+                        candidate.get("source_name") or source_id
+                    ).strip(),
                     "title": book_name,
                     "author": str(candidate.get("author") or "").strip(),
                     "book_url": book_url,
@@ -160,7 +178,9 @@ class DownloadOrchestrator:
                     "preflight": validated_plan,
                     "job_id": job.get("job_id", ""),
                     "toc_count": int(validated_plan.get("toc_count", 0) or 0),
-                    "sampled_chapter_count": int(sample.get("sampled_chapter_count", 0) or 0),
+                    "sampled_chapter_count": int(
+                        sample.get("sampled_chapter_count", 0) or 0
+                    ),
                 }
             )
             return self._build_result(
@@ -178,7 +198,8 @@ class DownloadOrchestrator:
             failure_reason = str(attempts[-1].get("error") or "").strip()
         status = "all_preflight_failed"
         if any(
-            str(item.get("outcome") or "").strip() in {"sample_failed", "job_create_failed"}
+            str(item.get("outcome") or "").strip()
+            in {"sample_failed", "job_create_failed"}
             for item in attempts
         ):
             status = "all_candidates_failed"
@@ -212,7 +233,9 @@ class DownloadOrchestrator:
             "include_disabled": bool(resolution.get("include_disabled", False)),
             "search_limit": int(resolution.get("limit", 0) or 0),
             "candidate_count": int(resolution.get("candidate_count", 0) or 0),
-            "skipped_candidate_count": int(resolution.get("skipped_candidate_count", 0) or 0),
+            "skipped_candidate_count": int(
+                resolution.get("skipped_candidate_count", 0) or 0
+            ),
             "search_result": search_result,
             "candidates": list(resolution.get("candidates") or []),
             "skipped_candidates": list(resolution.get("skipped_candidates") or []),

@@ -8,10 +8,21 @@ from pathlib import Path
 
 from parsel import Selector
 
-from astrbot_plugin_webnovel_downloader.core.book_resolution_service import BookResolutionService
-from astrbot_plugin_webnovel_downloader.core.rule_engine import RuleEngine, RuleEngineConfig, RuleEngineError
-from astrbot_plugin_webnovel_downloader.core.search_service import SearchService, SearchServiceConfig
-from astrbot_plugin_webnovel_downloader.core.source_health_store import SourceHealthStore
+from astrbot_plugin_webnovel_downloader.core.book_resolution_service import (
+    BookResolutionService,
+)
+from astrbot_plugin_webnovel_downloader.core.rule_engine import (
+    RuleEngine,
+    RuleEngineConfig,
+    RuleEngineError,
+)
+from astrbot_plugin_webnovel_downloader.core.search_service import (
+    SearchService,
+    SearchServiceConfig,
+)
+from astrbot_plugin_webnovel_downloader.core.source_health_store import (
+    SourceHealthStore,
+)
 from astrbot_plugin_webnovel_downloader.core.source_registry import SourceRegistry
 
 
@@ -123,7 +134,9 @@ class LegadoPhase5Test(unittest.TestCase):
             }
         ]
 
-        result = registry.import_sources_from_text(json.dumps(payload, ensure_ascii=False))
+        result = registry.import_sources_from_text(
+            json.dumps(payload, ensure_ascii=False)
+        )
 
         source = result["sources"][0]
         self.assertTrue(source["supports_search"])
@@ -135,7 +148,9 @@ class LegadoPhase5Test(unittest.TestCase):
     def test_rule_engine_parses_single_quote_request_options_and_rejects_webview(self):
         engine = RuleEngine(RuleEngineConfig())
 
-        base_url, options = engine._split_request_options("https://example.com/book,{'webView': true}")
+        base_url, options = engine._split_request_options(
+            "https://example.com/book,{'webView': true}"
+        )
 
         self.assertEqual(base_url, "https://example.com/book")
         self.assertEqual(options, {"webView": True})
@@ -147,7 +162,7 @@ class LegadoPhase5Test(unittest.TestCase):
 
         headers = engine._normalize_request_headers(
             {
-                "@js": "JSON.stringify({\"Referer\":baseUrl})",
+                "@js": 'JSON.stringify({"Referer":baseUrl})',
                 "Referer": "https://example.com",
                 "X-Test": "ok",
                 "X-JS": "@js:return 1",
@@ -177,7 +192,9 @@ class LegadoPhase5Test(unittest.TestCase):
         )
 
         chapter_nodes = engine._select_many("html", payload, ".list@li a")
-        kind_values = engine._select_many("html", payload, "class.book w@span[1,2]@text")
+        kind_values = engine._select_many(
+            "html", payload, "class.book w@span[1,2]@text"
+        )
 
         self.assertEqual(len(chapter_nodes), 2)
         self.assertEqual(kind_values, ["状态", "时间"])
@@ -206,7 +223,9 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(len(chapter_nodes), 2)
         self.assertEqual(author_values, ["测试作者"])
 
-    def test_rule_engine_supports_literal_template_fragments_and_modifier_only_steps(self):
+    def test_rule_engine_supports_literal_template_fragments_and_modifier_only_steps(
+        self,
+    ):
         engine = RuleEngine(RuleEngineConfig())
         payload = Selector(
             text="""
@@ -225,7 +244,9 @@ class LegadoPhase5Test(unittest.TestCase):
         rendered = engine._render_template("prefix{{'\\n'+'\\u200b'}}suffix", {})
         last_value = engine._select_many("html", payload, ".list@span&&.-1&&@text")
         sliced_values = engine._select_many("html", payload, ".list@span&&.0:-1&&@text")
-        excluded_values = engine._select_many("html", payload, ".list@span&&!0,1,2&&@text")
+        excluded_values = engine._select_many(
+            "html", payload, ".list@span&&!0,1,2&&@text"
+        )
 
         self.assertEqual(rendered, "prefix\n\u200bsuffix")
         self.assertEqual(last_value, ["丙"])
@@ -301,9 +322,15 @@ class LegadoPhase5Test(unittest.TestCase):
         }
         rule_context = {}
 
-        scoped_payload = engine._run_rule_init("json", payload, "data.bookInfo", rule_context)
-        title = engine._extract_scalar("json", scoped_payload, "bookName", rule_context=rule_context)
-        author = engine._extract_scalar("json", scoped_payload, "authorName", rule_context=rule_context)
+        scoped_payload = engine._run_rule_init(
+            "json", payload, "data.bookInfo", rule_context
+        )
+        title = engine._extract_scalar(
+            "json", scoped_payload, "bookName", rule_context=rule_context
+        )
+        author = engine._extract_scalar(
+            "json", scoped_payload, "authorName", rule_context=rule_context
+        )
         toc_url = engine._extract_scalar(
             "json",
             scoped_payload,
@@ -317,7 +344,9 @@ class LegadoPhase5Test(unittest.TestCase):
 
     def test_rule_engine_supports_bare_html_attr_rules(self):
         engine = RuleEngine(RuleEngineConfig())
-        payload = Selector(text='<html><body><a href="/chapter-1">第一章</a></body></html>')
+        payload = Selector(
+            text='<html><body><a href="/chapter-1">第一章</a></body></html>'
+        )
         link = engine._select_many("html", payload, "a")[0]
 
         href = engine._extract_scalar("html", link, "href")
@@ -419,7 +448,9 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(rendered, hashlib.md5(b"abc").hexdigest())
         self.assertEqual(transformed, "ABC")
 
-    def test_search_service_keeps_broken_runtime_sources_visible_but_lower_priority(self):
+    def test_search_service_keeps_broken_runtime_sources_visible_but_lower_priority(
+        self,
+    ):
         health_store = SourceHealthStore(self.base_dir / "source_health.json")
         health_store.record_failure(
             "broken-search",
@@ -484,7 +515,9 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(payload["results"][1]["source_id"], "broken-search")
         self.assertEqual(payload["results"][1]["search_health_state"], "broken")
 
-    def test_book_resolution_keeps_runtime_broken_source_as_lower_priority_candidate(self):
+    def test_book_resolution_keeps_runtime_broken_source_as_lower_priority_candidate(
+        self,
+    ):
         health_store = SourceHealthStore(self.base_dir / "source_health.json")
         health_store.record_failure(
             "runtime-broken",

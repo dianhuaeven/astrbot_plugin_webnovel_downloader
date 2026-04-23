@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urljoin
 
 from parsel import Selector
 
@@ -29,7 +28,9 @@ class NovelFullLikeExtractor(SelectorTemplateExtractor):
         if links:
             return selector, response.url
 
-        novel_id = self._extract_novel_id(response.body.decode("utf-8", errors="replace"))
+        novel_id = self._extract_novel_id(
+            response.body.decode("utf-8", errors="replace")
+        )
         if not novel_id:
             return selector, response.url
 
@@ -40,8 +41,12 @@ class NovelFullLikeExtractor(SelectorTemplateExtractor):
         )
         try:
             ajax_response = self._fetch(ajax_url)
-            ajax_selector = Selector(text=ajax_response.body.decode("utf-8", errors="replace"))
-            if ajax_selector.css("ul.list-chapter > li > a[href], select > option[value]"):
+            ajax_selector = Selector(
+                text=ajax_response.body.decode("utf-8", errors="replace")
+            )
+            if ajax_selector.css(
+                "ul.list-chapter > li > a[href], select > option[value]"
+            ):
                 return ajax_selector, ajax_response.url
         except Exception:
             pass

@@ -78,7 +78,9 @@ class JsonlNovelDownloaderPluginBase(Star):
         logger.info("网文下载器初始化完成")
 
     async def terminate(self) -> None:
-        running_tasks = [task for task in self._running_tasks.values() if not task.done()]
+        running_tasks = [
+            task for task in self._running_tasks.values() if not task.done()
+        ]
         for task in running_tasks:
             task.cancel()
         if running_tasks:
@@ -94,7 +96,9 @@ class JsonlNovelDownloaderPluginBase(Star):
             await run_blocking(shutdown_probe, 5.0)
 
     def _resolve_plugin_data_dir(self) -> Path:
-        plugin_name = str(getattr(self, "name", "") or PLUGIN_NAME).strip() or PLUGIN_NAME
+        plugin_name = (
+            str(getattr(self, "name", "") or PLUGIN_NAME).strip() or PLUGIN_NAME
+        )
         get_data_dir = getattr(StarTools, "get_data_dir", None)
         if callable(get_data_dir):
             try:
@@ -129,8 +133,12 @@ class JsonlNovelDownloaderPluginBase(Star):
             encoding,
             limit,
         )
-        preview["html_preview"] = self.renderer.truncate_text(preview.get("html_preview", ""), limit)
-        preview["text_preview"] = self.renderer.truncate_text(preview.get("text_preview", ""), limit)
+        preview["html_preview"] = self.renderer.truncate_text(
+            preview.get("html_preview", ""), limit
+        )
+        preview["text_preview"] = self.renderer.truncate_text(
+            preview.get("text_preview", ""), limit
+        )
         preview["applied_max_chars"] = limit
         return await run_blocking(self.renderer.to_json_text, preview)
 
@@ -159,9 +167,13 @@ class JsonlNovelDownloaderPluginBase(Star):
             repo_name,
             repo_json,
         )
-        return await run_blocking(self.renderer.render_clean_rule_import_summary, record)
+        return await run_blocking(
+            self.renderer.render_clean_rule_import_summary, record
+        )
 
-    async def handle_novel_list_clean_rules(self, limit: str = "", offset: str = "") -> str:
+    async def handle_novel_list_clean_rules(
+        self, limit: str = "", offset: str = ""
+    ) -> str:
         repos = await run_blocking(self.clean_rule_store.list_repositories)
         return await run_blocking(
             self.renderer.render_clean_rule_list_summary,
@@ -195,8 +207,12 @@ class JsonlNovelDownloaderPluginBase(Star):
     async def handle_novel_get_source_detail(self, source_id: str) -> str:
         summary = await run_blocking(self.source_registry.get_source_summary, source_id)
         summary = await run_blocking(self.source_health_store.enrich_source, summary)
-        normalized_source = await run_blocking(self.source_registry.load_normalized_source, source_id)
-        health = await run_blocking(self.source_health_store.get_source_health, source_id)
+        normalized_source = await run_blocking(
+            self.source_registry.load_normalized_source, source_id
+        )
+        health = await run_blocking(
+            self.source_health_store.get_source_health, source_id
+        )
         profile = await run_blocking(self.source_profile_service.get, source_id, True)
         return await run_blocking(
             self.renderer.render_source_detail,
@@ -249,7 +265,9 @@ class JsonlNovelDownloaderPluginBase(Star):
             probe_status,
         )
 
-    async def handle_novel_enable_source(self, source_id: str, enabled: str = "true") -> str:
+    async def handle_novel_enable_source(
+        self, source_id: str, enabled: str = "true"
+    ) -> str:
         result = await run_blocking(
             self.source_registry.set_enabled,
             source_id,
@@ -300,7 +318,9 @@ class JsonlNovelDownloaderPluginBase(Star):
             cache_record,
         )
 
-    async def handle_novel_list_searches(self, limit: str = "", offset: str = "") -> str:
+    async def handle_novel_list_searches(
+        self, limit: str = "", offset: str = ""
+    ) -> str:
         searches = await run_blocking(self.search_cache.list_searches)
         return await run_blocking(
             self.renderer.render_search_cache_list_summary,
@@ -496,12 +516,16 @@ class JsonlNovelDownloaderPluginBase(Star):
         attempt_limit_value = max(1, raw_attempt_limit) if raw_attempt_limit else 0
         default_attempt_limit = max(
             1,
-            int(getattr(self.download_orchestrator.config, "default_attempt_limit", 5) or 5),
+            int(
+                getattr(self.download_orchestrator.config, "default_attempt_limit", 5)
+                or 5
+            ),
         )
         effective_attempt_budget = attempt_limit_value or default_attempt_limit
         search_limit_value = max(
             effective_attempt_budget,
-            self._parse_optional_int(search_limit) or max(10, effective_attempt_budget * 3),
+            self._parse_optional_int(search_limit)
+            or max(10, effective_attempt_budget * 3),
         )
         include_disabled_value = self._parse_bool(include_disabled, False)
         orchestration = await run_blocking(
@@ -526,7 +550,9 @@ class JsonlNovelDownloaderPluginBase(Star):
         job_status = {}
         job_id = str(orchestration.get("job", {}).get("job_id") or "").strip()
         if job_id:
-            await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+            await self._ensure_rule_job_running(
+                job_id, self._parse_bool(auto_assemble, True)
+            )
             job_status = await run_blocking(self.manager.get_status, job_id)
         return await run_blocking(
             self.renderer.render_auto_download_summary,
@@ -571,14 +597,18 @@ class JsonlNovelDownloaderPluginBase(Star):
             output_filename,
         )
         job_id = job_info["job_id"]
-        await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+        await self._ensure_rule_job_running(
+            job_id, self._parse_bool(auto_assemble, True)
+        )
         status_text = await self._render_job_status(job_id, created=job_info["created"])
         preflight_summary = "预检: source={source} toc={toc_count} book={book}".format(
             source=str(preflight.get("source_name") or source_id),
             toc_count=int(preflight.get("toc_count", 0) or 0),
             book=str(preflight.get("book_name") or book_name or ""),
         )
-        return "{status}\n{summary}".format(status=status_text, summary=preflight_summary)
+        return "{status}\n{summary}".format(
+            status=status_text, summary=preflight_summary
+        )
 
     def _validate_preflight_identity(
         self,
@@ -594,14 +624,20 @@ class JsonlNovelDownloaderPluginBase(Star):
         actual_author = str(preflight.get("author") or "").strip()
         normalized_actual_title = self._normalize_match_text(actual_title)
         normalized_actual_author = self._normalize_match_text(actual_author)
-        if normalized_expected_title and normalized_actual_title != normalized_expected_title:
+        if (
+            normalized_expected_title
+            and normalized_actual_title != normalized_expected_title
+        ):
             raise ValueError(
                 "书名不匹配：期望《{expected}》，实际《{actual}》".format(
                     expected=str(expected_title or "").strip(),
                     actual=actual_title or "未知",
                 )
             )
-        if normalized_expected_author and normalized_actual_author != normalized_expected_author:
+        if (
+            normalized_expected_author
+            and normalized_actual_author != normalized_expected_author
+        ):
             raise ValueError(
                 "作者不匹配：期望 {expected}，实际 {actual}".format(
                     expected=str(expected_author or "").strip(),
@@ -649,7 +685,9 @@ class JsonlNovelDownloaderPluginBase(Star):
         job_id: str,
         auto_assemble: str = "true",
     ) -> str:
-        await self._ensure_rule_job_running(job_id, self._parse_bool(auto_assemble, True))
+        await self._ensure_rule_job_running(
+            job_id, self._parse_bool(auto_assemble, True)
+        )
         return await self._render_job_status(job_id, created=False)
 
     async def handle_novel_start_download(
@@ -707,7 +745,9 @@ class JsonlNovelDownloaderPluginBase(Star):
             self._parse_non_negative_int(offset, 0),
         )
 
-    async def handle_novel_assemble_book(self, job_id: str, cleanup_journal: str = "") -> str:
+    async def handle_novel_assemble_book(
+        self, job_id: str, cleanup_journal: str = ""
+    ) -> str:
         status = await run_blocking(
             self.manager.assemble,
             job_id,
@@ -1116,7 +1156,9 @@ class JsonlNovelDownloaderPluginBase(Star):
                 synced_sandboxes=bool(result.get("synced_sandboxes", False)),
             )
         except Exception as exc:
-            logger.warning("自动安装插件自带 skill 失败 skill_name=%s error=%s", skill_name, exc)
+            logger.warning(
+                "自动安装插件自带 skill 失败 skill_name=%s error=%s", skill_name, exc
+            )
             self._save_bootstrap_result(
                 "bundled_skills",
                 entry_id,
@@ -1149,7 +1191,10 @@ class JsonlNovelDownloaderPluginBase(Star):
         for entry in sorted(skills_root.iterdir()):
             if not entry.is_dir():
                 continue
-            if not (entry / "SKILL.md").is_file() and not (entry / "skill.md").is_file():
+            if (
+                not (entry / "SKILL.md").is_file()
+                and not (entry / "skill.md").is_file()
+            ):
                 continue
             bundled.append(entry.resolve())
         return bundled
@@ -1160,7 +1205,9 @@ class JsonlNovelDownloaderPluginBase(Star):
 
         existing_skill_names = self._get_installed_skill_names()
         if existing_skill_names is None:
-            logger.info("当前 AstrBot 环境未提供 SkillManager，跳过插件自带 skill 自动安装")
+            logger.info(
+                "当前 AstrBot 环境未提供 SkillManager，跳过插件自带 skill 自动安装"
+            )
             return []
         state = self._load_bootstrap_state()
         pending: list[Path] = []
@@ -1168,10 +1215,15 @@ class JsonlNovelDownloaderPluginBase(Star):
         for skill_dir in skill_dirs:
             skill_name = skill_dir.name
             ref = str(skill_dir)
-            entry = state.get("bundled_skills", {}).get(self._build_bootstrap_entry_id(ref), {})
+            entry = state.get("bundled_skills", {}).get(
+                self._build_bootstrap_entry_id(ref), {}
+            )
             signature = self._build_bootstrap_signature(ref)
             if skill_name in existing_skill_names:
-                if entry.get("signature") != signature or entry.get("status") != "success":
+                if (
+                    entry.get("signature") != signature
+                    or entry.get("status") != "success"
+                ):
                     self._save_bootstrap_result(
                         "bundled_skills",
                         self._build_bootstrap_entry_id(ref),
@@ -1185,13 +1237,21 @@ class JsonlNovelDownloaderPluginBase(Star):
                         synced_sandboxes=False,
                     )
                 skipped_count += 1
-                logger.info("检测到同名 skill 已存在，跳过自动安装 skill_name=%s", skill_name)
+                logger.info(
+                    "检测到同名 skill 已存在，跳过自动安装 skill_name=%s", skill_name
+                )
                 continue
             if entry.get("signature") == signature:
                 status = str(entry.get("status") or "")
-                if status == "running" and (time.time() - float(entry.get("updated_at", 0.0))) < 1800:
+                if (
+                    status == "running"
+                    and (time.time() - float(entry.get("updated_at", 0.0))) < 1800
+                ):
                     skipped_count += 1
-                    logger.info("检测到已有后台 skill 安装正在进行，跳过重复启动 skill_name=%s", skill_name)
+                    logger.info(
+                        "检测到已有后台 skill 安装正在进行，跳过重复启动 skill_name=%s",
+                        skill_name,
+                    )
                     continue
             pending.append(skill_dir)
         if skipped_count:
@@ -1210,13 +1270,19 @@ class JsonlNovelDownloaderPluginBase(Star):
 
         try:
             manager = SkillManager()
-            return {str(item.name).strip() for item in manager.list_skills() if str(item.name).strip()}
+            return {
+                str(item.name).strip()
+                for item in manager.list_skills()
+                if str(item.name).strip()
+            }
         except Exception:
             return set()
 
     def _install_bundled_skill(self, skill_dir: Path) -> dict[str, Any]:
         if not skill_dir.is_dir():
-            raise FileNotFoundError("找不到插件自带 skill 目录: {path}".format(path=skill_dir))
+            raise FileNotFoundError(
+                "找不到插件自带 skill 目录: {path}".format(path=skill_dir)
+            )
 
         try:
             from astrbot.core.skills.skill_manager import SkillManager
@@ -1239,7 +1305,9 @@ class JsonlNovelDownloaderPluginBase(Star):
 
         synced_sandboxes = False
         try:
-            from astrbot.core.computer.computer_client import sync_skills_to_active_sandboxes
+            from astrbot.core.computer.computer_client import (
+                sync_skills_to_active_sandboxes,
+            )
         except Exception:
             sync_skills_to_active_sandboxes = None
 
@@ -1248,7 +1316,11 @@ class JsonlNovelDownloaderPluginBase(Star):
                 asyncio.run(sync_skills_to_active_sandboxes())
                 synced_sandboxes = True
             except Exception as exc:
-                logger.warning("插件自带 skill 已安装，但同步到活跃沙盒失败 skill_name=%s error=%s", skill_name, exc)
+                logger.warning(
+                    "插件自带 skill 已安装，但同步到活跃沙盒失败 skill_name=%s error=%s",
+                    skill_name,
+                    exc,
+                )
 
         return {
             "installed_name": str(installed_name or skill_name),
@@ -1257,7 +1329,9 @@ class JsonlNovelDownloaderPluginBase(Star):
 
     def _build_skill_zip(self, skill_dir: Path, zip_path: Path) -> None:
         zip_path.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(
+            zip_path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
             for path in sorted(skill_dir.rglob("*")):
                 if path.is_dir():
                     continue
@@ -1267,7 +1341,10 @@ class JsonlNovelDownloaderPluginBase(Star):
     def _filter_bootstrap_refs(self, refs: list[str], section: str) -> list[str]:
         if section == "book_sources" and not self.source_registry.list_sources():
             return refs
-        if section == "clean_rule_sources" and not self.clean_rule_store.list_repositories():
+        if (
+            section == "clean_rule_sources"
+            and not self.clean_rule_store.list_repositories()
+        ):
             return refs
 
         state = self._load_bootstrap_state()
@@ -1286,7 +1363,10 @@ class JsonlNovelDownloaderPluginBase(Star):
                         self._short_bootstrap_ref(ref),
                     )
                     continue
-                if status == "running" and (time.time() - float(entry.get("updated_at", 0.0))) < 1800:
+                if (
+                    status == "running"
+                    and (time.time() - float(entry.get("updated_at", 0.0))) < 1800
+                ):
                     skipped_count += 1
                     logger.info(
                         "检测到已有后台导入正在进行，跳过重复启动 section=%s ref=%s",

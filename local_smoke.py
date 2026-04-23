@@ -185,7 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = run_smoke(args)
     except Exception as exc:
-        print(json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        print(
+            json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2),
+            file=sys.stderr,
+        )
         return 1
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))

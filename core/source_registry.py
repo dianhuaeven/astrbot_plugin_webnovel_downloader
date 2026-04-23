@@ -35,7 +35,10 @@ class SourceRegistry:
             source_id = normalized["source_id"]
             updated_at = time.time()
 
-            self._write_json(self.raw_dir / "{source_id}.json".format(source_id=source_id), raw_source)
+            self._write_json(
+                self.raw_dir / "{source_id}.json".format(source_id=source_id),
+                raw_source,
+            )
             self._write_json(
                 self.normalized_dir / "{source_id}.json".format(source_id=source_id),
                 normalized,
@@ -56,8 +59,12 @@ class SourceRegistry:
         self._write_json(self.registry_path, registry)
         return {
             "imported_count": len(imported),
-            "supported_search_count": sum(1 for item in imported if item.get("supports_search")),
-            "supported_download_count": sum(1 for item in imported if item.get("supports_download")),
+            "supported_search_count": sum(
+                1 for item in imported if item.get("supports_search")
+            ),
+            "supported_download_count": sum(
+                1 for item in imported if item.get("supports_download")
+            ),
             "warnings": warnings,
             "sources": imported,
         }
@@ -93,7 +100,9 @@ class SourceRegistry:
         try:
             return registry["sources"][source_id]
         except KeyError as exc:
-            raise ValueError("未找到书源 {source_id}".format(source_id=source_id)) from exc
+            raise ValueError(
+                "未找到书源 {source_id}".format(source_id=source_id)
+            ) from exc
 
     def load_normalized_source(self, source_id: str) -> Dict[str, Any]:
         path = self.normalized_dir / "{source_id}.json".format(source_id=source_id)

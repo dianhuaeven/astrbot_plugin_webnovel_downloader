@@ -46,9 +46,13 @@ class SourceHealthStore:
         normalized_source_id = self._normalize_source_id(source_id)
         if not normalized_source_id:
             return _make_source_entry()
-        return self.get_many([normalized_source_id]).get(normalized_source_id, _make_source_entry())
+        return self.get_many([normalized_source_id]).get(
+            normalized_source_id, _make_source_entry()
+        )
 
-    def get_many(self, source_ids: Iterable[str] | None = None) -> dict[str, dict[str, Any]]:
+    def get_many(
+        self, source_ids: Iterable[str] | None = None
+    ) -> dict[str, dict[str, Any]]:
         normalized_ids = self._normalize_ids(source_ids)
         with self._lock:
             with connect_sqlite(self.sqlite_path) as connection:
@@ -105,15 +109,16 @@ class SourceHealthStore:
                         normalized_ids,
                     ).fetchall()
                     result = {
-                        source_id: _make_source_entry()
-                        for source_id in normalized_ids
+                        source_id: _make_source_entry() for source_id in normalized_ids
                     }
         for row in rows:
             source_id = str(row["source_id"] or "").strip()
             stage = str(row["stage"] or "").strip()
             if not source_id or stage not in HEALTH_STAGES:
                 continue
-            result.setdefault(source_id, _make_source_entry())[stage] = self._row_to_stage_entry(row)
+            result.setdefault(source_id, _make_source_entry())[stage] = (
+                self._row_to_stage_entry(row)
+            )
         return result
 
     def record_success(
@@ -129,7 +134,9 @@ class SourceHealthStore:
         now = time.time()
         with self._lock:
             source_entry = self.get_source_health(normalized_source_id)
-            stage_entry = dict(source_entry.get(normalized_stage) or _make_stage_entry())
+            stage_entry = dict(
+                source_entry.get(normalized_stage) or _make_stage_entry()
+            )
             stage_entry["attempts"] = int(stage_entry.get("attempts", 0) or 0) + 1
             stage_entry["successes"] = int(stage_entry.get("successes", 0) or 0) + 1
             stage_entry["avg_ms"] = self._rolling_average(
@@ -145,7 +152,9 @@ class SourceHealthStore:
             stage_entry["updated_at"] = now
             self._merge_metadata(stage_entry, metadata)
             source_entry[normalized_stage] = stage_entry
-            self._write_source_entry(source_id=normalized_source_id, source_entry=source_entry)
+            self._write_source_entry(
+                source_id=normalized_source_id, source_entry=source_entry
+            )
             return dict(stage_entry)
 
     def record_failure(
@@ -163,7 +172,9 @@ class SourceHealthStore:
         now = time.time()
         with self._lock:
             source_entry = self.get_source_health(normalized_source_id)
-            stage_entry = dict(source_entry.get(normalized_stage) or _make_stage_entry())
+            stage_entry = dict(
+                source_entry.get(normalized_stage) or _make_stage_entry()
+            )
             stage_entry["attempts"] = int(stage_entry.get("attempts", 0) or 0) + 1
             stage_entry["failures"] = int(stage_entry.get("failures", 0) or 0) + 1
             if timeout:
@@ -175,7 +186,9 @@ class SourceHealthStore:
             )
             successes = int(stage_entry.get("successes", 0) or 0)
             failures = int(stage_entry.get("failures", 0) or 0)
-            stage_entry["state"] = "degraded" if successes > 0 and failures <= successes else "broken"
+            stage_entry["state"] = (
+                "degraded" if successes > 0 and failures <= successes else "broken"
+            )
             stage_entry["last_failure_at"] = now
             stage_entry["last_error_code"] = str(error_code or "").strip()
             stage_entry["last_error_summary"] = str(error_summary or "").strip()
@@ -183,7 +196,9 @@ class SourceHealthStore:
             stage_entry["updated_at"] = now
             self._merge_metadata(stage_entry, metadata)
             source_entry[normalized_stage] = stage_entry
-            self._write_source_entry(source_id=normalized_source_id, source_entry=source_entry)
+            self._write_source_entry(
+                source_id=normalized_source_id, source_entry=source_entry
+            )
             return dict(stage_entry)
 
     def mark_unsupported(
@@ -222,9 +237,11 @@ class SourceHealthStore:
         enriched = dict(source)
         for stage in HEALTH_STAGES:
             stage_entry = entry[stage]
-            enriched["{stage}_health_state".format(stage=stage)] = stage_entry.get("state", "unknown")
-            enriched["{stage}_health_summary".format(stage=stage)] = self._format_stage_summary(
-                stage_entry
+            enriched["{stage}_health_state".format(stage=stage)] = stage_entry.get(
+                "state", "unknown"
+            )
+            enriched["{stage}_health_summary".format(stage=stage)] = (
+                self._format_stage_summary(stage_entry)
             )
             enriched["{stage}_health_updated_at".format(stage=stage)] = float(
                 stage_entry.get("updated_at", 0.0) or 0.0
@@ -247,7 +264,9 @@ class SourceHealthStore:
         now = time.time()
         with self._lock:
             source_entry = self.get_source_health(normalized_source_id)
-            stage_entry = dict(source_entry.get(normalized_stage) or _make_stage_entry())
+            stage_entry = dict(
+                source_entry.get(normalized_stage) or _make_stage_entry()
+            )
             stage_entry["state"] = state
             stage_entry["note"] = str(summary or "").strip()
             if state != "broken":
@@ -256,7 +275,9 @@ class SourceHealthStore:
             stage_entry["updated_at"] = now
             self._merge_metadata(stage_entry, metadata)
             source_entry[normalized_stage] = stage_entry
-            self._write_source_entry(source_id=normalized_source_id, source_entry=source_entry)
+            self._write_source_entry(
+                source_id=normalized_source_id, source_entry=source_entry
+            )
             return dict(stage_entry)
 
     def _initialize(self) -> None:
@@ -451,7 +472,9 @@ class SourceHealthStore:
             ON source_stage_health (stage, state, updated_at DESC)
             """
         )
-        connection.execute("PRAGMA user_version = {version}".format(version=HEALTH_SCHEMA_VERSION))
+        connection.execute(
+            "PRAGMA user_version = {version}".format(version=HEALTH_SCHEMA_VERSION)
+        )
 
     def _row_to_stage_entry(self, row: Any) -> dict[str, Any]:
         stage_entry = _make_stage_entry()
@@ -483,7 +506,9 @@ class SourceHealthStore:
                         stage_entry[str(key)] = value
         return stage_entry
 
-    def _merge_metadata(self, stage_entry: dict[str, Any], metadata: dict[str, Any] | None) -> None:
+    def _merge_metadata(
+        self, stage_entry: dict[str, Any], metadata: dict[str, Any] | None
+    ) -> None:
         if not metadata:
             return
         for key, value in metadata.items():
@@ -531,7 +556,9 @@ class SourceHealthStore:
             normalized.append(current)
         return normalized
 
-    def _rolling_average(self, current: float, value: float, sample_count: int) -> float:
+    def _rolling_average(
+        self, current: float, value: float, sample_count: int
+    ) -> float:
         if sample_count <= 1:
             return round(value, 3)
         return round(((current * (sample_count - 1)) + value) / sample_count, 3)

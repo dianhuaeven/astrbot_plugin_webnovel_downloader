@@ -5,7 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from astrbot_plugin_webnovel_downloader.core.source_health_store import SourceHealthStore
+from astrbot_plugin_webnovel_downloader.core.source_health_store import (
+    SourceHealthStore,
+)
 
 
 class SourceHealthStoreTest(unittest.TestCase):

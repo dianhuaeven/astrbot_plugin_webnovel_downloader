@@ -39,7 +39,9 @@ def _hide_system_parameters(func: Callable) -> Callable:
     filtered_annotations = dict(getattr(func, "__annotations__", {}))
     filtered_annotations.pop("event", None)
 
-    def _normalize_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    def _normalize_call(
+        args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         if event_parameter is None or "event" in kwargs:
             return args, kwargs
         if event_index is not None and len(args) > event_index:

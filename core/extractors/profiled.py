@@ -46,7 +46,9 @@ class ProfiledExtractor(Extractor):
         last_error: Exception | None = None
         for extractor in self._resolve_extractors(source):
             try:
-                return extractor.preflight(source, book_url, fallback_title=fallback_title)
+                return extractor.preflight(
+                    source, book_url, fallback_title=fallback_title
+                )
             except Exception as exc:
                 last_error = exc
         if last_error is not None:

@@ -43,7 +43,9 @@ class SelectorTemplateExtractor(Extractor):
         items = self._select_nodes(selector, (self.search_item_selector,))
         results: list[dict[str, Any]] = []
         for item in items:
-            title = self._first_text(item, (self.search_title_selector, self.search_link_selector))
+            title = self._first_text(
+                item, (self.search_title_selector, self.search_link_selector)
+            )
             book_url = self._first_attr(item, (self.search_link_selector,), "href")
             if not title or not book_url:
                 continue
@@ -66,7 +68,9 @@ class SelectorTemplateExtractor(Extractor):
         if not results:
             raise ValueError(
                 "{name} 未命中模板搜索结果结构".format(
-                    name=self.extractor_id or self.template_family or self.__class__.__name__
+                    name=self.extractor_id
+                    or self.template_family
+                    or self.__class__.__name__
                 )
             )
         return results
@@ -82,7 +86,9 @@ class SelectorTemplateExtractor(Extractor):
         title = self._first_text(selector, self.title_selectors) or fallback_title
         author = self._first_text(selector, self.author_selectors)
         intro = self._first_text(selector, self.intro_selectors)
-        toc_selector, toc_url = self.fetch_toc_selector(source, book_url, response, selector)
+        toc_selector, toc_url = self.fetch_toc_selector(
+            source, book_url, response, selector
+        )
         toc_links = self._select_nodes(toc_selector, self.toc_link_selectors)
         toc: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
@@ -105,7 +111,9 @@ class SelectorTemplateExtractor(Extractor):
         if not toc:
             raise ValueError(
                 "{name} 未命中模板目录结构".format(
-                    name=self.extractor_id or self.template_family or self.__class__.__name__
+                    name=self.extractor_id
+                    or self.template_family
+                    or self.__class__.__name__
                 )
             )
         return {
@@ -127,19 +135,25 @@ class SelectorTemplateExtractor(Extractor):
         del max_pages
         response = self._fetch(chapter_url)
         selector = Selector(text=response.body.decode("utf-8", errors="replace"))
-        title = self._first_text(selector, self.chapter_title_selectors) or fallback_title
+        title = (
+            self._first_text(selector, self.chapter_title_selectors) or fallback_title
+        )
         body_node = self._first_node(selector, self.chapter_body_selectors)
         if body_node is None:
             raise ValueError(
                 "{name} 未命中模板正文字段".format(
-                    name=self.extractor_id or self.template_family or self.__class__.__name__
+                    name=self.extractor_id
+                    or self.template_family
+                    or self.__class__.__name__
                 )
             )
         content = self._clean_html_text(body_node.get())
         if not content:
             raise ValueError(
                 "{name} 命中模板正文节点但解析结果为空".format(
-                    name=self.extractor_id or self.template_family or self.__class__.__name__
+                    name=self.extractor_id
+                    or self.template_family
+                    or self.__class__.__name__
                 )
             )
         return {
@@ -182,9 +196,13 @@ class SelectorTemplateExtractor(Extractor):
         body: bytes | None = None,
         headers: dict[str, Any] | None = None,
     ) -> ScraperResponse:
-        return self.scraper.request(url, headers=headers, method=method, body=body, timeout=20.0)
+        return self.scraper.request(
+            url, headers=headers, method=method, body=body, timeout=20.0
+        )
 
-    def _select_nodes(self, selector: Selector, selectors: Iterable[str]) -> list[Selector]:
+    def _select_nodes(
+        self, selector: Selector, selectors: Iterable[str]
+    ) -> list[Selector]:
         for expression in selectors:
             expression = str(expression or "").strip()
             if not expression:
@@ -199,7 +217,9 @@ class SelectorTemplateExtractor(Extractor):
                 return list(nodes)
         return []
 
-    def _first_node(self, selector: Selector, selectors: Iterable[str]) -> Selector | None:
+    def _first_node(
+        self, selector: Selector, selectors: Iterable[str]
+    ) -> Selector | None:
         nodes = self._select_nodes(selector, selectors)
         if nodes:
             return nodes[0]
@@ -211,7 +231,9 @@ class SelectorTemplateExtractor(Extractor):
             return ""
         return self._node_text(node)
 
-    def _first_attr(self, selector: Selector, selectors: Iterable[str], attr: str) -> str:
+    def _first_attr(
+        self, selector: Selector, selectors: Iterable[str], attr: str
+    ) -> str:
         node = self._first_node(selector, selectors)
         if node is None:
             return ""

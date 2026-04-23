@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import importlib
 import json
-import shutil
 import sys
 import tempfile
 import threading
@@ -14,7 +13,7 @@ import unittest
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, get_args, get_origin
+from typing import get_args, get_origin
 from urllib.parse import unquote_to_bytes, urlsplit
 from urllib.request import Request
 
@@ -78,7 +77,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             self._inserted_sys_path = True
 
         self._install_astrbot_stubs()
-        self.module = importlib.import_module("{name}.main".format(name=self.package_name))
+        self.module = importlib.import_module(
+            "{name}.main".format(name=self.package_name)
+        )
         self._managed_plugins = []
         self.plugin = self._create_plugin()
         self.addAsyncCleanup(self._terminate_managed_plugins)
@@ -88,14 +89,18 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             wait_for_bootstrap = getattr(plugin, "wait_for_bootstrap", None)
             if callable(wait_for_bootstrap):
                 wait_for_bootstrap(5.0)
-            shutdown_probe = getattr(getattr(plugin, "source_probe_service", None), "shutdown", None)
+            shutdown_probe = getattr(
+                getattr(plugin, "source_probe_service", None), "shutdown", None
+            )
             if callable(shutdown_probe):
                 shutdown_probe(5.0)
         for name in list(sys.modules):
             if name.startswith("astrbot"):
                 sys.modules.pop(name, None)
         for name in list(sys.modules):
-            if name == self.package_name or name.startswith("{name}.".format(name=self.package_name)):
+            if name == self.package_name or name.startswith(
+                "{name}.".format(name=self.package_name)
+            ):
                 sys.modules.pop(name, None)
         if self._inserted_sys_path:
             try:
@@ -105,7 +110,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.tempdir.cleanup()
 
     def _create_plugin(self, config=None):
-        plugin = self.module.JsonlNovelDownloaderPlugin(context=object(), config=config or {})
+        plugin = self.module.JsonlNovelDownloaderPlugin(
+            context=object(), config=config or {}
+        )
         self._managed_plugins.append(plugin)
         return plugin
 
@@ -115,7 +122,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             if inspect.iscoroutinefunction(terminate):
                 await terminate()
                 continue
-            shutdown_probe = getattr(getattr(plugin, "source_probe_service", None), "shutdown", None)
+            shutdown_probe = getattr(
+                getattr(plugin, "source_probe_service", None), "shutdown", None
+            )
             if callable(shutdown_probe):
                 shutdown_probe(1.0)
 
@@ -212,7 +221,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         }
 
         class Handler(BaseHTTPRequestHandler):
-            def _decode_form_keyword(self, text: str, field_name: str, encoding: str) -> str:
+            def _decode_form_keyword(
+                self, text: str, field_name: str, encoding: str
+            ) -> str:
                 for part in text.split("&"):
                     if "=" not in part:
                         continue
@@ -245,7 +256,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                self.wfile.write(
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                )
 
             def do_POST(self):
                 if self.path != "/search-post":
@@ -272,7 +285,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                self.wfile.write(
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                )
 
             def log_message(self, format, *args):
                 return
@@ -359,7 +374,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
     async def test_llm_tool_accepts_runtime_call_without_event_argument(self):
         recorded = {}
 
-        async def fake_handle(keyword, source_ids_json="", limit="", include_disabled=""):
+        async def fake_handle(
+            keyword, source_ids_json="", limit="", include_disabled=""
+        ):
             recorded["keyword"] = keyword
             recorded["source_ids_json"] = source_ids_json
             recorded["limit"] = limit
@@ -416,7 +433,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_novel_refresh_sources_accepts_runtime_call_without_event_argument(self):
+    async def test_novel_refresh_sources_accepts_runtime_call_without_event_argument(
+        self,
+    ):
         recorded = {}
 
         async def fake_handle(source_ids_json="", include_disabled=""):
@@ -479,7 +498,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         original_resolve = self.plugin.book_resolution_service.resolve
         original_save_search = self.plugin.search_cache.save_search
 
-        def fake_resolve(keyword, author, source_ids=None, limit=0, include_disabled=False):
+        def fake_resolve(
+            keyword, author, source_ids=None, limit=0, include_disabled=False
+        ):
             recorded["resolve"] = {
                 "keyword": keyword,
                 "author": author,
@@ -501,7 +522,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 },
             }
 
-        def fake_save_search(keyword, result, source_ids=None, include_disabled=False, limit=0):
+        def fake_save_search(
+            keyword, result, source_ids=None, include_disabled=False, limit=0
+        ):
             recorded["save_search"] = {
                 "keyword": keyword,
                 "source_ids": source_ids,
@@ -562,7 +585,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["candidates"][0]["candidate_index"], 1)
         self.assertEqual(payload["candidates"][0]["source_id"], "source-b")
 
-    async def test_novel_probe_status_returns_paginated_summary_without_event_argument(self):
+    async def test_novel_probe_status_returns_paginated_summary_without_event_argument(
+        self,
+    ):
         recorded = {}
         original_load = self.plugin.source_registry.load_enabled_source_summaries
         original_enrich = self.plugin.source_health_store.enrich_sources
@@ -660,8 +685,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["workers_started"])
         self.assertEqual(payload["queued_probe_count"], 2)
         self.assertEqual(payload["active_probe_count"], 1)
-        self.assertEqual(payload["search_health_counts"], {"healthy": 1, "broken": 1, "unknown": 1})
-        self.assertEqual(payload["preflight_health_counts"], {"healthy": 1, "unknown": 1, "unsupported": 1})
+        self.assertEqual(
+            payload["search_health_counts"], {"healthy": 1, "broken": 1, "unknown": 1}
+        )
+        self.assertEqual(
+            payload["preflight_health_counts"],
+            {"healthy": 1, "unknown": 1, "unsupported": 1},
+        )
         self.assertEqual(payload["offset"], 1)
         self.assertEqual(payload["limit"], 1)
         self.assertEqual(payload["returned_count"], 1)
@@ -670,7 +700,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(payload["sources"]), 1)
         self.assertEqual(payload["sources"][0]["source_id"], "source-2")
 
-    async def test_novel_download_source_book_accepts_runtime_call_without_event_argument(self):
+    async def test_novel_download_source_book_accepts_runtime_call_without_event_argument(
+        self,
+    ):
         recorded = {}
 
         async def fake_handle(
@@ -722,7 +754,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "测试书",
             )
 
-    async def test_novel_read_search_results_accepts_runtime_call_without_event_argument(self):
+    async def test_novel_read_search_results_accepts_runtime_call_without_event_argument(
+        self,
+    ):
         recorded = {}
 
         async def fake_handle(search_id, limit="", offset=""):
@@ -747,7 +781,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_novel_download_cached_result_accepts_runtime_call_without_event_argument(self):
+    async def test_novel_download_cached_result_accepts_runtime_call_without_event_argument(
+        self,
+    ):
         recorded = {}
 
         async def fake_handle(
@@ -794,7 +830,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_open_url_ignores_env_proxy_by_default(self):
-        http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
+        http_utils = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.http_utils"
+        )
         called: dict[str, object] = {}
 
         class FakeResponse(object):
@@ -834,7 +872,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(called["client_kwargs"]["trust_env"])
 
     def test_open_url_can_use_env_proxy_when_enabled(self):
-        http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
+        http_utils = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.http_utils"
+        )
         called: dict[str, object] = {}
 
         class FakeResponse(object):
@@ -872,7 +912,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(called["client_kwargs"]["trust_env"])
 
     def test_open_url_reuses_httpx_client_per_proxy_mode(self):
-        http_utils = importlib.import_module("astrbot_plugin_webnovel_downloader.http_utils")
+        http_utils = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.http_utils"
+        )
         called = {
             "client_inits": 0,
             "request_timeouts": [],
@@ -963,7 +1005,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                     "bookSourceName": "测试JSON源",
                     "bookSourceUrl": "https://example.com",
                     "searchUrl": (self.base_dir / "search.json").resolve().as_uri(),
-                    "cleanRuleUrl": (self.base_dir / "clean_rules.txt").resolve().as_uri(),
+                    "cleanRuleUrl": (self.base_dir / "clean_rules.txt")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -984,7 +1028,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                     "ruleContent": {
                         "title": "h1&&text",
                         "content": "#content&&text##广告##",
-                    }
+                    },
                 }
             ],
             ensure_ascii=False,
@@ -1008,16 +1052,22 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        import_result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, source_json))
+        import_result = json.loads(
+            await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        )
         self.assertEqual(import_result["imported_count"], 1)
         self.assertTrue(Path(import_result["registry_path"]).exists())
         self.assertEqual(import_result["source_count"], 1)
 
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        listed_sources = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         self.assertEqual(listed_sources["total_count"], 1)
         self.assertEqual(listed_sources["sources"][0]["name"], "测试JSON源")
 
-        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "雪中"))
+        search_result = json.loads(
+            await self._invoke_tool(self.plugin.novel_search_books, "雪中")
+        )
         self.assertEqual(search_result["searched_sources"], 1)
         self.assertGreaterEqual(search_result["result_count"], 1)
         self.assertTrue(search_result["search_id"])
@@ -1062,7 +1112,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("预检: source=", auto_download_text)
         auto_job_id = auto_download_text.splitlines()[0].split(": ", 1)[1]
         await self.plugin._running_tasks[auto_job_id]
-        auto_status = await self._invoke_tool(self.plugin.novel_download_status, auto_job_id)
+        auto_status = await self._invoke_tool(
+            self.plugin.novel_download_status, auto_job_id
+        )
         self.assertIn("状态: assembled", auto_status)
         auto_output_path = self.plugin.manager.output_dir / "雪中悍刀行.txt"
         self.assertTrue(auto_output_path.exists())
@@ -1104,7 +1156,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
         self.assertIn("状态: assembled", status_text)
 
-        assembled_text = await self._invoke_tool(self.plugin.novel_assemble_book, job_id, "false")
+        assembled_text = await self._invoke_tool(
+            self.plugin.novel_assemble_book, job_id, "false"
+        )
         self.assertIn("状态: assembled", assembled_text)
 
     async def test_novel_download_end_to_end(self):
@@ -1158,7 +1212,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                             {
                                 "title": "自动下载测试书",
                                 "author": "自动作者",
-                                "url": (self.base_dir / "auto-good-book.html").resolve().as_uri(),
+                                "url": (self.base_dir / "auto-good-book.html")
+                                .resolve()
+                                .as_uri(),
                                 "intro": "成功候选",
                             }
                         ]
@@ -1173,7 +1229,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "A失败源",
                     "bookSourceUrl": "https://example.com/bad",
-                    "searchUrl": (self.base_dir / "auto-bad-search.json").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "auto-bad-search.json")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -1192,7 +1250,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "B成功源",
                     "bookSourceUrl": "https://example.com/good",
-                    "searchUrl": (self.base_dir / "auto-good-search.json").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "auto-good-search.json")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -1235,12 +1295,16 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(prepare_result["status"], "manual_selection_required")
         self.assertTrue(prepare_result["download_blocked"])
-        self.assertEqual(prepare_result["recommended_next_tool"], "novel_download_source_book")
+        self.assertEqual(
+            prepare_result["recommended_next_tool"], "novel_download_source_book"
+        )
         self.assertGreaterEqual(prepare_result["candidate_count"], 2)
         self.assertTrue(Path(prepare_result["search_path"]).exists())
 
         selected_candidate = next(
-            item for item in prepare_result["candidates"] if item["source_name"] == "B成功源"
+            item
+            for item in prepare_result["candidates"]
+            if item["source_name"] == "B成功源"
         )
         download_text = await self._invoke_tool(
             self.plugin.novel_download_source_book,
@@ -1330,7 +1394,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         self.plugin.auto_probe_on_import = False
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        listed_sources = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         source_id = listed_sources["sources"][0]["source_id"]
 
         source_detail = json.loads(
@@ -1372,7 +1438,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                             {
                                 "title": "命令测试书",
                                 "author": "命令作者",
-                                "url": (self.base_dir / "cmd-book.html").resolve().as_uri(),
+                                "url": (self.base_dir / "cmd-book.html")
+                                .resolve()
+                                .as_uri(),
                                 "intro": "命令简介",
                             }
                         ]
@@ -1398,7 +1466,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "命令测试源",
                     "bookSourceUrl": "https://example.com",
-                    "searchUrl": (self.base_dir / "search-command.json").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "search-command.json")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -1424,13 +1494,17 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        import_text = await self._invoke_command(self.plugin.novel_import_command, source_json)
+        import_text = await self._invoke_command(
+            self.plugin.novel_import_command, source_json
+        )
         self.assertIn("imported_count", import_text)
 
         sources_text = await self._invoke_command(self.plugin.novel_sources_command)
         self.assertIn("命令测试源", sources_text)
 
-        search_text = await self._invoke_command(self.plugin.novel_search_command, "命令测试书")
+        search_text = await self._invoke_command(
+            self.plugin.novel_search_command, "命令测试书"
+        )
         self.assertIn("search_id", search_text)
         payload = json.loads(search_text)
 
@@ -1531,7 +1605,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        plugin_base = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.plugin_base"
+        )
         original_loader = plugin_base.load_text_argument
         started = threading.Event()
         unblock = threading.Event()
@@ -1598,7 +1674,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(plugin.wait_for_bootstrap(2.0))
         self.assertEqual(len(plugin.source_registry.list_sources()), 1)
 
-        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        plugin_base = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.plugin_base"
+        )
         original_loader = plugin_base.load_text_argument
 
         def should_not_run(*args, **kwargs):
@@ -1616,13 +1694,17 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             plugin_base.load_text_argument = original_loader
 
     def test_install_bundled_skill_uses_skill_manager_and_syncs_sandbox(self):
-        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
         skill_dir = self.plugin_dir / "skills" / "webnovel-downloader-workflow"
 
         astrbot_core_skills = types.ModuleType("astrbot.core.skills")
-        astrbot_core_skill_manager = types.ModuleType("astrbot.core.skills.skill_manager")
+        astrbot_core_skill_manager = types.ModuleType(
+            "astrbot.core.skills.skill_manager"
+        )
         astrbot_core_computer = types.ModuleType("astrbot.core.computer")
-        astrbot_core_computer_client = types.ModuleType("astrbot.core.computer.computer_client")
+        astrbot_core_computer_client = types.ModuleType(
+            "astrbot.core.computer.computer_client"
+        )
 
         recorded: dict[str, object] = {}
         synced_calls: list[bool] = []
@@ -1674,7 +1756,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(synced_calls, [True])
 
     def test_plugin_bootstrap_auto_installs_bundled_skills_in_background(self):
-        plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        plugin_base = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.plugin_base"
+        )
         demo_skill_dir = self.base_dir / "demo-skill"
         demo_skill_dir.mkdir(parents=True, exist_ok=True)
         (demo_skill_dir / "SKILL.md").write_text(
@@ -1764,7 +1848,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.plugin.manager.get_status = slow_get_status
         try:
             start = time.perf_counter()
-            task = asyncio.create_task(self.plugin.handle_novel_download_status("job-1"))
+            task = asyncio.create_task(
+                self.plugin.handle_novel_download_status("job-1")
+            )
             await asyncio.sleep(0.01)
             elapsed = time.perf_counter() - start
             self.assertLess(elapsed, 0.1)
@@ -1806,7 +1892,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.plugin.renderer.render_import_summary = slow_render
         try:
             start = time.perf_counter()
-            task = asyncio.create_task(self.plugin.handle_novel_import_sources(source_json))
+            task = asyncio.create_task(
+                self.plugin.handle_novel_import_sources(source_json)
+            )
             await asyncio.sleep(0.01)
             elapsed = time.perf_counter() - start
             self.assertLess(elapsed, 0.1)
@@ -1823,7 +1911,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         class FakeRegistry(object):
-            def load_enabled_source_summaries(self, source_ids=None, include_disabled=False):
+            def load_enabled_source_summaries(
+                self, source_ids=None, include_disabled=False
+            ):
                 return [
                     {
                         "source_id": "fast",
@@ -1881,7 +1971,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["result_count"], 1)
         self.assertEqual(result["results"][0]["title"], "诡秘之主")
 
-    def test_search_service_prioritizes_healthy_sources_and_stops_after_exact_matches(self):
+    def test_search_service_prioritizes_healthy_sources_and_stops_after_exact_matches(
+        self,
+    ):
         search_module = importlib.import_module(
             "astrbot_plugin_webnovel_downloader.core.search_service"
         )
@@ -1919,7 +2011,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         search_order: list[str] = []
 
         class FakeRegistry(object):
-            def load_enabled_source_summaries(self, source_ids=None, include_disabled=False):
+            def load_enabled_source_summaries(
+                self, source_ids=None, include_disabled=False
+            ):
                 return [
                     {
                         "source_id": "slow",
@@ -1999,9 +2093,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.manager.config.max_workers, 4)
         self.assertEqual(runtime.search_service.config.max_workers, 9)
         self.assertEqual(runtime.search_service.engine.config.request_timeout, 5.0)
-        self.assertEqual(runtime.source_download_service.engine.config.request_timeout, 20.0)
+        self.assertEqual(
+            runtime.source_download_service.engine.config.request_timeout, 20.0
+        )
         self.assertTrue(
-            str(runtime.search_service.config.health_path).endswith("search_source_health.json")
+            str(runtime.search_service.config.health_path).endswith(
+                "search_source_health.json"
+            )
         )
         self.assertTrue(
             str(runtime.source_health_store.path).endswith("source_health.json")
@@ -2039,6 +2137,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         queued_source_ids: list[str] = []
         original_enqueue_sources = self.plugin.source_probe_service.enqueue_sources
         try:
+
             def fake_enqueue_sources(source_ids):
                 queued_source_ids.extend(list(source_ids))
                 return {
@@ -2047,7 +2146,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 }
 
             self.plugin.source_probe_service.enqueue_sources = fake_enqueue_sources
-            imported = json.loads(await self.plugin.handle_novel_import_sources(source_json))
+            imported = json.loads(
+                await self.plugin.handle_novel_import_sources(source_json)
+            )
         finally:
             self.plugin.source_probe_service.enqueue_sources = original_enqueue_sources
 
@@ -2072,12 +2173,20 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             summary="尚未进行正文下载探测",
         )
 
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        listed_sources = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         self.assertEqual(listed_sources["sources"][0]["source_id"], source_id)
         self.assertEqual(listed_sources["sources"][0]["search_health_state"], "healthy")
-        self.assertEqual(listed_sources["sources"][0]["search_health_summary"], "搜索探测成功")
-        self.assertEqual(listed_sources["sources"][0]["preflight_health_state"], "unknown")
-        self.assertEqual(listed_sources["sources"][0]["download_health_state"], "unknown")
+        self.assertEqual(
+            listed_sources["sources"][0]["search_health_summary"], "搜索探测成功"
+        )
+        self.assertEqual(
+            listed_sources["sources"][0]["preflight_health_state"], "unknown"
+        )
+        self.assertEqual(
+            listed_sources["sources"][0]["download_health_state"], "unknown"
+        )
 
     async def test_import_sources_can_disable_auto_probe(self):
         plugin = self._create_plugin(config={"auto_probe_on_import": False})
@@ -2106,6 +2215,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         queued_source_ids: list[str] = []
         original_enqueue_sources = plugin.source_probe_service.enqueue_sources
         try:
+
             def fake_enqueue_sources(source_ids):
                 queued_source_ids.extend(list(source_ids))
                 return {
@@ -2252,7 +2362,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                             {
                                 "title": "缓存小说",
                                 "author": "缓存作者",
-                                "url": (self.base_dir / "cache-book.html").resolve().as_uri(),
+                                "url": (self.base_dir / "cache-book.html")
+                                .resolve()
+                                .as_uri(),
                                 "intro": "缓存简介",
                             }
                         ]
@@ -2267,7 +2379,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "缓存测试源",
                     "bookSourceUrl": "https://example.com",
-                    "searchUrl": (self.base_dir / "cache-search.json").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "cache-search.json")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -2294,12 +2408,16 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "缓存小说"))
+        search_result = json.loads(
+            await self._invoke_tool(self.plugin.novel_search_books, "缓存小说")
+        )
         search_id = search_result["search_id"]
         self.assertTrue(search_id)
         self.assertEqual(search_result["results"][0]["result_index"], 0)
 
-        searches = json.loads(await self._invoke_tool(self.plugin.novel_list_searches, "10", "0"))
+        searches = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_searches, "10", "0")
+        )
         self.assertEqual(searches["total_count"], 1)
         self.assertEqual(searches["searches"][0]["search_id"], search_id)
 
@@ -2359,7 +2477,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                             {
                                 "title": "净化仓库测试书",
                                 "author": "净化作者",
-                                "url": (self.base_dir / "clean-repo-book.html").resolve().as_uri(),
+                                "url": (self.base_dir / "clean-repo-book.html")
+                                .resolve()
+                                .as_uri(),
                                 "intro": "正文净化测试",
                             }
                         ]
@@ -2374,7 +2494,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "净化仓库测试源",
                     "bookSourceUrl": "https://example.com",
-                    "searchUrl": (self.base_dir / "clean-repo-search.json").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "clean-repo-search.json")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -2426,11 +2548,15 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(import_result["scoped_rule_count"], 1)
         self.assertTrue(Path(import_result["path"]).exists())
 
-        repo_list = json.loads(await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0"))
+        repo_list = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0")
+        )
         self.assertEqual(repo_list["total_count"], 1)
         self.assertEqual(repo_list["repositories"][0]["name"], "测试净化仓库")
 
-        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "净化仓库测试书"))
+        search_result = json.loads(
+            await self._invoke_tool(self.plugin.novel_search_books, "净化仓库测试书")
+        )
         download_text = await self._invoke_tool(
             self.plugin.novel_download_search_result,
             search_result["search_id"],
@@ -2486,7 +2612,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["rule_count"], 1)
         self.assertEqual(result["skipped_rule_count"], 2)
 
-        repo_list = json.loads(await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0"))
+        repo_list = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0")
+        )
         self.assertEqual(repo_list["repositories"][0]["rule_count"], 1)
         self.assertEqual(repo_list["repositories"][0]["skipped_rule_count"], 2)
 
@@ -2521,13 +2649,17 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, rss_like_source))
+        result = json.loads(
+            await self._invoke_tool(self.plugin.novel_import_sources, rss_like_source)
+        )
         self.assertEqual(result["imported_count"], 1)
         self.assertEqual(result["supported_search_count"], 0)
         self.assertEqual(result["supported_download_count"], 0)
         self.assertGreater(result["warning_count"], 0)
         self.assertTrue(result["warnings_preview"])
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        listed_sources = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         source = listed_sources["sources"][0]
         self.assertEqual(source["name"], "源仓库(官方纯净)")
         self.assertFalse(source["supports_search"])
@@ -2564,11 +2696,15 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, js_heavy_source))
+        result = json.loads(
+            await self._invoke_tool(self.plugin.novel_import_sources, js_heavy_source)
+        )
         self.assertEqual(result["imported_count"], 1)
         self.assertEqual(result["supported_search_count"], 0)
         self.assertEqual(result["supported_download_count"], 0)
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        listed_sources = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         source = listed_sources["sources"][0]
         self.assertTrue(source["has_js_lib"])
         self.assertTrue(source["has_login_flow"])
@@ -2576,12 +2712,18 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(source["download_uses_js"])
         self.assertFalse(source["supports_search"])
         self.assertFalse(source["supports_download"])
-        self.assertTrue(any("ruleSearch 含 JS 规则" in issue for issue in source["issues"]))
+        self.assertTrue(
+            any("ruleSearch 含 JS 规则" in issue for issue in source["issues"])
+        )
 
-        search_result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "雪中"))
+        search_result = json.loads(
+            await self._invoke_tool(self.plugin.novel_search_books, "雪中")
+        )
         self.assertEqual(search_result["searched_sources"], 0)
         self.assertEqual(len(search_result["skipped_sources"]), 1)
-        self.assertIn("ruleSearch 含 JS 规则", search_result["skipped_sources"][0]["reason"])
+        self.assertIn(
+            "ruleSearch 含 JS 规则", search_result["skipped_sources"][0]["reason"]
+        )
 
     async def test_download_book_rejects_js_only_download_source_before_fetch(self):
         partial_source = json.dumps(
@@ -2609,8 +2751,12 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        import_result = json.loads(await self._invoke_tool(self.plugin.novel_import_sources, partial_source))
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        json.loads(
+            await self._invoke_tool(self.plugin.novel_import_sources, partial_source)
+        )
+        listed_sources = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         source_id = listed_sources["sources"][0]["source_id"]
         self.assertTrue(listed_sources["sources"][0]["supports_search"])
         self.assertFalse(listed_sources["sources"][0]["supports_download"])
@@ -2624,8 +2770,12 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "",
                 "true",
             )
-        listed_again = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
-        self.assertEqual(listed_again["sources"][0]["preflight_health_state"], "unsupported")
+        listed_again = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
+        self.assertEqual(
+            listed_again["sources"][0]["preflight_health_state"], "unsupported"
+        )
 
     async def test_download_book_records_preflight_failure_before_starting_task(self):
         source_json = json.dumps(
@@ -2655,10 +2805,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        listed_sources = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        listed_sources = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         source_id = listed_sources["sources"][0]["source_id"]
         original_preflight = self.plugin.source_download_service.preflight_book
         try:
+
             def fake_preflight(*args, **kwargs):
                 raise ValueError("未解析到目录，请检查 ruleToc")
 
@@ -2676,16 +2829,22 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             self.plugin.source_download_service.preflight_book = original_preflight
 
         self.assertEqual(self.plugin._running_tasks, {})
-        listed_again = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        listed_again = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources)
+        )
         self.assertEqual(listed_again["sources"][0]["preflight_health_state"], "broken")
-        self.assertIn("未解析到目录", listed_again["sources"][0]["preflight_health_summary"])
+        self.assertIn(
+            "未解析到目录", listed_again["sources"][0]["preflight_health_summary"]
+        )
 
     async def test_bulk_import_returns_compact_summary_with_local_registry(self):
         sources = [
             {
                 "bookSourceName": "测试源{index}".format(index=index),
                 "bookSourceUrl": "https://example.com/{index}".format(index=index),
-                "searchUrl": "https://example.com/search?q={{key}}&source={index}".format(index=index),
+                "searchUrl": "https://example.com/search?q={{key}}&source={index}".format(
+                    index=index
+                ),
                 "ruleSearch": {
                     "bookList": "data.items",
                     "name": "title",
@@ -2709,18 +2868,26 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["imported_count"], 12)
         self.assertEqual(result["source_count"], 12)
-        self.assertLessEqual(len(result["sources_preview"]), self.plugin.max_tool_preview_items)
+        self.assertLessEqual(
+            len(result["sources_preview"]), self.plugin.max_tool_preview_items
+        )
         self.assertGreater(result["remaining_source_count"], 0)
         self.assertTrue(Path(result["registry_path"]).exists())
         self.assertNotIn("sources", result)
 
-        second_page = json.loads(await self._invoke_tool(self.plugin.novel_list_sources, "", "4", "8"))
+        second_page = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources, "", "4", "8")
+        )
         self.assertEqual(second_page["returned_count"], 4)
         self.assertFalse(second_page["has_more"])
 
-        compact_page = json.loads(await self._invoke_tool(self.plugin.novel_list_sources, "", "12", "0"))
+        compact_page = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_sources, "", "12", "0")
+        )
         self.assertEqual(compact_page["returned_count"], 12)
-        self.assertLessEqual(len(compact_page["sources"]), self.plugin.max_tool_preview_items)
+        self.assertLessEqual(
+            len(compact_page["sources"]), self.plugin.max_tool_preview_items
+        )
         self.assertGreater(compact_page["omitted_from_inline_count"], 0)
         self.assertIn("report_path", compact_page)
         self.assertTrue(Path(compact_page["report_path"]).exists())
@@ -2740,7 +2907,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "搜索大结果源",
                     "bookSourceUrl": "https://example.com",
-                    "searchUrl": (self.base_dir / "search-many.json").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "search-many.json")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -2765,7 +2934,11 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "测试", "", "12", "false"))
+        result = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_search_books, "测试", "", "12", "false"
+            )
+        )
         self.assertEqual(result["result_count"], 12)
         self.assertTrue(result["search_id"])
         self.assertLessEqual(len(result["results"]), self.plugin.max_tool_preview_items)
@@ -2779,7 +2952,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "GBK GET 源",
                     "bookSourceUrl": base_url,
-                    "searchUrl": "/search-gbk?key={{key}}&page={{page}},{\"charset\":\"gbk\"}",
+                    "searchUrl": '/search-gbk?key={{key}}&page={{page}},{"charset":"gbk"}',
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -2798,7 +2971,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "GBK POST 源",
                     "bookSourceUrl": base_url,
-                    "searchUrl": "/search-post,{\"method\":\"POST\",\"charset\":\"gbk\",\"body\":\"searchkey={{key}}&searchtype=all\"}",
+                    "searchUrl": '/search-post,{"method":"POST","charset":"gbk","body":"searchkey={{key}}&searchtype=all"}',
                     "ruleSearch": {
                         "bookList": "data.items",
                         "name": "title",
@@ -2819,7 +2992,11 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
 
-        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主", "", "10", "false"))
+        result = json.loads(
+            await self._invoke_tool(
+                self.plugin.novel_search_books, "诡秘之主", "", "10", "false"
+            )
+        )
         self.assertEqual(result["searched_sources"], 2)
         self.assertEqual(result["successful_sources"], 2)
         self.assertEqual(result["result_count"], 2)
@@ -2837,7 +3014,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "模板字段搜索源",
                     "bookSourceUrl": "https://example.com",
-                    "searchUrl": (self.base_dir / "search-template.json").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "search-template.json")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": "[*]",
                         "name": "name",
@@ -2874,7 +3053,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主"))
+        result = json.loads(
+            await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主")
+        )
         self.assertEqual(result["result_count"], 1)
         self.assertEqual(
             result["results"][0]["book_url"],
@@ -2888,7 +3069,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "bookSourceName": "HTML链式搜索源",
                     "bookSourceUrl": "https://example.com",
-                    "searchUrl": (self.base_dir / "search-chain.html").resolve().as_uri(),
+                    "searchUrl": (self.base_dir / "search-chain.html")
+                    .resolve()
+                    .as_uri(),
                     "ruleSearch": {
                         "bookList": ".mybook@.hot_sale",
                         "name": "p.0@text",
@@ -2926,14 +3109,18 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        result = json.loads(await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主"))
+        result = json.loads(
+            await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主")
+        )
         self.assertEqual(result["result_count"], 1)
         self.assertEqual(result["successful_sources"], 1)
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["results"][0]["title"], "诡秘之主")
         self.assertIn("爱潜水的乌贼", result["results"][0]["author"])
         self.assertEqual(result["results"][0]["kind"], "玄幻")
-        self.assertEqual(result["results"][0]["book_url"], "https://example.com/books/1")
+        self.assertEqual(
+            result["results"][0]["book_url"], "https://example.com/books/1"
+        )
 
     async def test_build_plan_supports_css_attr_value_and_current_node_template(self):
         toc_path = self.base_dir / "attr-toc.html"
@@ -2969,7 +3156,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                     "ruleBookInfo": {
                         "name": "[property=og:novel:book_name]@content",
                         "author": "[property=og:novel:author]@content",
-                        "intro": "更新时间：{{@@[property=\"og:novel:update_time\"]@content##-##/}}",
+                        "intro": '更新时间：{{@@[property="og:novel:update_time"]@content##-##/}}',
                         "tocUrl": "#toc-link@href",
                     },
                     "ruleToc": {
@@ -2985,7 +3172,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
-        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        source = self.plugin.source_registry.load_normalized_source(
+            sources[0]["source_id"]
+        )
         plan = self.plugin.search_service.engine.build_book_download_plan(
             source,
             detail_path.resolve().as_uri(),
@@ -2997,7 +3186,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2026/04/17", plan["intro"])
         self.assertEqual(plan["toc"][0]["title"], "第一章")
 
-    async def test_fetch_chapter_content_supports_text_paging_multi_node_and_replace_regex(self):
+    async def test_fetch_chapter_content_supports_text_paging_multi_node_and_replace_regex(
+        self,
+    ):
         chapter_page_2 = self.base_dir / "chapter-page-2.html"
         chapter_page_1 = self.base_dir / "chapter-page-1.html"
 
@@ -3044,7 +3235,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
-        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        source = self.plugin.source_registry.load_normalized_source(
+            sources[0]["source_id"]
+        )
         chapter = self.plugin.search_service.engine.fetch_chapter_content(
             source,
             chapter_page_1.resolve().as_uri(),
@@ -3057,7 +3250,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("(第1/2页)", chapter["content"])
         self.assertNotIn("(第2/2页)", chapter["content"])
 
-    async def test_fetch_chapter_content_removes_generic_page_markers_without_replace_regex(self):
+    async def test_fetch_chapter_content_removes_generic_page_markers_without_replace_regex(
+        self,
+    ):
         chapter_page_2 = self.base_dir / "chapter-generic-page-2.html"
         chapter_page_1 = self.base_dir / "chapter-generic-page-1.html"
 
@@ -3103,7 +3298,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
-        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        source = self.plugin.source_registry.load_normalized_source(
+            sources[0]["source_id"]
+        )
         chapter = self.plugin.search_service.engine.fetch_chapter_content(
             source,
             chapter_page_1.resolve().as_uri(),
@@ -3119,9 +3316,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         chapter_pages = []
         toc_pages = []
         for index in range(1, 8):
-            chapter_path = self.base_dir / "toc-many-chapter-{index}.html".format(index=index)
+            chapter_path = self.base_dir / "toc-many-chapter-{index}.html".format(
+                index=index
+            )
             chapter_path.write_text(
-                "<html><body><div id='content'>正文{index}</div></body></html>".format(index=index),
+                "<html><body><div id='content'>正文{index}</div></body></html>".format(
+                    index=index
+                ),
                 encoding="utf-8",
             )
             chapter_pages.append(chapter_path)
@@ -3131,7 +3332,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             next_link = ""
             if page_no < 7:
                 next_link = "<a href='{href}'>下一页</a>".format(
-                    href=(self.base_dir / "toc-many-page-{page}.html".format(page=page_no + 1))
+                    href=(
+                        self.base_dir
+                        / "toc-many-page-{page}.html".format(page=page_no + 1)
+                    )
                     .resolve()
                     .as_uri()
                 )
@@ -3181,7 +3385,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
-        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        source = self.plugin.source_registry.load_normalized_source(
+            sources[0]["source_id"]
+        )
         plan = self.plugin.search_service.engine.build_book_download_plan(
             source,
             detail_path.resolve().as_uri(),
@@ -3228,7 +3434,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
-        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        source = self.plugin.source_registry.load_normalized_source(
+            sources[0]["source_id"]
+        )
         chapter = self.plugin.search_service.engine.fetch_chapter_content(
             source,
             chapter_page.resolve().as_uri(),
@@ -3241,7 +3449,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("这里是正文第二段。", chapter["content"])
         self.assertTrue(chapter["content"].splitlines()[0].startswith("\u3000\u3000"))
 
-    async def test_fetch_chapter_content_formats_chinese_paragraphs_and_merges_broken_page_lines(self):
+    async def test_fetch_chapter_content_formats_chinese_paragraphs_and_merges_broken_page_lines(
+        self,
+    ):
         chapter_page = self.base_dir / "chapter-formatting.html"
         chapter_page.write_text(
             "<html><body>"
@@ -3274,7 +3484,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self._invoke_tool(self.plugin.novel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
-        source = self.plugin.source_registry.load_normalized_source(sources[0]["source_id"])
+        source = self.plugin.source_registry.load_normalized_source(
+            sources[0]["source_id"]
+        )
         chapter = self.plugin.search_service.engine.fetch_chapter_content(
             source,
             chapter_page.resolve().as_uri(),
@@ -3305,7 +3517,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "",
             )
 
-        jobs = json.loads(await self._invoke_tool(self.plugin.novel_list_jobs, "12", "0"))
+        jobs = json.loads(
+            await self._invoke_tool(self.plugin.novel_list_jobs, "12", "0")
+        )
         self.assertEqual(jobs["returned_count"], 12)
         self.assertLessEqual(len(jobs["jobs"]), self.plugin.max_tool_preview_items)
         self.assertGreater(jobs["omitted_from_inline_count"], 0)

@@ -111,7 +111,9 @@ class SourceDownloadService:
                 "book_name": str(plan.get("book_name") or "").strip(),
                 "book_url": str(plan.get("book_url") or "").strip(),
                 "toc_url": str(plan.get("toc_url") or "").strip(),
-                "toc_count": int(plan.get("toc_count", len(plan.get("toc") or [])) or 0),
+                "toc_count": int(
+                    plan.get("toc_count", len(plan.get("toc") or [])) or 0
+                ),
                 "author": str(plan.get("author") or "").strip(),
                 "intro": str(plan.get("intro") or "").strip(),
             },
@@ -133,8 +135,12 @@ class SourceDownloadService:
             raise ValueError("preflight 结果缺少目录，无法做正文抽样")
 
         source = self.registry.load_normalized_source(source_id)
-        sample_size = max(1, int(chapter_count or 0) or int(self.config.sample_chapters))
-        min_chars = max(1, int(min_content_chars or 0) or int(self.config.sample_min_chars))
+        sample_size = max(
+            1, int(chapter_count or 0) or int(self.config.sample_chapters)
+        )
+        min_chars = max(
+            1, int(min_content_chars or 0) or int(self.config.sample_min_chars)
+        )
         chapters = self._select_sample_chapters(toc, sample_size)
         sampled_chapters: list[dict[str, Any]] = []
         sample_errors: list[dict[str, Any]] = []
@@ -155,10 +161,14 @@ class SourceDownloadService:
                 sampled_chapters.append(
                     {
                         "index": int(chapter.get("index", 0) or 0),
-                        "title": str(payload.get("title") or chapter.get("title") or "").strip(),
+                        "title": str(
+                            payload.get("title") or chapter.get("title") or ""
+                        ).strip(),
                         "url": str(chapter.get("url") or "").strip(),
                         "content_chars": len(content),
-                        "elapsed_ms": round((time.monotonic() - started_at) * 1000.0, 3),
+                        "elapsed_ms": round(
+                            (time.monotonic() - started_at) * 1000.0, 3
+                        ),
                     }
                 )
             except Exception as exc:
@@ -169,7 +179,9 @@ class SourceDownloadService:
                         "title": str(chapter.get("title") or "").strip(),
                         "url": str(chapter.get("url") or "").strip(),
                         "error": str(exc),
-                        "elapsed_ms": round((time.monotonic() - started_at) * 1000.0, 3),
+                        "elapsed_ms": round(
+                            (time.monotonic() - started_at) * 1000.0, 3
+                        ),
                     }
                 )
 
@@ -186,7 +198,9 @@ class SourceDownloadService:
             "min_content_chars": min_chars,
         }
 
-    def resume_book_job(self, job_id: str, auto_assemble: bool = True) -> Dict[str, Any]:
+    def resume_book_job(
+        self, job_id: str, auto_assemble: bool = True
+    ) -> Dict[str, Any]:
         started_at = time.monotonic()
         manifest = self.manager.load_manifest(job_id)
         metadata = manifest.get("metadata") or {}
@@ -272,7 +286,9 @@ class SourceDownloadService:
                 chapter = next(remaining)
             except StopIteration:
                 return False
-            future_map[executor.submit(self._download_one_chapter, source, chapter)] = chapter
+            future_map[executor.submit(self._download_one_chapter, source, chapter)] = (
+                chapter
+            )
             return True
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -413,15 +429,15 @@ class SourceDownloadService:
             int(self.config.stop_after_consecutive_failures or 0),
         )
         if consecutive_failures >= consecutive_limit:
-            return (
-                "连续 {count} 个章节下载失败，已停止继续派发新章节: {error}".format(
-                    count=consecutive_failures,
-                    error=error_text,
-                )
+            return "连续 {count} 个章节下载失败，已停止继续派发新章节: {error}".format(
+                count=consecutive_failures,
+                error=error_text,
             )
         return ""
 
-    def _download_one_chapter(self, source: Dict[str, Any], chapter: Dict[str, Any]) -> Dict[str, str]:
+    def _download_one_chapter(
+        self, source: Dict[str, Any], chapter: Dict[str, Any]
+    ) -> Dict[str, str]:
         try:
             return self._fetch_chapter_content(source, chapter)
         except RuleEngineError:
@@ -475,9 +491,7 @@ class SourceDownloadService:
         sample_size: int,
     ) -> list[Dict[str, Any]]:
         chapters = [
-            dict(chapter)
-            for chapter in toc
-            if str(chapter.get("url") or "").strip()
+            dict(chapter) for chapter in toc if str(chapter.get("url") or "").strip()
         ]
         if not chapters:
             return []
@@ -556,7 +570,9 @@ class SourceDownloadService:
                     {
                         "download_strategy": {
                             "last_download_state": state or "unknown",
-                            "last_completed_chapters": summary_metadata["completed_chapters"],
+                            "last_completed_chapters": summary_metadata[
+                                "completed_chapters"
+                            ],
                             "last_failed_chapters": failed_chapters,
                         }
                     },
@@ -569,7 +585,9 @@ class SourceDownloadService:
         if summary.get("supports_download"):
             if self.source_health_store is not None:
                 try:
-                    health = dict(self.source_health_store.get_source_health(source_id) or {})
+                    health = dict(
+                        self.source_health_store.get_source_health(source_id) or {}
+                    )
                 except Exception:
                     health = {}
                 for stage in ("preflight", "download"):
@@ -577,7 +595,11 @@ class SourceDownloadService:
                     stage_state = str(stage_entry.get("state", "unknown") or "unknown")
                     if stage_state != "unsupported":
                         continue
-                    issues = str(stage_entry.get("note") or stage_entry.get("last_error_summary") or "").strip()
+                    issues = str(
+                        stage_entry.get("note")
+                        or stage_entry.get("last_error_summary")
+                        or ""
+                    ).strip()
                     raise ValueError(
                         "书源 {name} 当前不支持 TXT 下载：{issues}".format(
                             name=summary.get("name") or source_id,
@@ -585,7 +607,9 @@ class SourceDownloadService:
                         )
                     )
             return summary
-        issues = "；".join(summary.get("issues") or []) or "当前书源不支持 route A TXT 下载"
+        issues = (
+            "；".join(summary.get("issues") or []) or "当前书源不支持 route A TXT 下载"
+        )
         raise ValueError(
             "书源 {name} 当前不支持 TXT 下载：{issues}".format(
                 name=summary.get("name") or source_id,

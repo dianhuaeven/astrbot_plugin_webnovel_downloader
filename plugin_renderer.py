@@ -78,8 +78,13 @@ class ToolResultRenderer:
                 "returned_count": len(sliced),
                 "previewed_count": preview_count,
                 "has_more": offset + len(sliced) < total,
-                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
-                "repositories": [self._compact_clean_rule_repo(item) for item in sliced[:preview_count]],
+                "next_offset": offset + len(sliced)
+                if offset + len(sliced) < total
+                else None,
+                "repositories": [
+                    self._compact_clean_rule_repo(item)
+                    for item in sliced[:preview_count]
+                ],
                 "omitted_from_inline_count": max(0, len(sliced) - preview_count),
             }
         )
@@ -101,7 +106,10 @@ class ToolResultRenderer:
                 "registry_path": str(self.source_registry.registry_path),
                 "raw_dir": str(self.source_registry.raw_dir),
                 "normalized_dir": str(self.source_registry.normalized_dir),
-                "sources_preview": [self._compact_source(item) for item in sources[:source_preview_count]],
+                "sources_preview": [
+                    self._compact_source(item)
+                    for item in sources[:source_preview_count]
+                ],
                 "warnings_preview": [
                     self.truncate_text(item, self.config.max_tool_preview_text)
                     for item in warnings[:warning_preview_count]
@@ -109,7 +117,9 @@ class ToolResultRenderer:
                 "queued_probe_count": int(result.get("queued_probe_count", 0) or 0),
                 "probe_queue_size": int(result.get("probe_queue_size", 0) or 0),
                 "remaining_source_count": max(0, len(sources) - source_preview_count),
-                "remaining_warning_count": max(0, len(warnings) - warning_preview_count),
+                "remaining_warning_count": max(
+                    0, len(warnings) - warning_preview_count
+                ),
             }
             if report_path:
                 summary["report_path"] = report_path
@@ -157,9 +167,13 @@ class ToolResultRenderer:
                 "requested_count": len(sliced),
                 "previewed_count": preview_count,
                 "has_more": offset + len(sliced) < total,
-                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+                "next_offset": offset + len(sliced)
+                if offset + len(sliced) < total
+                else None,
                 "registry_path": str(self.source_registry.registry_path),
-                "sources": [self._compact_source(item) for item in sliced[:preview_count]],
+                "sources": [
+                    self._compact_source(item) for item in sliced[:preview_count]
+                ],
                 "omitted_from_inline_count": max(0, len(sliced) - preview_count),
             }
             if report_path:
@@ -207,13 +221,19 @@ class ToolResultRenderer:
         health: dict[str, Any],
         profile: dict[str, Any] | None,
     ) -> str:
-        source_id = str(source.get("source_id") or normalized_source.get("source_id") or "").strip()
+        source_id = str(
+            source.get("source_id") or normalized_source.get("source_id") or ""
+        ).strip()
         payload = {
             "source": self._compact_source(source),
             "paths": {
-                "raw_path": str(self.source_registry.raw_dir / "{source_id}.json".format(source_id=source_id)),
+                "raw_path": str(
+                    self.source_registry.raw_dir
+                    / "{source_id}.json".format(source_id=source_id)
+                ),
                 "normalized_path": str(
-                    self.source_registry.normalized_dir / "{source_id}.json".format(source_id=source_id)
+                    self.source_registry.normalized_dir
+                    / "{source_id}.json".format(source_id=source_id)
                 ),
                 "registry_path": str(self.source_registry.registry_path),
             },
@@ -223,10 +243,18 @@ class ToolResultRenderer:
                 "single_url": normalized_source.get("single_url", ""),
                 "enabled": bool(normalized_source.get("enabled", False)),
                 "group": self.truncate_text(normalized_source.get("group", ""), 80),
-                "rule_search_keys": sorted((normalized_source.get("rule_search") or {}).keys()),
-                "rule_book_info_keys": sorted((normalized_source.get("rule_book_info") or {}).keys()),
-                "rule_toc_keys": sorted((normalized_source.get("rule_toc") or {}).keys()),
-                "rule_content_keys": sorted((normalized_source.get("rule_content") or {}).keys()),
+                "rule_search_keys": sorted(
+                    (normalized_source.get("rule_search") or {}).keys()
+                ),
+                "rule_book_info_keys": sorted(
+                    (normalized_source.get("rule_book_info") or {}).keys()
+                ),
+                "rule_toc_keys": sorted(
+                    (normalized_source.get("rule_toc") or {}).keys()
+                ),
+                "rule_content_keys": sorted(
+                    (normalized_source.get("rule_content") or {}).keys()
+                ),
             },
             "health": self._compact_source_health(health),
             "profile": self._compact_source_profile(profile or {}),
@@ -246,8 +274,12 @@ class ToolResultRenderer:
         skipped_candidates = all_skipped_candidates[offset : offset + limit]
         search_result = dict(resolution.get("search_result") or {})
         errors = list(search_result.get("errors") or [])
-        candidate_preview_count = min(self.config.max_tool_preview_items, len(candidates))
-        skipped_preview_count = min(self.config.max_tool_preview_items, len(skipped_candidates))
+        candidate_preview_count = min(
+            self.config.max_tool_preview_items, len(candidates)
+        )
+        skipped_preview_count = min(
+            self.config.max_tool_preview_items, len(skipped_candidates)
+        )
         error_preview_count = min(self.config.max_tool_preview_items, len(errors))
         report_path = ""
 
@@ -269,10 +301,16 @@ class ToolResultRenderer:
                 "returned_skipped_candidate_count": len(skipped_candidates),
                 "has_more_candidates": offset + len(candidates) < len(all_candidates),
                 "next_candidate_offset": (
-                    offset + len(candidates) if offset + len(candidates) < len(all_candidates) else None
+                    offset + len(candidates)
+                    if offset + len(candidates) < len(all_candidates)
+                    else None
                 ),
-                "timed_out_source_count": search_result.get("timed_out_source_count", 0),
-                "unsearched_source_count": search_result.get("unsearched_source_count", 0),
+                "timed_out_source_count": search_result.get(
+                    "timed_out_source_count", 0
+                ),
+                "unsearched_source_count": search_result.get(
+                    "unsearched_source_count", 0
+                ),
                 "result_count": search_result.get("result_count", 0),
                 "candidate_count": len(all_candidates),
                 "skipped_candidate_count": len(all_skipped_candidates),
@@ -281,14 +319,18 @@ class ToolResultRenderer:
                     for item in candidates[:candidate_preview_count]
                 ],
                 "skipped_candidates": [
-                    self._compact_auto_download_candidate(item, include_skip_reason=True)
+                    self._compact_auto_download_candidate(
+                        item, include_skip_reason=True
+                    )
                     for item in skipped_candidates[:skipped_preview_count]
                 ],
                 "errors": [
                     self._compact_search_notice(item, "error")
                     for item in errors[:error_preview_count]
                 ],
-                "omitted_candidate_count": max(0, len(candidates) - candidate_preview_count),
+                "omitted_candidate_count": max(
+                    0, len(candidates) - candidate_preview_count
+                ),
                 "omitted_skipped_candidate_count": max(
                     0, len(skipped_candidates) - skipped_preview_count
                 ),
@@ -354,15 +396,23 @@ class ToolResultRenderer:
             "max_workers": int(probe_status.get("max_workers", 0) or 0),
             "queued_source_ids": list(probe_status.get("queued_source_ids") or []),
             "active_source_ids": list(probe_status.get("active_source_ids") or []),
-            "omitted_queued_count": int(probe_status.get("omitted_queued_count", 0) or 0),
-            "omitted_active_count": int(probe_status.get("omitted_active_count", 0) or 0),
+            "omitted_queued_count": int(
+                probe_status.get("omitted_queued_count", 0) or 0
+            ),
+            "omitted_active_count": int(
+                probe_status.get("omitted_active_count", 0) or 0
+            ),
             "offset": offset,
             "limit": limit,
             "returned_count": len(sliced),
             "previewed_count": preview_count,
             "has_more": offset + len(sliced) < total,
-            "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
-            "requested_source_ids": requested_source_ids[: self.config.max_tool_preview_items],
+            "next_offset": offset + len(sliced)
+            if offset + len(sliced) < total
+            else None,
+            "requested_source_ids": requested_source_ids[
+                : self.config.max_tool_preview_items
+            ],
             "search_health_counts": self._count_stage_states(sources, "search"),
             "preflight_health_counts": self._count_stage_states(sources, "preflight"),
             "download_health_counts": self._count_stage_states(sources, "download"),
@@ -397,8 +447,12 @@ class ToolResultRenderer:
         queued_result: dict[str, Any],
         probe_status: dict[str, Any],
     ) -> str:
-        selected_preview_count = min(self.config.max_tool_preview_items, len(selected_sources))
-        ignored_preview_count = min(self.config.max_tool_preview_items, len(ignored_source_ids))
+        selected_preview_count = min(
+            self.config.max_tool_preview_items, len(selected_sources)
+        )
+        ignored_preview_count = min(
+            self.config.max_tool_preview_items, len(ignored_source_ids)
+        )
         report_path = ""
 
         while True:
@@ -418,8 +472,12 @@ class ToolResultRenderer:
                     self._compact_source(item)
                     for item in selected_sources[:selected_preview_count]
                 ],
-                "remaining_source_count": max(0, len(selected_sources) - selected_preview_count),
-                "remaining_ignored_count": max(0, len(ignored_source_ids) - ignored_preview_count),
+                "remaining_source_count": max(
+                    0, len(selected_sources) - selected_preview_count
+                ),
+                "remaining_ignored_count": max(
+                    0, len(ignored_source_ids) - ignored_preview_count
+                ),
             }
             if report_path:
                 summary["report_path"] = report_path
@@ -475,7 +533,9 @@ class ToolResultRenderer:
         skipped_sources = list(result.get("skipped_sources") or [])
         errors = list(result.get("errors") or [])
         result_preview_count = min(self.config.max_tool_preview_items, len(results))
-        skipped_preview_count = min(self.config.max_tool_preview_items, len(skipped_sources))
+        skipped_preview_count = min(
+            self.config.max_tool_preview_items, len(skipped_sources)
+        )
         error_preview_count = min(self.config.max_tool_preview_items, len(errors))
         report_path = ""
 
@@ -484,7 +544,9 @@ class ToolResultRenderer:
                 "keyword": result.get("keyword", ""),
                 "search_id": cache_record.get("search_id", ""),
                 "search_path": cache_record.get("path", ""),
-                "candidate_sources": result.get("candidate_sources", result.get("searched_sources", 0)),
+                "candidate_sources": result.get(
+                    "candidate_sources", result.get("searched_sources", 0)
+                ),
                 "searched_sources": result.get("searched_sources", 0),
                 "completed_sources": result.get("completed_sources", 0),
                 "successful_sources": result.get("successful_sources", 0),
@@ -505,10 +567,13 @@ class ToolResultRenderer:
                     for item in skipped_sources[:skipped_preview_count]
                 ],
                 "errors": [
-                    self._compact_search_notice(item, "error") for item in errors[:error_preview_count]
+                    self._compact_search_notice(item, "error")
+                    for item in errors[:error_preview_count]
                 ],
                 "remaining_result_count": max(0, len(results) - result_preview_count),
-                "remaining_skipped_count": max(0, len(skipped_sources) - skipped_preview_count),
+                "remaining_skipped_count": max(
+                    0, len(skipped_sources) - skipped_preview_count
+                ),
                 "remaining_error_count": max(0, len(errors) - error_preview_count),
             }
             if report_path:
@@ -553,8 +618,12 @@ class ToolResultRenderer:
             "returned_count": len(sliced),
             "previewed_count": preview_count,
             "has_more": offset + len(sliced) < total,
-            "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
-            "searches": [self._compact_search_record(item) for item in sliced[:preview_count]],
+            "next_offset": offset + len(sliced)
+            if offset + len(sliced) < total
+            else None,
+            "searches": [
+                self._compact_search_record(item) for item in sliced[:preview_count]
+            ],
             "omitted_from_inline_count": max(0, len(sliced) - preview_count),
         }
         return self.to_json_text(payload)
@@ -581,7 +650,9 @@ class ToolResultRenderer:
             "returned_count": len(sliced),
             "previewed_count": preview_count,
             "has_more": offset + len(sliced) < len(results),
-            "next_offset": offset + len(sliced) if offset + len(sliced) < len(results) else None,
+            "next_offset": offset + len(sliced)
+            if offset + len(sliced) < len(results)
+            else None,
             "results": [
                 self._compact_search_result(item, offset + index)
                 for index, item in enumerate(sliced[:preview_count])
@@ -599,7 +670,9 @@ class ToolResultRenderer:
         attempts = list(orchestration.get("attempts") or [])
         skipped_candidates = list(orchestration.get("skipped_candidates") or [])
         attempt_preview_count = min(self.config.max_tool_preview_items, len(attempts))
-        skipped_preview_count = min(self.config.max_tool_preview_items, len(skipped_candidates))
+        skipped_preview_count = min(
+            self.config.max_tool_preview_items, len(skipped_candidates)
+        )
         report_path = ""
 
         while True:
@@ -622,9 +695,13 @@ class ToolResultRenderer:
                     "successful_sources",
                     0,
                 ),
-                "result_count": orchestration.get("search_result", {}).get("result_count", 0),
+                "result_count": orchestration.get("search_result", {}).get(
+                    "result_count", 0
+                ),
                 "candidate_count": orchestration.get("candidate_count", 0),
-                "skipped_candidate_count": orchestration.get("skipped_candidate_count", 0),
+                "skipped_candidate_count": orchestration.get(
+                    "skipped_candidate_count", 0
+                ),
                 "attempt_limit": orchestration.get("attempt_limit", 0),
                 "attempted_count": orchestration.get("attempted_count", 0),
                 "selected": self._compact_auto_download_candidate(
@@ -639,7 +716,9 @@ class ToolResultRenderer:
                     for item in attempts[:attempt_preview_count]
                 ],
                 "skipped_candidates": [
-                    self._compact_auto_download_candidate(item, include_skip_reason=True)
+                    self._compact_auto_download_candidate(
+                        item, include_skip_reason=True
+                    )
                     for item in skipped_candidates[:skipped_preview_count]
                 ],
                 "omitted_attempt_count": max(0, len(attempts) - attempt_preview_count),
@@ -684,7 +763,9 @@ class ToolResultRenderer:
                 continue
             return text
 
-    def render_jobs_summary(self, jobs: list[dict[str, Any]], limit: int, offset: int) -> str:
+    def render_jobs_summary(
+        self, jobs: list[dict[str, Any]], limit: int, offset: int
+    ) -> str:
         total = len(jobs)
         sliced = jobs[offset : offset + limit]
         preview_count = min(self.config.max_tool_preview_items, len(sliced))
@@ -699,7 +780,9 @@ class ToolResultRenderer:
                 "requested_count": len(sliced),
                 "previewed_count": preview_count,
                 "has_more": offset + len(sliced) < total,
-                "next_offset": offset + len(sliced) if offset + len(sliced) < total else None,
+                "next_offset": offset + len(sliced)
+                if offset + len(sliced) < total
+                else None,
                 "jobs_dir": str(self.manager.jobs_dir),
                 "jobs": [self._compact_job(item) for item in sliced[:preview_count]],
                 "omitted_from_inline_count": max(0, len(sliced) - preview_count),
@@ -791,7 +874,10 @@ class ToolResultRenderer:
             "supports_download": bool(item.get("supports_download", False)),
             "group": self.truncate_text(item.get("group", ""), 60),
             "search_url": self.truncate_text(item.get("search_url", ""), 120),
-            "issues": [self.truncate_text(issue, 80) for issue in list(item.get("issues") or [])[:3]],
+            "issues": [
+                self.truncate_text(issue, 80)
+                for issue in list(item.get("issues") or [])[:3]
+            ],
         }
         for stage in ("search", "preflight", "download"):
             state_key = "{stage}_health_state".format(stage=stage)
@@ -800,12 +886,16 @@ class ToolResultRenderer:
             if state_key in item:
                 compact[state_key] = item.get(state_key, "")
             if summary_key in item:
-                compact[summary_key] = self.truncate_text(item.get(summary_key, ""), 100)
+                compact[summary_key] = self.truncate_text(
+                    item.get(summary_key, ""), 100
+                )
             if updated_key in item:
                 compact[updated_key] = item.get(updated_key, 0)
         return compact
 
-    def _compact_search_result(self, item: dict[str, Any], result_index: int | None = None) -> dict[str, Any]:
+    def _compact_search_result(
+        self, item: dict[str, Any], result_index: int | None = None
+    ) -> dict[str, Any]:
         compact = {
             "source_id": item.get("source_id", ""),
             "source_name": item.get("source_name", ""),
@@ -815,7 +905,9 @@ class ToolResultRenderer:
             "kind": self.truncate_text(item.get("kind", ""), 40),
             "last_chapter": self.truncate_text(item.get("last_chapter", ""), 60),
             "word_count": item.get("word_count", ""),
-            "intro": self.truncate_text(item.get("intro", ""), self.config.max_tool_preview_text),
+            "intro": self.truncate_text(
+                item.get("intro", ""), self.config.max_tool_preview_text
+            ),
         }
         if result_index is not None:
             compact["result_index"] = result_index
@@ -833,11 +925,15 @@ class ToolResultRenderer:
             "search_path": item.get("path", ""),
         }
 
-    def _compact_search_notice(self, item: dict[str, Any], message_key: str) -> dict[str, Any]:
+    def _compact_search_notice(
+        self, item: dict[str, Any], message_key: str
+    ) -> dict[str, Any]:
         return {
             "source_id": item.get("source_id", ""),
             "source_name": item.get("source_name", ""),
-            message_key: self.truncate_text(item.get(message_key, ""), self.config.max_tool_preview_text),
+            message_key: self.truncate_text(
+                item.get(message_key, ""), self.config.max_tool_preview_text
+            ),
         }
 
     def _compact_auto_download_candidate(
@@ -870,7 +966,9 @@ class ToolResultRenderer:
             ],
         }
         if include_skip_reason:
-            compact["skip_reason"] = self.truncate_text(item.get("skip_reason", ""), 120)
+            compact["skip_reason"] = self.truncate_text(
+                item.get("skip_reason", ""), 120
+            )
         return compact
 
     def _compact_auto_download_attempt(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -944,7 +1042,9 @@ class ToolResultRenderer:
             "author": preflight.get("author", ""),
             "book_url": preflight.get("book_url", ""),
             "toc_url": preflight.get("toc_url", ""),
-            "toc_count": int(preflight.get("toc_count", len(preflight.get("toc") or [])) or 0),
+            "toc_count": int(
+                preflight.get("toc_count", len(preflight.get("toc") or [])) or 0
+            ),
             "intro": self.truncate_text(preflight.get("intro", ""), 180),
         }
 
@@ -1015,7 +1115,9 @@ class ToolResultRenderer:
             "path": item.get("path", ""),
         }
 
-    def _count_stage_states(self, sources: list[dict[str, Any]], stage: str) -> dict[str, int]:
+    def _count_stage_states(
+        self, sources: list[dict[str, Any]], stage: str
+    ) -> dict[str, int]:
         counts: dict[str, int] = {}
         key = "{stage}_health_state".format(stage=stage)
         for item in sources:

@@ -30,7 +30,10 @@ class SourceProbeService:
         config: SourceProbeServiceConfig | None = None,
         source_download_service: Any = None,
     ):
-        if isinstance(source_profile_service, SourceProbeServiceConfig) and config is None:
+        if (
+            isinstance(source_profile_service, SourceProbeServiceConfig)
+            and config is None
+        ):
             config = source_profile_service
             source_profile_service = None
         self.registry = registry
@@ -81,7 +84,9 @@ class SourceProbeService:
         }
 
     def wait_for_idle(self, timeout: float | None = None) -> bool:
-        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        deadline = (
+            None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        )
         with self._idle_condition:
             while self._queued_ids or self._active_ids:
                 if deadline is None:
@@ -98,8 +103,16 @@ class SourceProbeService:
             normalized_preview_limit = max(0, int(preview_limit))
             queued_ids = sorted(self._queued_ids)
             active_ids = sorted(self._active_ids)
-            queued_preview = queued_ids[:normalized_preview_limit] if normalized_preview_limit else []
-            active_preview = active_ids[:normalized_preview_limit] if normalized_preview_limit else []
+            queued_preview = (
+                queued_ids[:normalized_preview_limit]
+                if normalized_preview_limit
+                else []
+            )
+            active_preview = (
+                active_ids[:normalized_preview_limit]
+                if normalized_preview_limit
+                else []
+            )
             return {
                 "workers_started": self._workers_started,
                 "queued_count": len(self._queued_ids),
@@ -128,9 +141,13 @@ class SourceProbeService:
                 self._queue.put(None)
             self._idle_condition.notify_all()
             workers = list(self._workers)
-        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        deadline = (
+            None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        )
         for worker in workers:
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            remaining = (
+                None if deadline is None else max(0.0, deadline - time.monotonic())
+            )
             worker.join(remaining)
         return all(not worker.is_alive() for worker in workers)
 
@@ -160,7 +177,9 @@ class SourceProbeService:
                 self._probe_source(source_id)
             except Exception as exc:
                 # A single broken source should not permanently kill the worker thread.
-                logger.exception("书源探测线程异常 source_id=%s error=%s", source_id, exc)
+                logger.exception(
+                    "书源探测线程异常 source_id=%s error=%s", source_id, exc
+                )
             finally:
                 with self._idle_condition:
                     self._active_ids.discard(source_id)
@@ -194,7 +213,9 @@ class SourceProbeService:
             except Exception:
                 pass
 
-        issues_text = "；".join(summary.get("issues") or []) or "当前书源静态规则不支持探测"
+        issues_text = (
+            "；".join(summary.get("issues") or []) or "当前书源静态规则不支持探测"
+        )
         supports_search = bool(summary.get("supports_search", False))
         supports_download = bool(summary.get("supports_download", False))
 
@@ -212,16 +233,26 @@ class SourceProbeService:
                     summary="书源不支持按书名搜索，未自动探测下载",
                 )
             else:
-                self.health_store.mark_unsupported(source_id, "preflight", summary=issues_text)
-                self.health_store.mark_unsupported(source_id, "download", summary=issues_text)
+                self.health_store.mark_unsupported(
+                    source_id, "preflight", summary=issues_text
+                )
+                self.health_store.mark_unsupported(
+                    source_id, "download", summary=issues_text
+                )
             return
 
         if not supports_download:
-            self.health_store.mark_unsupported(source_id, "preflight", summary=issues_text)
-            self.health_store.mark_unsupported(source_id, "download", summary=issues_text)
+            self.health_store.mark_unsupported(
+                source_id, "preflight", summary=issues_text
+            )
+            self.health_store.mark_unsupported(
+                source_id, "download", summary=issues_text
+            )
 
         source = self.registry.load_normalized_source(source_id)
-        keywords = tuple(self.config.probe_keywords) or SourceProbeServiceConfig.probe_keywords
+        keywords = (
+            tuple(self.config.probe_keywords) or SourceProbeServiceConfig.probe_keywords
+        )
         first_success_keyword = ""
         first_success_elapsed_ms = 0.0
         sample_keyword = ""
@@ -237,7 +268,9 @@ class SourceProbeService:
             except Exception as exc:
                 last_error_code = self._classify_error_code(exc)
                 last_error_summary = str(exc)
-                last_error_elapsed_ms = max(0.0, (time.monotonic() - started_at) * 1000.0)
+                last_error_elapsed_ms = max(
+                    0.0, (time.monotonic() - started_at) * 1000.0
+                )
                 continue
 
             elapsed_ms = max(0.0, (time.monotonic() - started_at) * 1000.0)
@@ -393,7 +426,9 @@ class SourceProbeService:
         probe_plan.setdefault("toc_count", len(plan.get("toc") or []))
         started_at = time.monotonic()
         try:
-            sample = self.source_download_service.sample_book(probe_plan, chapter_count=1)
+            sample = self.source_download_service.sample_book(
+                probe_plan, chapter_count=1
+            )
         except Exception as exc:
             self.health_store.record_failure(
                 source_id,
@@ -421,7 +456,9 @@ class SourceProbeService:
                 "sample_book_name": str(plan.get("book_name") or book_name),
                 "sample_book_url": str(plan.get("book_url") or book_url),
                 "toc_count": len(plan.get("toc") or []),
-                "sampled_chapter_count": int(sample.get("sampled_chapter_count", 0) or 0),
+                "sampled_chapter_count": int(
+                    sample.get("sampled_chapter_count", 0) or 0
+                ),
             },
         )
 

@@ -13,7 +13,9 @@ from astrbot_plugin_webnovel_downloader.core.source_downloader import (
     SourceDownloadConfig,
     SourceDownloadService,
 )
-from astrbot_plugin_webnovel_downloader.core.source_health_store import SourceHealthStore
+from astrbot_plugin_webnovel_downloader.core.source_health_store import (
+    SourceHealthStore,
+)
 
 
 class _FakeRegistry(object):
@@ -32,7 +34,9 @@ class _FakeEngine(object):
     def __init__(self):
         self.chapter_calls = []
 
-    def fetch_chapter_content(self, source, chapter_url, fallback_title="", max_pages=5):
+    def fetch_chapter_content(
+        self, source, chapter_url, fallback_title="", max_pages=5
+    ):
         del source, max_pages
         self.chapter_calls.append((chapter_url, fallback_title))
         if "short" in chapter_url:
@@ -48,7 +52,9 @@ class _AlwaysForbiddenEngine(object):
     def __init__(self):
         self.chapter_calls = []
 
-    def fetch_chapter_content(self, source, chapter_url, fallback_title="", max_pages=5):
+    def fetch_chapter_content(
+        self, source, chapter_url, fallback_title="", max_pages=5
+    ):
         del source, max_pages
         self.chapter_calls.append((chapter_url, fallback_title))
         raise RuntimeError("HTTP 403: Forbidden")
@@ -59,7 +65,9 @@ class _RuleContextEngine(object):
         self.chapter_calls = []
         self.preflight_calls = []
 
-    def build_book_download_plan(self, source, book_url, fallback_title="", rule_context=None):
+    def build_book_download_plan(
+        self, source, book_url, fallback_title="", rule_context=None
+    ):
         del source
         self.preflight_calls.append(
             {
@@ -141,7 +149,9 @@ class SourceDownloaderPhase4Test(unittest.TestCase):
             "source_name": "测试源",
             "book_url": "https://example.com/book",
             "book_name": "测试书",
-            "toc": [{"index": 0, "title": "第一章", "url": "https://example.com/chapter-1"}],
+            "toc": [
+                {"index": 0, "title": "第一章", "url": "https://example.com/chapter-1"}
+            ],
             "toc_count": 1,
         }
 
@@ -160,7 +170,9 @@ class SourceDownloaderPhase4Test(unittest.TestCase):
             "book_name": "测试书",
             "author": "测试作者",
             "intro": "",
-            "toc": [{"index": 0, "title": "第一章", "url": "https://example.com/chapter-1"}],
+            "toc": [
+                {"index": 0, "title": "第一章", "url": "https://example.com/chapter-1"}
+            ],
             "toc_count": 1,
         }
         job_info = self.service.create_job_from_plan(plan)

@@ -17,10 +17,16 @@ class CleanRuleStoreTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_import_same_repo_reuses_stable_repo_id(self):
-        payload = '[{"name":"移除广告","pattern":"广告","replacement":"","isRegex":false}]'
+        payload = (
+            '[{"name":"移除广告","pattern":"广告","replacement":"","isRegex":false}]'
+        )
 
-        first = self.store.import_rules_from_text(payload, "测试仓库", "https://example.com/rules.json")
-        second = self.store.import_rules_from_text(payload, "测试仓库", "https://example.com/rules.json")
+        first = self.store.import_rules_from_text(
+            payload, "测试仓库", "https://example.com/rules.json"
+        )
+        second = self.store.import_rules_from_text(
+            payload, "测试仓库", "https://example.com/rules.json"
+        )
 
         repositories = self.store.list_repositories()
         self.assertEqual(first["repo_id"], second["repo_id"])
@@ -28,10 +34,16 @@ class CleanRuleStoreTest(unittest.TestCase):
         self.assertEqual(repositories[0]["repo_id"], first["repo_id"])
 
     def test_load_applicable_cleaners_deduplicates_same_rule(self):
-        payload = '[{"name":"移除广告","pattern":"广告","replacement":"","isRegex":false}]'
+        payload = (
+            '[{"name":"移除广告","pattern":"广告","replacement":"","isRegex":false}]'
+        )
 
-        self.store.import_rules_from_text(payload, "仓库A", "https://example.com/a.json")
-        self.store.import_rules_from_text(payload, "仓库B", "https://example.com/b.json")
+        self.store.import_rules_from_text(
+            payload, "仓库A", "https://example.com/a.json"
+        )
+        self.store.import_rules_from_text(
+            payload, "仓库B", "https://example.com/b.json"
+        )
 
         cleaners = self.store.load_applicable_cleaners(
             {
