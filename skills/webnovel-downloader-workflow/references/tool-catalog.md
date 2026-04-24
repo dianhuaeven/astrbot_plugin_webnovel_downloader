@@ -4,8 +4,8 @@
 
 | Tool | Main use | Key inputs | Notes |
 | --- | --- | --- | --- |
-| `novel_import_sources` | 导入 Legado/阅读书源 | `source_json` | 支持 URL、文件路径或原始 JSON |
-| `novel_import_clean_rules` | 导入正文净化规则仓库 | `repo_json`, `repo_name` | 后续下载会自动应用 |
+| `novel_import_sources` | 导入 Legado/阅读书源 | `source_json` | 支持 URL、文件路径或原始 JSON；沙箱模式下若要读取宿主机文件，先用 `astrbot_upload_file` 上传到 `/workspace` |
+| `novel_import_clean_rules` | 导入正文净化规则仓库 | `repo_json`, `repo_name` | 后续下载会自动应用；沙箱模式下若要读取宿主机文件，先用 `astrbot_upload_file` 上传到 `/workspace` |
 | `novel_list_sources` | 查看书源清单 | `enabled_only`, `limit`, `offset` | 适合确认哪些源可参与搜索或下载 |
 | `novel_get_source_detail` | 查看单个书源详情 | `source_id` | 返回健康状态、编译后的 profile 和关键规则摘要 |
 | `novel_refresh_sources` | 刷新书源健康度 | `source_ids_json`, `include_disabled` | 后台异步探测，不等待完成 |
@@ -41,6 +41,8 @@
 
 ## Important Limits
 
+- `astrbot_upload_file` 用于把宿主机文件上传到沙箱 `/workspace`，给后续工具或代码读取；它不是“把文件发给用户”的工具。
+- `send_message_to_user` 用于把文本、图片、语音、视频或文件直接发送给当前用户；当插件已经产出宿主机上的下载文件时，优先用它交付结果。
 - 当前对 LLM 的默认下载流程是 `novel_query_candidates -> novel_download_source_book`，不要再按旧文档直接调用 `novel_download`。
 - 当书名歧义明显、需要人工挑源、要确认探测状态，或已经有 `search_id` 需要翻页/查看更多原始结果时，再切到 `novel_query_candidates`、`novel_probe_status`、`novel_read_search_results`、`novel_download_source_book` 这些分支工具。
 - `novel_refresh_sources` 只是把书源加入后台健康探测队列；想确认进度时要再调用 `novel_probe_status`。
@@ -48,3 +50,5 @@
 - `novel_download_source_book` 会在预检后再次校验 `book_name + author`，不一致就拒绝创建任务。
 - `novel_download`、`novel_download_cached_result` 等兼容入口仍在代码里，但不再对 LLM 暴露。
 - 如果书源提示 JS、登录或动态渲染限制，应尽早向用户说明兼容边界。
+- 当工具参数支持“文件路径”时，沙箱模式读取的是沙箱内 `/workspace` 相对路径；宿主机文件需要先通过 `astrbot_upload_file` 上传进去。
+- 当插件返回 `output_path` 一类宿主机文件路径且用户想直接拿到文件时，优先把这个路径交给 `send_message_to_user` 的 `file` 消息，而不是先上传回沙箱。
