@@ -11,6 +11,7 @@ from parsel import Selector
 from astrbot_plugin_webnovel_downloader.core.book_resolution_service import (
     BookResolutionService,
 )
+from astrbot_plugin_webnovel_downloader.core.js_runtime import quickjs
 from astrbot_plugin_webnovel_downloader.core.rule_engine import (
     RuleEngine,
     RuleEngineConfig,
@@ -430,6 +431,10 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(plan["toc"][0]["index"], 0)
         self.assertEqual(plan["toc"][1]["index"], 1)
 
+    @unittest.skipIf(
+        quickjs is None,
+        "quickjs dependency is required to exercise JS rule support",
+    )
     def test_rule_engine_supports_lightweight_js_templates_and_transforms(self):
         engine = RuleEngine(RuleEngineConfig())
         payload = {"name": "A B C"}

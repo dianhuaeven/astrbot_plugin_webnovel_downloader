@@ -1561,12 +1561,11 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        plugin = self.module.JsonlNovelDownloaderPlugin(
-            context=object(),
-            config={
+        plugin = self._create_plugin(
+            {
                 "book_sources": [str(source_path)],
                 "clean_rule_sources": [str(clean_path)],
-            },
+            }
         )
         self.assertTrue(plugin.wait_for_bootstrap(2.0))
 
@@ -1621,10 +1620,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         plugin = None
         try:
             begin = time.perf_counter()
-            plugin = self.module.JsonlNovelDownloaderPlugin(
-                context=object(),
-                config={"book_sources": [str(source_path)]},
-            )
+            plugin = self._create_plugin({"book_sources": [str(source_path)]})
             elapsed = time.perf_counter() - begin
             self.assertLess(elapsed, 0.2)
             self.assertTrue(started.wait(1.0))
@@ -1638,6 +1634,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             plugin_base.load_text_argument = original_loader
             if plugin is not None:
                 plugin.wait_for_bootstrap(2.0)
+                shutdown_probe = getattr(plugin.source_probe_service, "shutdown", None)
+                if callable(shutdown_probe):
+                    shutdown_probe(2.0)
 
     def test_plugin_bootstrap_skips_successful_duplicate_config_imports(self):
         source_path = self.base_dir / "bootstrap-skip-source.json"
@@ -1667,10 +1666,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        plugin = self.module.JsonlNovelDownloaderPlugin(
-            context=object(),
-            config={"book_sources": [str(source_path)]},
-        )
+        plugin = self._create_plugin({"book_sources": [str(source_path)]})
         self.assertTrue(plugin.wait_for_bootstrap(2.0))
         self.assertEqual(len(plugin.source_registry.list_sources()), 1)
 
@@ -1684,10 +1680,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         plugin_base.load_text_argument = should_not_run
         try:
-            plugin_again = self.module.JsonlNovelDownloaderPlugin(
-                context=object(),
-                config={"book_sources": [str(source_path)]},
-            )
+            plugin_again = self._create_plugin({"book_sources": [str(source_path)]})
             self.assertTrue(plugin_again.wait_for_bootstrap(0.1))
             self.assertEqual(len(plugin_again.source_registry.list_sources()), 1)
         finally:
@@ -1802,7 +1795,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         plugin = None
         try:
             begin = time.perf_counter()
-            plugin = self.module.JsonlNovelDownloaderPlugin(context=object(), config={})
+            plugin = self._create_plugin({})
             elapsed = time.perf_counter() - begin
             self.assertLess(elapsed, 0.2)
             self.assertTrue(started.wait(1.0))
