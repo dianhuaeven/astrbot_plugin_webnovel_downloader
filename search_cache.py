@@ -32,6 +32,7 @@ class SearchCacheStore:
         }
         created_at = time.time()
         search_id = self._build_search_id(keyword, payload, created_at)
+        search_path = self._resolve_search_path(search_id)
         record = {
             "search_id": search_id,
             "keyword": keyword,
@@ -43,15 +44,13 @@ class SearchCacheStore:
             "successful_sources": result.get("successful_sources", 0),
             "result_count": len(result.get("results") or []),
             "error_count": len(result.get("errors") or []),
-            "path": str(
-                self.searches_dir / "{search_id}.json".format(search_id=search_id)
-            ),
+            "path": str(search_path),
         }
         stored = {
             "record": record,
             "result": result,
         }
-        self._write_json(Path(record["path"]), stored)
+        self._write_json(search_path, stored)
 
         index = self._load_index()
         index["searches"] = [
@@ -67,7 +66,7 @@ class SearchCacheStore:
         return list(index.get("searches") or [])
 
     def load_search(self, search_id: str) -> dict[str, Any]:
-        path = self.searches_dir / "{search_id}.json".format(search_id=search_id)
+        path = self._resolve_search_path(search_id)
         if not path.exists():
             raise ValueError("未找到搜索缓存 {search_id}".format(search_id=search_id))
         with open(path, "r", encoding="utf-8") as handle:
@@ -126,6 +125,17 @@ class SearchCacheStore:
         text = "".join(ch if ch.isalnum() else "-" for ch in str(keyword or "").strip())
         text = text.strip("-")
         return text[:24] or "search"
+
+    def _resolve_search_path(self, search_id: str) -> Path:
+        normalized = str(search_id or "").strip()
+        if not normalized:
+            raise ValueError("搜索缓存 ID 不能为空")
+        path = self.searches_dir / "{search_id}.json".format(search_id=normalized)
+        resolved_parent = path.resolve().parent
+        expected_parent = self.searches_dir.resolve()
+        if resolved_parent != expected_parent:
+            raise ValueError("非法搜索缓存 ID: {search_id}".format(search_id=search_id))
+        return path
 
     def _write_json(self, path: Path, payload: Any) -> None:
         tmp_path = path.with_suffix(path.suffix + ".tmp")

@@ -16,9 +16,9 @@ class SessionScraperTest(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler_factory)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)
         self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
         return server
 
     def test_request_sets_default_user_agent_origin_and_referer(self):

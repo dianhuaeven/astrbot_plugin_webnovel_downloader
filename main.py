@@ -5,7 +5,7 @@ from astrbot.api.star import register
 
 from .core.download_manager import ExtractionRules
 from .base import JsonlNovelDownloaderPluginBase
-from .support import compat_hidden_tool, compat_llm_tool
+from .support import compat_admin_only, compat_hidden_tool, compat_llm_tool
 
 
 @register(
@@ -16,6 +16,7 @@ from .support import compat_hidden_tool, compat_llm_tool
     "https://github.com/dianhuaeven/astrbot_plugin_webnovel_downloader",
 )
 class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
+    @compat_admin_only()
     @compat_llm_tool(name="novel_import_clean_rules")
     async def novel_import_clean_rules(
         self,
@@ -48,6 +49,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_list_clean_rules(limit, offset)
 
+    @compat_admin_only()
     @compat_hidden_tool()
     async def novel_fetch_preview(
         self, event: AstrMessageEvent, url: str, encoding: str = "", max_chars: str = ""
@@ -62,6 +64,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_fetch_preview(url, encoding, max_chars)
 
+    @compat_admin_only()
     @compat_llm_tool(name="novel_import_sources")
     async def novel_import_sources(
         self, event: AstrMessageEvent, source_json: str
@@ -104,6 +107,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_get_source_detail(source_id)
 
+    @compat_admin_only()
     @compat_llm_tool(name="novel_refresh_sources")
     async def novel_refresh_sources(
         self,
@@ -122,6 +126,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             source_ids_json, include_disabled
         )
 
+    @compat_admin_only()
     @compat_llm_tool(name="novel_remove_source")
     async def novel_remove_source(self, event: AstrMessageEvent, source_id: str) -> str:
         """
@@ -468,6 +473,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             auto_assemble,
         )
 
+    @compat_admin_only()
     @compat_hidden_tool()
     async def novel_start_download(
         self,
@@ -523,6 +529,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_novel_download_status(job_id, limit, offset)
 
+    @compat_admin_only()
     @compat_hidden_tool()
     async def novel_assemble_book(
         self, event: AstrMessageEvent, job_id: str, cleanup_journal: str = ""
@@ -553,6 +560,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
     async def novel_sources_command(self, event):
         yield event.plain_result(await self.handle_novel_list_sources())
 
+    @compat_admin_only()
     @filter.command("novel_refresh")
     async def novel_refresh_command(
         self,
@@ -567,10 +575,12 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             )
         )
 
+    @compat_admin_only()
     @filter.command("novel_import")
     async def novel_import_command(self, event, source_json: str):
         yield event.plain_result(await self.handle_novel_import_sources(source_json))
 
+    @compat_admin_only()
     @filter.command("novel_import_clean")
     async def novel_import_clean_command(
         self, event, repo_json: str, repo_name: str = ""
@@ -688,10 +698,12 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             await self.handle_novel_download_status(job_id, limit, offset)
         )
 
+    @compat_admin_only()
     @filter.command("novel_remove")
     async def novel_remove_command(self, event, source_id: str):
         yield event.plain_result(await self.handle_novel_remove_source(source_id))
 
+    @compat_admin_only()
     @filter.command("novel_preview")
     async def novel_preview_command(
         self,

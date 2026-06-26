@@ -144,9 +144,20 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 self.context = context
 
         class DummyFilter(object):
+            class PermissionType(object):
+                ADMIN = "admin"
+
             @staticmethod
             def command(_name):
                 def decorator(func):
+                    return func
+
+                return decorator
+
+            @staticmethod
+            def permission_type(permission):
+                def decorator(func):
+                    func.__permission_type__ = permission
                     return func
 
                 return decorator
@@ -295,9 +306,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)
         self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
         return "http://127.0.0.1:{port}".format(port=server.server_address[1]), records
 
     async def _invoke_tool(self, tool_callable, *args):
@@ -332,11 +343,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
     def test_llm_tool_surface_excludes_internal_admin_and_resume_helpers(self):
         tool_names = set()
+        tool_attrs = {}
         for attr_name in dir(self.plugin):
             attr = getattr(self.plugin, attr_name)
             tool_name = getattr(attr, "__llm_tool_name__", "")
             if tool_name:
                 tool_names.add(tool_name)
+                tool_attrs[tool_name] = attr
 
         self.assertNotIn("novel_enable_source", tool_names)
         self.assertNotIn("novel_resume_book_download", tool_names)
@@ -362,6 +375,17 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("novel_read_search_results", tool_names)
         self.assertNotIn("novel_download_cached_result", tool_names)
         self.assertIn("novel_download_status", tool_names)
+        for admin_tool_name in (
+            "novel_import_clean_rules",
+            "novel_import_sources",
+            "novel_refresh_sources",
+            "novel_remove_source",
+        ):
+            self.assertTrue(getattr(tool_attrs[admin_tool_name], "__admin_only__", False))
+            self.assertEqual(
+                getattr(tool_attrs[admin_tool_name], "__permission_type__", ""),
+                "admin",
+            )
 
     def test_llm_tool_signature_hides_system_event_parameter(self):
         signature = inspect.signature(self.plugin.novel_search_books)
@@ -2771,6 +2795,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_download_book_records_preflight_failure_before_starting_task(self):
+        self.plugin.auto_probe_on_import = False
         source_json = json.dumps(
             [
                 {

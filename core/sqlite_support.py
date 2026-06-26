@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 
 def derive_sqlite_path(
@@ -15,7 +17,8 @@ def derive_sqlite_path(
     return raw_path / default_name
 
 
-def connect_sqlite(path: str | Path) -> sqlite3.Connection:
+@contextmanager
+def connect_sqlite(path: str | Path) -> Iterator[sqlite3.Connection]:
     sqlite_path = Path(path)
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(
@@ -28,4 +31,7 @@ def connect_sqlite(path: str | Path) -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=5000")
-    return connection
+    try:
+        yield connection
+    finally:
+        connection.close()

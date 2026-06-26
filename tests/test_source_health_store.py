@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from astrbot_plugin_webnovel_downloader.core.source_health_store import (
@@ -77,7 +78,7 @@ class SourceHealthStoreTest(unittest.TestCase):
         self.assertEqual(entry["preflight"]["note"], "尚未自动预检")
 
     def test_store_recreates_schema_when_table_is_missing(self):
-        with sqlite3.connect(self.store.sqlite_path) as connection:
+        with closing(sqlite3.connect(self.store.sqlite_path)) as connection:
             connection.execute("DROP TABLE IF EXISTS source_stage_health")
 
         self.store.mark_unsupported(

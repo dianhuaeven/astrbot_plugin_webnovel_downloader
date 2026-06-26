@@ -69,9 +69,9 @@ class LocalSmokeCliTest(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)
         self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
 
         base_url = "http://127.0.0.1:{port}".format(port=server.server_address[1])
         payload_holder["sources"] = json.dumps(

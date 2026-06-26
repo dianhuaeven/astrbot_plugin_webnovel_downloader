@@ -111,6 +111,23 @@ def compat_hidden_tool() -> Callable:
     return decorator
 
 
+def compat_admin_only() -> Callable:
+    def decorator(func: Callable) -> Callable:
+        permission_type_factory = getattr(filter, "permission_type", None)
+        permission_type_enum = getattr(filter, "PermissionType", None)
+        admin_permission = getattr(permission_type_enum, "ADMIN", None)
+        protected_func = func
+        if callable(permission_type_factory) and admin_permission is not None:
+            try:
+                protected_func = permission_type_factory(admin_permission)(func)
+            except Exception:
+                protected_func = func
+        setattr(protected_func, "__admin_only__", True)
+        return protected_func
+
+    return decorator
+
+
 async def run_blocking(func: Callable[..., Any], *args: Any) -> Any:
     to_thread = getattr(asyncio, "to_thread", None)
     if to_thread is not None:
