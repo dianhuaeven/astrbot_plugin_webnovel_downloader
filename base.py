@@ -15,10 +15,10 @@ from astrbot.api.star import Star
 from astrbot.core.star.star_tools import StarTools
 
 from .core.download_manager import ExtractionRules
-from .plugin_renderer import ToolRenderConfig, ToolResultRenderer
-from .plugin_runtime import build_plugin_runtime
+from .renderer import ToolRenderConfig, ToolResultRenderer
+from .runtime import build_plugin_runtime
 from .search_cache import SearchCacheStore
-from .plugin_support import logger, run_blocking
+from .support import logger, run_blocking
 from .text_loader import load_text_argument
 
 

@@ -5,8 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-from .plugin_renderer import ToolRenderConfig, ToolResultRenderer
-from .plugin_runtime import build_plugin_runtime
+from .renderer import ToolRenderConfig, ToolResultRenderer
+from .runtime import build_plugin_runtime
 from .text_loader import load_text_argument
 
 

@@ -1605,7 +1605,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         plugin_base = importlib.import_module(
-            "astrbot_plugin_webnovel_downloader.plugin_base"
+            "astrbot_plugin_webnovel_downloader.base"
         )
         original_loader = plugin_base.load_text_argument
         started = threading.Event()
@@ -1671,7 +1671,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plugin.source_registry.list_sources()), 1)
 
         plugin_base = importlib.import_module(
-            "astrbot_plugin_webnovel_downloader.plugin_base"
+            "astrbot_plugin_webnovel_downloader.base"
         )
         original_loader = plugin_base.load_text_argument
 
@@ -1687,7 +1687,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             plugin_base.load_text_argument = original_loader
 
     def test_install_bundled_skill_uses_skill_manager_and_syncs_sandbox(self):
-        importlib.import_module("astrbot_plugin_webnovel_downloader.plugin_base")
+        importlib.import_module("astrbot_plugin_webnovel_downloader.base")
         skill_dir = self.plugin_dir / "skills" / "webnovel-downloader-workflow"
 
         astrbot_core_skills = types.ModuleType("astrbot.core.skills")
@@ -1750,7 +1750,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
     def test_plugin_bootstrap_auto_installs_bundled_skills_in_background(self):
         plugin_base = importlib.import_module(
-            "astrbot_plugin_webnovel_downloader.plugin_base"
+            "astrbot_plugin_webnovel_downloader.base"
         )
         demo_skill_dir = self.base_dir / "demo-skill"
         demo_skill_dir.mkdir(parents=True, exist_ok=True)
@@ -2070,7 +2070,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
     def test_plugin_runtime_supports_separate_search_timeout_and_workers(self):
         runtime_module = importlib.import_module(
-            "astrbot_plugin_webnovel_downloader.plugin_runtime"
+            "astrbot_plugin_webnovel_downloader.runtime"
         )
         runtime = runtime_module.build_plugin_runtime(
             self.base_dir / "runtime",

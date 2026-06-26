@@ -4,8 +4,8 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import register
 
 from .core.download_manager import ExtractionRules
-from .plugin_base import JsonlNovelDownloaderPluginBase
-from .plugin_support import compat_hidden_tool, compat_llm_tool
+from .base import JsonlNovelDownloaderPluginBase
+from .support import compat_hidden_tool, compat_llm_tool
 
 
 @register(
