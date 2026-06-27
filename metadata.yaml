@@ -1,6 +1,27 @@
 name: astrbot_plugin_webnovel_downloader
 display_name: 网文下载器
-desc: "纯 Python 的网文下载与装订插件，使用单文件 journal 实现断点续传、绝对有序输出，并提供 AstrBot 函数工具。"
-version: 0.0.1
-author: Dianhua
+desc: "基于 Legado/阅读书源的 AstrBot 网文下载插件，支持导入书源、搜索聚合、多源预检下载、正文净化和 TXT 装订。"
+version: 1.0.0
+author: dianhua
 repo: https://github.com/dianhuaeven/astrbot_plugin_webnovel_downloader
+logo: https://raw.githubusercontent.com/dianhuaeven/astrbot_plugin_webnovel_downloader/main/logo.svg
+tags:
+  - 网文
+  - 小说
+  - Legado
+  - 阅读
+  - 下载
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+  - telegram
+  - wecom
+  - discord
+  - lark
+  - dingtalk
+  - slack
+  - kook
+  - vocechat
+  - weixin_official_account
+  - weixin_oc

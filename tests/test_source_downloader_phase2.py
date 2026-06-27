@@ -191,6 +191,31 @@ class SourceDownloaderPhase2Test(unittest.TestCase):
                 output_filename="共享输出",
             )
 
+    def test_assemble_decodes_escaped_line_breaks_from_journal(self):
+        job = self.manager.create_job(
+            "转义换行测试书",
+            [{"title": "第一章", "url": "https://example.com/1"}],
+            ExtractionRules(content_regex=r"(?s)(.*)"),
+        )
+        self.manager.append_downloaded_chapter(
+            job["job_id"],
+            0,
+            "第一章",
+            "https://example.com/1",
+            "[\"第一段。\\r\\n 第二段！\\n 第三段。\"]",
+            "utf-8",
+            1,
+        )
+
+        status = self.manager.assemble(job["job_id"])
+        content = Path(status["output_path"]).read_text(encoding="utf-8")
+
+        self.assertNotIn("[\"", content)
+        self.assertNotIn("\"]", content)
+        self.assertNotIn("\\r\\n", content)
+        self.assertNotIn("\\n", content)
+        self.assertIn("第一段。\n第二段！\n第三段。", content)
+
 
 if __name__ == "__main__":
     unittest.main()

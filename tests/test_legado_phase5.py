@@ -25,6 +25,16 @@ from astrbot_plugin_webnovel_downloader.core.source_health_store import (
     SourceHealthStore,
 )
 from astrbot_plugin_webnovel_downloader.core.source_registry import SourceRegistry
+from astrbot_plugin_webnovel_downloader.core.url_security import UrlSafetyPolicy
+
+
+def _allow_local_engine_config(**overrides) -> RuleEngineConfig:
+    # 部分用例通过 file:// 加载本地 HTML 夹具，默认 URL 策略会拒绝 file://，
+    # 故这些用例显式放行不安全 URL。
+    overrides.setdefault(
+        "url_safety_policy", UrlSafetyPolicy(allow_unsafe_urls=True)
+    )
+    return RuleEngineConfig(**overrides)
 
 
 class _SearchRegistry(object):
@@ -359,7 +369,7 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(text_nodes, "第一章")
 
     def test_rule_engine_filters_non_chapter_toc_links_before_returning_plan(self):
-        engine = RuleEngine(RuleEngineConfig())
+        engine = RuleEngine(_allow_local_engine_config())
         toc_path = self.base_dir / "filtered-toc.html"
         toc_desc_path = self.base_dir / "filtered-toc-desc.html"
         chapter_1_path = self.base_dir / "filtered-chapter-1.html"
@@ -431,6 +441,39 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(plan["toc"][0]["index"], 0)
         self.assertEqual(plan["toc"][1]["index"], 1)
 
+    def test_rule_engine_decodes_json_array_and_escaped_line_breaks_in_chapter_content(self):
+        engine = RuleEngine(_allow_local_engine_config())
+        chapter_path = self.base_dir / "escaped-line-breaks.html"
+        chapter_path.write_text(
+            "<html><body><h1>第一章</h1>"
+            "<div id='content'>[\"第一段。\\r\\n 第二段！\\n 第三段。\"]</div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        source = {
+            "source_id": "escaped-source",
+            "source_url": "https://example.com",
+            "rule_content": {
+                "title": "h1&&text",
+                "content": "#content&&text",
+            },
+        }
+
+        chapter = engine.fetch_chapter_content(
+            source,
+            chapter_path.resolve().as_uri(),
+            "第一章",
+        )
+
+        self.assertNotIn("[\"", chapter["content"])
+        self.assertNotIn("\"]", chapter["content"])
+        self.assertNotIn("\\r\\n", chapter["content"])
+        self.assertNotIn("\\n", chapter["content"])
+        self.assertEqual(
+            chapter["content"],
+            "\u3000\u3000第一段。\n\u3000\u3000第二段！\n\u3000\u3000第三段。",
+        )
+
     @unittest.skipIf(
         quickjs is None,
         "quickjs dependency is required to exercise JS rule support",
@@ -452,6 +495,107 @@ class LegadoPhase5Test(unittest.TestCase):
 
         self.assertEqual(rendered, hashlib.md5(b"abc").hexdigest())
         self.assertEqual(transformed, "ABC")
+
+    @unittest.skipIf(
+        quickjs is None,
+        "quickjs dependency is required to exercise JS rule support",
+    )
+    def test_rule_engine_supports_js_prefix_followup_selectors_and_url_js(self):
+        engine = RuleEngine(RuleEngineConfig())
+        payload = Selector(
+            text=(
+                "<html><body>"
+                "<div class='txtnav'>正文段落</div>"
+                "<div id='catalog'><a href='/1'>第一章</a></div>"
+                "</body></html>"
+            ),
+            base_url="https://example.com/book/1.htm",
+        )
+        context = engine._seed_rule_context(
+            {}, {"source_url": "https://example.com"}, "https://example.com/book/1.htm"
+        )
+
+        toc_url = engine._extract_scalar(
+            "html",
+            payload,
+            "@js:baseUrl.replace('.htm','/')",
+            rule_context=context,
+        )
+        content = engine._extract_joined_scalar(
+            "html",
+            payload,
+            "<js>result;</js>.txtnav@text",
+            rule_context=context,
+        )
+        chapters = engine._select_many(
+            "html",
+            payload,
+            "<js>result;</js>#catalog a",
+            rule_context=context,
+        )
+        search_url = engine._render_request_template(
+            {"source_url": "https://example.com"},
+            '@js:url=baseUrl+"/search/{{key}}";result=url;',
+            {
+                "key": "雪中",
+                "keyword": "雪中",
+                "baseUrl": "https://example.com",
+                "base_url": "https://example.com",
+                "page": "1",
+            },
+        )
+
+        self.assertEqual(toc_url, "https://example.com/book/1/")
+        self.assertEqual(content, "正文段落")
+        self.assertEqual(len(chapters), 1)
+        self.assertEqual(
+            engine._extract_scalar("html", chapters[0], "text", rule_context=context),
+            "第一章",
+        )
+        self.assertEqual(search_url, "https://example.com/search/雪中")
+
+    def test_import_allows_lightweight_js_and_parses_legado_single_quote_headers(self):
+        registry = SourceRegistry(self.base_dir)
+        payload = [
+            {
+                "bookSourceName": "轻量 JS 源",
+                "bookSourceUrl": "https://example.com",
+                "header": "{'User-Agent':'UA','Referer':'https://example.com/'}",
+                "searchUrl": '@js:url=baseUrl+"/search/{{key}}";result=url;',
+                "ruleSearch": {
+                    "bookList": "<js>result;</js>.book",
+                    "name": "a@text",
+                    "bookUrl": "a@href",
+                },
+                "ruleBookInfo": {
+                    "name": "h1@text",
+                    "tocUrl": "@js:baseUrl.replace('.htm','/')",
+                },
+                "ruleToc": {
+                    "chapterList": "<js>result;</js>#toc a",
+                    "chapterName": "text",
+                    "chapterUrl": "href",
+                },
+                "ruleContent": {"content": "<js>result;</js>#content@text"},
+            }
+        ]
+
+        result = registry.import_sources_from_text(
+            json.dumps(payload, ensure_ascii=False)
+        )
+        source = result["sources"][0]
+        normalized = registry.load_normalized_source(source["source_id"])
+
+        self.assertTrue(source["supports_search"])
+        self.assertTrue(source["supports_download"])
+        self.assertTrue(source["search_uses_js"])
+        self.assertTrue(source["download_uses_js"])
+        self.assertFalse(source["search_uses_unsupported_js"])
+        self.assertFalse(source["download_uses_unsupported_js"])
+        self.assertEqual(
+            normalized["headers"],
+            {"User-Agent": "UA", "Referer": "https://example.com/"},
+        )
 
     def test_search_service_keeps_broken_runtime_sources_visible_but_lower_priority(
         self,

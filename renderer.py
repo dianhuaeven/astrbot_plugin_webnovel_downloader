@@ -270,15 +270,27 @@ class ToolResultRenderer:
     ) -> str:
         all_candidates = list(resolution.get("candidates") or [])
         all_skipped_candidates = list(resolution.get("skipped_candidates") or [])
+        all_groups = list(resolution.get("candidate_groups") or [])
         candidates = all_candidates[offset : offset + limit]
         skipped_candidates = all_skipped_candidates[offset : offset + limit]
+        groups = all_groups[offset : offset + limit]
         search_result = dict(resolution.get("search_result") or {})
+        raw_results = list(search_result.get("results") or [])
+        raw_result_slice = raw_results[offset : offset + limit]
+        skipped_sources = list(search_result.get("skipped_sources") or [])
         errors = list(search_result.get("errors") or [])
         candidate_preview_count = min(
             self.config.max_tool_preview_items, len(candidates)
         )
         skipped_preview_count = min(
             self.config.max_tool_preview_items, len(skipped_candidates)
+        )
+        group_preview_count = min(self.config.max_tool_preview_items, len(groups))
+        raw_result_preview_count = min(
+            self.config.max_tool_preview_items, len(raw_result_slice)
+        )
+        skipped_source_preview_count = min(
+            self.config.max_tool_preview_items, len(skipped_sources)
         )
         error_preview_count = min(self.config.max_tool_preview_items, len(errors))
         report_path = ""
@@ -299,10 +311,18 @@ class ToolResultRenderer:
                 "limit": limit,
                 "returned_candidate_count": len(candidates),
                 "returned_skipped_candidate_count": len(skipped_candidates),
+                "returned_candidate_group_count": len(groups),
+                "returned_result_count": len(raw_result_slice),
                 "has_more_candidates": offset + len(candidates) < len(all_candidates),
                 "next_candidate_offset": (
                     offset + len(candidates)
                     if offset + len(candidates) < len(all_candidates)
+                    else None
+                ),
+                "has_more_candidate_groups": offset + len(groups) < len(all_groups),
+                "next_candidate_group_offset": (
+                    offset + len(groups)
+                    if offset + len(groups) < len(all_groups)
                     else None
                 ),
                 "timed_out_source_count": search_result.get(
@@ -312,8 +332,20 @@ class ToolResultRenderer:
                     "unsearched_source_count", 0
                 ),
                 "result_count": search_result.get("result_count", 0),
+                "skipped_source_count": len(skipped_sources),
                 "candidate_count": len(all_candidates),
                 "skipped_candidate_count": len(all_skipped_candidates),
+                "candidate_group_count": len(all_groups),
+                "candidate_groups": [
+                    self._compact_candidate_group(item)
+                    for item in groups[:group_preview_count]
+                ],
+                "results": [
+                    self._compact_search_result(item, offset + index)
+                    for index, item in enumerate(
+                        raw_result_slice[:raw_result_preview_count]
+                    )
+                ],
                 "candidates": [
                     self._compact_auto_download_candidate(item)
                     for item in candidates[:candidate_preview_count]
@@ -323,6 +355,10 @@ class ToolResultRenderer:
                         item, include_skip_reason=True
                     )
                     for item in skipped_candidates[:skipped_preview_count]
+                ],
+                "skipped_sources": [
+                    self._compact_search_notice(item, "reason")
+                    for item in skipped_sources[:skipped_source_preview_count]
                 ],
                 "errors": [
                     self._compact_search_notice(item, "error")
@@ -334,6 +370,15 @@ class ToolResultRenderer:
                 "omitted_skipped_candidate_count": max(
                     0, len(skipped_candidates) - skipped_preview_count
                 ),
+                "omitted_candidate_group_count": max(
+                    0, len(groups) - group_preview_count
+                ),
+                "omitted_result_count": max(
+                    0, len(raw_result_slice) - raw_result_preview_count
+                ),
+                "omitted_skipped_source_count": max(
+                    0, len(skipped_sources) - skipped_source_preview_count
+                ),
                 "omitted_error_count": max(0, len(errors) - error_preview_count),
             }
             if report_path:
@@ -343,6 +388,9 @@ class ToolResultRenderer:
                 if (
                     len(candidates) > candidate_preview_count
                     or len(skipped_candidates) > skipped_preview_count
+                    or len(groups) > group_preview_count
+                    or len(raw_result_slice) > raw_result_preview_count
+                    or len(skipped_sources) > skipped_source_preview_count
                     or len(errors) > error_preview_count
                 ) and not report_path:
                     report_path = self._write_json_report(
@@ -366,11 +414,17 @@ class ToolResultRenderer:
             if error_preview_count > 0:
                 error_preview_count -= 1
                 continue
+            if skipped_source_preview_count > 0:
+                skipped_source_preview_count -= 1
+                continue
             if skipped_preview_count > 0:
                 skipped_preview_count -= 1
                 continue
             if candidate_preview_count > 1:
                 candidate_preview_count -= 1
+                continue
+            if group_preview_count > 0:
+                group_preview_count -= 1
                 continue
             return text
 
@@ -636,12 +690,15 @@ class ToolResultRenderer:
     ) -> str:
         record = dict(cached_payload.get("record") or {})
         result = dict(cached_payload.get("result") or {})
-        results = list(result.get("results") or [])
+        search_result = dict(result.get("search_result") or result)
+        results = list(search_result.get("results") or [])
         sliced = results[offset : offset + limit]
         preview_count = min(self.config.max_tool_preview_items, len(sliced))
         payload = {
             "search_id": record.get("search_id", ""),
-            "keyword": record.get("keyword", result.get("keyword", "")),
+            "keyword": record.get(
+                "keyword", result.get("keyword", search_result.get("keyword", ""))
+            ),
             "created_at": record.get("created_at", 0),
             "search_path": record.get("path", ""),
             "total_result_count": len(results),
@@ -964,6 +1021,54 @@ class ToolResultRenderer:
                 self.truncate_text(issue, 80)
                 for issue in list(item.get("source_issues") or [])[:3]
             ],
+        }
+        if include_skip_reason:
+            compact["skip_reason"] = self.truncate_text(
+                item.get("skip_reason", ""), 120
+            )
+        return compact
+
+    def _compact_candidate_group(self, item: dict[str, Any]) -> dict[str, Any]:
+        candidates = list(item.get("candidates") or [])
+        skipped = list(item.get("skipped_candidates") or [])
+        return {
+            "group_index": item.get("group_index", 0),
+            "group_id": item.get("group_id", ""),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "source_count": item.get("source_count", 0),
+            "candidate_count": item.get("candidate_count", len(candidates)),
+            "skipped_candidate_count": item.get(
+                "skipped_candidate_count", len(skipped)
+            ),
+            "downloadable_source_count": item.get("downloadable_source_count", 0),
+            "best_source_name": item.get("best_source_name", ""),
+            "best_source_id": item.get("best_source_id", ""),
+            "candidates": [
+                self._compact_candidate_group_candidate(candidate)
+                for candidate in candidates[:3]
+            ],
+            "skipped_candidates": [
+                self._compact_candidate_group_candidate(candidate, True)
+                for candidate in skipped[:3]
+            ],
+        }
+
+    def _compact_candidate_group_candidate(
+        self,
+        item: dict[str, Any],
+        include_skip_reason: bool = False,
+    ) -> dict[str, Any]:
+        compact = {
+            "candidate_index": item.get("candidate_index", 0),
+            "source_id": item.get("source_id", ""),
+            "source_name": item.get("source_name", ""),
+            "title": item.get("title", ""),
+            "author": item.get("author", ""),
+            "book_url": item.get("book_url", ""),
+            "supports_download": bool(item.get("supports_download", False)),
+            "title_match": item.get("title_match", ""),
+            "author_match": item.get("author_match", ""),
         }
         if include_skip_reason:
             compact["skip_reason"] = self.truncate_text(

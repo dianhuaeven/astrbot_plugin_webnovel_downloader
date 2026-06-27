@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
@@ -84,6 +85,7 @@ class BookResolutionService:
             candidate["candidate_index"] = index
         for index, candidate in enumerate(skipped_candidates):
             candidate["candidate_index"] = index
+        candidate_groups = self._group_candidates(candidates, skipped_candidates)
 
         return {
             "keyword": normalized_keyword,
@@ -98,8 +100,10 @@ class BookResolutionService:
             "search_result": search_result,
             "candidate_count": len(candidates),
             "skipped_candidate_count": len(skipped_candidates),
+            "candidate_group_count": len(candidate_groups),
             "candidates": candidates,
             "skipped_candidates": skipped_candidates,
+            "candidate_groups": candidate_groups,
         }
 
     def resolve_candidates(
@@ -211,6 +215,101 @@ class BookResolutionService:
             self._normalize_text(candidate.get("author")),
             self._normalize_text(candidate.get("source_name")),
         )
+
+    def _group_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        skipped_candidates: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        buckets: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in list(candidates) + list(skipped_candidates):
+            title = str(item.get("title") or "").strip()
+            author = str(item.get("author") or "").strip()
+            title_key = self._normalize_text(title)
+            author_key = self._normalize_text(author)
+            if not title_key:
+                title_key = self._normalize_text(item.get("book_url"))
+            key = (title_key, author_key)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "group_id": self._make_group_id(title_key, author_key),
+                    "title": title,
+                    "author": author,
+                    "title_key": title_key,
+                    "author_key": author_key,
+                    "candidates": [],
+                    "skipped_candidates": [],
+                },
+            )
+            if not bucket.get("title") and title:
+                bucket["title"] = title
+            if not bucket.get("author") and author:
+                bucket["author"] = author
+            if item.get("skip_reason"):
+                bucket["skipped_candidates"].append(dict(item))
+            else:
+                bucket["candidates"].append(dict(item))
+
+        groups: list[dict[str, Any]] = []
+        for bucket in buckets.values():
+            bucket["candidates"].sort(key=self._candidate_sort_key)
+            bucket["skipped_candidates"].sort(key=self._candidate_sort_key)
+            all_items = list(bucket["candidates"]) + list(bucket["skipped_candidates"])
+            source_names = []
+            seen_sources = set()
+            for item in all_items:
+                source_id = str(item.get("source_id") or "").strip()
+                source_name = str(item.get("source_name") or source_id).strip()
+                if source_id and source_id in seen_sources:
+                    continue
+                if source_id:
+                    seen_sources.add(source_id)
+                if source_name:
+                    source_names.append(source_name)
+            best = (
+                dict(bucket["candidates"][0])
+                if bucket["candidates"]
+                else dict(bucket["skipped_candidates"][0])
+                if bucket["skipped_candidates"]
+                else {}
+            )
+            group = {
+                **bucket,
+                "source_count": len(seen_sources) or len(all_items),
+                "candidate_count": len(bucket["candidates"]),
+                "skipped_candidate_count": len(bucket["skipped_candidates"]),
+                "downloadable_source_count": len(bucket["candidates"]),
+                "supports_download": bool(bucket["candidates"]),
+                "best_source_name": str(best.get("source_name") or "").strip(),
+                "best_source_id": str(best.get("source_id") or "").strip(),
+                "best_book_url": str(best.get("book_url") or "").strip(),
+                "source_names": source_names,
+                "best_candidate": best,
+            }
+            groups.append(group)
+        groups.sort(key=self._candidate_group_sort_key)
+        for index, group in enumerate(groups):
+            group["group_index"] = index
+        return groups
+
+    def _candidate_group_sort_key(self, group: dict[str, Any]) -> tuple[Any, ...]:
+        best = dict(group.get("best_candidate") or {})
+        return (
+            self._candidate_sort_key(best),
+            -int(group.get("candidate_count", 0) or 0),
+            -int(group.get("source_count", 0) or 0),
+            self._normalize_text(group.get("title")),
+            self._normalize_text(group.get("author")),
+        )
+
+    def _make_group_id(self, title_key: str, author_key: str) -> str:
+        digest = hashlib.sha1(
+            "{title}\n{author}".format(title=title_key, author=author_key).encode(
+                "utf-8"
+            )
+        ).hexdigest()[:16]
+        return "book-{digest}".format(digest=digest)
 
     def _safe_get_source_summary(self, source_id: str) -> dict[str, Any]:
         if not source_id:

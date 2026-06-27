@@ -4,6 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .core.book_resolution_service import BookResolutionService
+from .core.defaults import (
+    DEFAULT_JS_TIMEOUT_SECONDS,
+    DEFAULT_MAX_WORKERS,
+    DEFAULT_PROBE_MAX_WORKERS,
+    DEFAULT_REQUEST_TIMEOUT,
+    DEFAULT_SEARCH_MAX_WORKERS,
+    DEFAULT_SEARCH_REQUEST_TIMEOUT,
+    DEFAULT_SEARCH_TIME_BUDGET,
+)
 from .core.download_manager import NovelDownloadManager, RuntimeConfig
 from .core.download_orchestrator import DownloadOrchestrator
 from .core.extractors import FallbackRuleExtractor
@@ -19,6 +28,7 @@ from .core.source_probe_service import SourceProbeService, SourceProbeServiceCon
 from .core.source_downloader import SourceDownloadConfig, SourceDownloadService
 from .core.source_profiles import SourceProfileService
 from .core.source_registry import SourceRegistry
+from .core.url_security import UrlSafetyPolicy
 from .clean_rule_store import CleanRuleRepositoryStore
 
 
@@ -74,21 +84,20 @@ def build_plugin_runtime(
     search_request_timeout = _parse_positive_float(
         settings,
         "search_request_timeout",
-        _parse_positive_float(settings, "request_timeout", 20.0),
+        DEFAULT_SEARCH_REQUEST_TIMEOUT,
     )
-    search_max_workers = int(
-        settings.get("search_max_workers", settings.get("max_workers", 6))
+    search_max_workers = _parse_positive_int(
+        settings, "search_max_workers", DEFAULT_SEARCH_MAX_WORKERS
     )
-    if search_max_workers <= 0:
-        raise ValueError(
-            "配置项 search_max_workers 必须大于 0，当前值: {value}".format(
-                value=search_max_workers
-            )
-        )
+    js_timeout_seconds = _parse_positive_float(
+        settings, "js_timeout_seconds", DEFAULT_JS_TIMEOUT_SECONDS
+    )
 
     runtime_config = RuntimeConfig(
-        max_workers=int(settings.get("max_workers", 3)),
-        request_timeout=_parse_positive_float(settings, "request_timeout", 20.0),
+        max_workers=_parse_positive_int(settings, "max_workers", DEFAULT_MAX_WORKERS),
+        request_timeout=_parse_positive_float(
+            settings, "request_timeout", DEFAULT_REQUEST_TIMEOUT
+        ),
         use_env_proxy=bool(settings.get("use_env_proxy", False)),
         max_retries=int(settings.get("max_retries", 3)),
         retry_backoff=float(settings.get("retry_backoff", 1.6)),
@@ -102,12 +111,17 @@ def build_plugin_runtime(
         user_agent=str(settings.get("user_agent", "")).strip()
         or RuntimeConfig().user_agent,
     )
+    url_safety_policy = UrlSafetyPolicy(
+        allow_unsafe_urls=bool(settings.get("allow_unsafe_urls", False)),
+        resolve_hostnames=bool(settings.get("resolve_fetch_hostnames", True)),
+    )
     shared_scraper = SessionScraper(
         SessionScraperConfig(
             user_agent=runtime_config.user_agent,
             use_env_proxy=runtime_config.use_env_proxy,
             max_retries=runtime_config.max_retries,
             retry_backoff=runtime_config.retry_backoff,
+            url_safety_policy=url_safety_policy,
         )
     )
     manager = NovelDownloadManager(
@@ -124,6 +138,7 @@ def build_plugin_runtime(
             use_env_proxy=runtime_config.use_env_proxy,
             clean_rule_store=clean_rule_store,
             scraper=shared_scraper,
+            js_timeout_seconds=js_timeout_seconds,
         )
     )
     search_engine = RuleEngine(
@@ -133,6 +148,7 @@ def build_plugin_runtime(
             use_env_proxy=runtime_config.use_env_proxy,
             clean_rule_store=clean_rule_store,
             scraper=shared_scraper,
+            js_timeout_seconds=js_timeout_seconds,
         )
     )
     search_fallback_extractor = FallbackRuleExtractor(search_engine)
@@ -161,7 +177,7 @@ def build_plugin_runtime(
         SearchServiceConfig(
             max_workers=search_max_workers,
             time_budget_seconds=_parse_positive_float(
-                settings, "search_time_budget", 45.0
+                settings, "search_time_budget", DEFAULT_SEARCH_TIME_BUDGET
             ),
             health_path=plugin_data_dir / "search_source_health.json",
         ),
@@ -173,7 +189,7 @@ def build_plugin_runtime(
         download_extractor,
         manager,
         SourceDownloadConfig(
-            max_workers=max(1, min(6, int(settings.get("max_workers", 3)))),
+            max_workers=runtime_config.max_workers,
             sample_chapters=max(1, int(settings.get("download_sample_chapters", 1))),
             sample_min_chars=max(1, int(settings.get("download_sample_min_chars", 1))),
         ),
@@ -186,7 +202,9 @@ def build_plugin_runtime(
         source_health_store,
         source_profile_service=source_profile_service,
         config=SourceProbeServiceConfig(
-            max_workers=_parse_positive_int(settings, "probe_max_workers", 2),
+            max_workers=_parse_positive_int(
+                settings, "probe_max_workers", DEFAULT_PROBE_MAX_WORKERS
+            ),
             probe_keywords=_parse_string_list(
                 settings.get("probe_keywords"),
                 ("诡秘之主", "斗破苍穹", "凡人修仙传"),

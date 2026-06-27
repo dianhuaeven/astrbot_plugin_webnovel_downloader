@@ -7,12 +7,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from .defaults import DEFAULT_PROBE_MAX_WORKERS
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class SourceProbeServiceConfig:
-    max_workers: int = 2
+    max_workers: int = DEFAULT_PROBE_MAX_WORKERS
     probe_keywords: tuple[str, ...] = (
         "诡秘之主",
         "斗破苍穹",

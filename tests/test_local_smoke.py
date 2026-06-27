@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import inspect
@@ -110,8 +110,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.tempdir.cleanup()
 
     def _create_plugin(self, config=None):
+        test_config = {"allow_unsafe_urls": True, "auto_probe_on_import": False}
+        test_config.update(dict(config or {}))
         plugin = self.module.JsonlNovelDownloaderPlugin(
-            context=object(), config=config or {}
+            context=object(), config=test_config
         )
         self._managed_plugins.append(plugin)
         return plugin
@@ -351,35 +353,49 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 tool_names.add(tool_name)
                 tool_attrs[tool_name] = attr
 
-        self.assertNotIn("novel_enable_source", tool_names)
-        self.assertNotIn("novel_resume_book_download", tool_names)
-        self.assertNotIn("novel_resume_download", tool_names)
-        self.assertNotIn("novel_auto_download", tool_names)
-        self.assertNotIn("novel_search_books", tool_names)
-        self.assertNotIn("novel_list_searches", tool_names)
-        self.assertNotIn("novel_get_search_results", tool_names)
-        self.assertNotIn("novel_download_search_result", tool_names)
-        self.assertNotIn("novel_download_book", tool_names)
-        self.assertNotIn("novel_fetch_preview", tool_names)
-        self.assertNotIn("novel_start_download", tool_names)
-        self.assertNotIn("novel_assemble_book", tool_names)
-        self.assertNotIn("novel_list_jobs", tool_names)
-        self.assertNotIn("novel_download", tool_names)
-        self.assertIn("novel_refresh_sources", tool_names)
-        self.assertIn("novel_remove_source", tool_names)
-        self.assertIn("novel_get_source_detail", tool_names)
-        self.assertIn("novel_query_candidates", tool_names)
-        self.assertIn("novel_probe_status", tool_names)
-        self.assertIn("novel_inspect_source_book", tool_names)
-        self.assertIn("novel_download_source_book", tool_names)
-        self.assertIn("novel_read_search_results", tool_names)
-        self.assertNotIn("novel_download_cached_result", tool_names)
-        self.assertIn("novel_download_status", tool_names)
-        for admin_tool_name in (
-            "novel_import_clean_rules",
-            "novel_import_sources",
-            "novel_refresh_sources",
+        self.assertEqual(
+            tool_names,
+            {
+                "webnovel_search_books",
+                "webnovel_download_book",
+                "webnovel_download_status",
+                "webnovel_import_sources",
+                "webnovel_list_sources",
+                "webnovel_refresh_sources",
+                "webnovel_probe_status",
+                "webnovel_import_clean_rules",
+                "webnovel_list_clean_rules",
+            },
+        )
+        for old_tool_name in (
+            "novel_enable_source",
+            "novel_resume_book_download",
+            "novel_resume_download",
+            "novel_auto_download",
+            "novel_search_books",
+            "novel_list_searches",
+            "novel_get_search_results",
+            "novel_download_search_result",
+            "novel_download_book",
+            "novel_fetch_preview",
+            "novel_start_download",
+            "novel_assemble_book",
+            "novel_list_jobs",
+            "novel_download",
             "novel_remove_source",
+            "novel_get_source_detail",
+            "novel_query_candidates",
+            "novel_inspect_source_book",
+            "novel_download_source_book",
+            "novel_read_search_results",
+            "novel_download_cached_result",
+            "novel_download_status",
+        ):
+            self.assertNotIn(old_tool_name, tool_names)
+        for admin_tool_name in (
+            "webnovel_import_clean_rules",
+            "webnovel_import_sources",
+            "webnovel_refresh_sources",
         ):
             self.assertTrue(getattr(tool_attrs[admin_tool_name], "__admin_only__", False))
             self.assertEqual(
@@ -388,60 +404,60 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_llm_tool_signature_hides_system_event_parameter(self):
-        signature = inspect.signature(self.plugin.novel_search_books)
+        signature = inspect.signature(self.plugin.webnovel_search_books)
         self.assertNotIn("event", signature.parameters)
         self.assertEqual(
             list(signature.parameters),
-            ["keyword", "source_ids_json", "limit", "include_disabled"],
+            ["keyword", "author", "limit", "include_disabled"],
         )
 
     async def test_llm_tool_accepts_runtime_call_without_event_argument(self):
         recorded = {}
 
-        async def fake_handle(
-            keyword, source_ids_json="", limit="", include_disabled=""
-        ):
+        async def fake_handle(keyword, author="", limit="", include_disabled=""):
             recorded["keyword"] = keyword
-            recorded["source_ids_json"] = source_ids_json
+            recorded["author"] = author
             recorded["limit"] = limit
             recorded["include_disabled"] = include_disabled
             return "ok"
 
-        self.plugin.handle_novel_search_books = fake_handle
-        result = await self.plugin.novel_search_books("瘟疫医生", limit="5")
+        self.plugin.handle_webnovel_search_books = fake_handle
+        result = await self.plugin.webnovel_search_books("瘟疫医生", limit="5")
 
         self.assertEqual(result, "ok")
         self.assertEqual(
             recorded,
             {
                 "keyword": "瘟疫医生",
-                "source_ids_json": "",
+                "author": "",
                 "limit": "5",
                 "include_disabled": "",
             },
         )
 
-    async def test_novel_download_accepts_runtime_call_without_event_argument(self):
+    async def test_webnovel_download_book_accepts_runtime_call_without_event_argument(
+        self,
+    ):
         recorded = {}
 
         async def fake_handle(
-            keyword,
-            author="",
-            source_ids_json="",
-            search_limit="",
-            include_disabled="",
+            search_id,
+            group_index,
+            attempt_limit="",
+            output_filename="",
+            auto_assemble="true",
         ):
-            recorded["keyword"] = keyword
-            recorded["author"] = author
-            recorded["source_ids_json"] = source_ids_json
-            recorded["search_limit"] = search_limit
-            recorded["include_disabled"] = include_disabled
+            recorded["search_id"] = search_id
+            recorded["group_index"] = group_index
+            recorded["attempt_limit"] = attempt_limit
+            recorded["output_filename"] = output_filename
+            recorded["auto_assemble"] = auto_assemble
             return "ok"
 
-        self.plugin.handle_novel_prepare_download = fake_handle
-        result = await self.plugin.novel_download(
-            "瘟疫医生",
-            "作者甲",
+        self.plugin.handle_webnovel_download_book = fake_handle
+        result = await self.plugin.webnovel_download_book(
+            "search-1",
+            "2",
             attempt_limit="3",
         )
 
@@ -449,15 +465,15 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             recorded,
             {
-                "keyword": "瘟疫医生",
-                "author": "作者甲",
-                "source_ids_json": "",
-                "search_limit": "",
-                "include_disabled": "",
+                "search_id": "search-1",
+                "group_index": "2",
+                "attempt_limit": "3",
+                "output_filename": "",
+                "auto_assemble": "true",
             },
         )
 
-    async def test_novel_refresh_sources_accepts_runtime_call_without_event_argument(
+    async def test_webnovel_refresh_sources_accepts_runtime_call_without_event_argument(
         self,
     ):
         recorded = {}
@@ -468,7 +484,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             return "ok"
 
         self.plugin.handle_novel_refresh_sources = fake_handle
-        result = await self.plugin.novel_refresh_sources("a,b,c", "true")
+        result = await self.plugin.webnovel_refresh_sources("a,b,c", "true")
 
         self.assertEqual(result, "ok")
         self.assertEqual(
@@ -479,7 +495,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_novel_query_candidates_supports_offset_pagination(self):
+    async def test_handle_novel_query_candidates_supports_offset_pagination(self):
         recorded = {}
         candidates = [
             {
@@ -506,110 +522,98 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "preflight_health_state": "unknown",
                 "download_health_state": "unknown",
             },
-            {
-                "candidate_index": 2,
-                "source_id": "source-c",
-                "source_name": "候选源C",
-                "title": "分页测试书",
-                "author": "作者甲",
-                "book_url": "https://example.com/books/c",
-                "supports_download": True,
-                "search_health_state": "unknown",
-                "preflight_health_state": "unknown",
-                "download_health_state": "unknown",
-            },
         ]
-        original_resolve = self.plugin.book_resolution_service.resolve
+
+        class FakeResolver(object):
+            def resolve(
+                self,
+                keyword,
+                author="",
+                source_ids=None,
+                limit=20,
+                include_disabled=False,
+            ):
+                recorded["resolve"] = {
+                    "keyword": keyword,
+                    "author": author,
+                    "source_ids": source_ids,
+                    "limit": limit,
+                    "include_disabled": include_disabled,
+                }
+                return {
+                    "keyword": keyword,
+                    "author": author,
+                    "search_result": {
+                        "candidate_sources": 2,
+                        "searched_sources": 2,
+                        "successful_sources": 2,
+                        "result_count": 2,
+                        "errors": [],
+                    },
+                    "candidate_count": len(candidates),
+                    "skipped_candidate_count": 0,
+                    "candidates": candidates,
+                    "skipped_candidates": [],
+                    "candidate_groups": [
+                        {
+                            "group_index": 0,
+                            "group_id": "book-a",
+                            "title": "分页测试书",
+                            "author": "作者甲",
+                            "source_count": 2,
+                            "candidate_count": 2,
+                            "skipped_candidate_count": 0,
+                            "downloadable_source_count": 2,
+                            "best_source_name": "候选源A",
+                            "candidates": candidates,
+                            "skipped_candidates": [],
+                        }
+                    ],
+                }
+
+        original_resolver = self.plugin.book_resolution_service
         original_save_search = self.plugin.search_cache.save_search
 
-        def fake_resolve(
-            keyword, author, source_ids=None, limit=0, include_disabled=False
-        ):
-            recorded["resolve"] = {
-                "keyword": keyword,
-                "author": author,
-                "source_ids": source_ids,
-                "limit": limit,
-                "include_disabled": include_disabled,
-            }
-            return {
-                "keyword": keyword,
-                "author": author,
-                "candidates": list(candidates),
-                "skipped_candidates": [],
-                "search_result": {
-                    "candidate_sources": 3,
-                    "searched_sources": 3,
-                    "successful_sources": 3,
-                    "result_count": 3,
-                    "errors": [],
-                },
-            }
-
         def fake_save_search(
-            keyword, result, source_ids=None, include_disabled=False, limit=0
+            keyword,
+            result,
+            source_ids=None,
+            include_disabled=False,
+            limit=None,
         ):
             recorded["save_search"] = {
                 "keyword": keyword,
                 "source_ids": source_ids,
                 "include_disabled": include_disabled,
                 "limit": limit,
-                "result_count": len(list(result.get("results") or [])),
+                "result": result,
             }
-            return {
-                "search_id": "search-candidates",
-                "path": str(self.base_dir / "search-candidates.json"),
-            }
+            return {"search_id": "search-1", "path": "search.json"}
 
-        self.plugin.book_resolution_service.resolve = fake_resolve
+        self.plugin.book_resolution_service = FakeResolver()
         self.plugin.search_cache.save_search = fake_save_search
         try:
-            payload = json.loads(
-                await self.plugin.novel_query_candidates(
-                    "分页测试书",
-                    "作者甲",
-                    '["source-a", "source-b"]',
-                    "1",
-                    "1",
-                    "true",
-                )
+            text = await self.plugin.handle_novel_query_candidates(
+                "分页测试书",
+                "作者甲",
+                '["source-a"]',
+                "1",
+                "1",
+                "true",
             )
         finally:
-            self.plugin.book_resolution_service.resolve = original_resolve
+            self.plugin.book_resolution_service = original_resolver
             self.plugin.search_cache.save_search = original_save_search
 
-        self.assertEqual(
-            recorded["resolve"],
-            {
-                "keyword": "分页测试书",
-                "author": "作者甲",
-                "source_ids": ["source-a", "source-b"],
-                "limit": 2,
-                "include_disabled": True,
-            },
-        )
-        self.assertEqual(
-            recorded["save_search"],
-            {
-                "keyword": "分页测试书",
-                "source_ids": ["source-a", "source-b"],
-                "include_disabled": True,
-                "limit": 2,
-                "result_count": 0,
-            },
-        )
-        self.assertEqual(payload["search_id"], "search-candidates")
-        self.assertEqual(payload["candidate_count"], 3)
-        self.assertEqual(payload["offset"], 1)
-        self.assertEqual(payload["limit"], 1)
+        payload = json.loads(text)
+        self.assertEqual(payload["candidate_count"], 2)
         self.assertEqual(payload["returned_candidate_count"], 1)
-        self.assertTrue(payload["has_more_candidates"])
-        self.assertEqual(payload["next_candidate_offset"], 2)
-        self.assertEqual(len(payload["candidates"]), 1)
-        self.assertEqual(payload["candidates"][0]["candidate_index"], 1)
         self.assertEqual(payload["candidates"][0]["source_id"], "source-b")
+        self.assertEqual(recorded["resolve"]["limit"], 2)
+        self.assertEqual(recorded["resolve"]["source_ids"], ["source-a"])
+        self.assertTrue(recorded["resolve"]["include_disabled"])
 
-    async def test_novel_probe_status_returns_paginated_summary_without_event_argument(
+    async def test_webnovel_probe_status_returns_paginated_summary_without_event_argument(
         self,
     ):
         recorded = {}
@@ -679,7 +683,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.plugin.source_probe_service.get_status = fake_get_status
         try:
             payload = json.loads(
-                await self.plugin.novel_probe_status(
+                await self.plugin.webnovel_probe_status(
                     "source-1,source-2,source-3",
                     "true",
                     "1",
@@ -724,12 +728,38 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(payload["sources"]), 1)
         self.assertEqual(payload["sources"][0]["source_id"], "source-2")
 
-    async def test_novel_download_source_book_accepts_runtime_call_without_event_argument(
-        self,
-    ):
+
+    async def test_handle_novel_download_source_book_uses_search_candidate_url(self):
         recorded = {}
 
-        async def fake_handle(
+        class FakeBookResolutionService(object):
+            def resolve(
+                self,
+                keyword,
+                author,
+                source_ids=None,
+                limit=20,
+                include_disabled=False,
+            ):
+                recorded["resolve"] = {
+                    "keyword": keyword,
+                    "author": author,
+                    "source_ids": list(source_ids or []),
+                    "limit": limit,
+                    "include_disabled": include_disabled,
+                }
+                return {
+                    "candidates": [
+                        {
+                            "source_id": "source-1",
+                            "title": "测试书",
+                            "author": "测试作者",
+                            "book_url": "https://example.com/from-search",
+                        }
+                    ]
+                }
+
+        async def fake_download(
             source_id,
             book_url,
             book_name="",
@@ -738,108 +768,74 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             expected_title="",
             expected_author="",
         ):
-            recorded["source_id"] = source_id
-            recorded["book_url"] = book_url
-            recorded["book_name"] = book_name
-            recorded["output_filename"] = output_filename
-            recorded["auto_assemble"] = auto_assemble
-            recorded["expected_title"] = expected_title
-            recorded["expected_author"] = expected_author
+            recorded["download"] = {
+                "source_id": source_id,
+                "book_url": book_url,
+                "book_name": book_name,
+                "output_filename": output_filename,
+                "auto_assemble": auto_assemble,
+                "expected_title": expected_title,
+                "expected_author": expected_author,
+            }
             return "ok"
 
-        self.plugin.handle_novel_download_book = fake_handle
-        result = await self.plugin.novel_download_source_book(
+        self.plugin.book_resolution_service = FakeBookResolutionService()
+        self.plugin.handle_novel_download_book = fake_download
+
+        result = await self.plugin.handle_novel_download_source_book(
             "source-1",
-            "https://example.com/book/1",
             "测试书",
             "测试作者",
-            auto_assemble="false",
+            "custom-name",
+            "false",
         )
 
         self.assertEqual(result, "ok")
         self.assertEqual(
-            recorded,
+            recorded["resolve"],
+            {
+                "keyword": "测试书",
+                "author": "测试作者",
+                "source_ids": ["source-1"],
+                "limit": 20,
+                "include_disabled": False,
+            },
+        )
+        self.assertEqual(
+            recorded["download"],
             {
                 "source_id": "source-1",
-                "book_url": "https://example.com/book/1",
+                "book_url": "https://example.com/from-search",
                 "book_name": "测试书",
-                "output_filename": "",
+                "output_filename": "custom-name",
                 "auto_assemble": "false",
                 "expected_title": "测试书",
                 "expected_author": "测试作者",
             },
         )
 
-    async def test_novel_download_source_book_requires_exact_title_and_author(self):
-        with self.assertRaisesRegex(ValueError, "book_name 和 author"):
-            await self.plugin.novel_download_source_book(
+    async def test_handle_novel_download_source_book_rejects_non_exact_candidate(self):
+        class FakeBookResolutionService(object):
+            def resolve(self, *_args, **_kwargs):
+                return {
+                    "candidates": [
+                        {
+                            "source_id": "source-1",
+                            "title": "测试书",
+                            "author": "另一个作者",
+                            "book_url": "https://example.com/wrong-author",
+                        }
+                    ]
+                }
+
+        self.plugin.book_resolution_service = FakeBookResolutionService()
+        with self.assertRaisesRegex(ValueError, "精确匹配"):
+            await self.plugin.handle_novel_download_source_book(
                 "source-1",
-                "https://example.com/book/1",
                 "测试书",
+                "测试作者",
             )
 
-    async def test_novel_read_search_results_accepts_runtime_call_without_event_argument(
-        self,
-    ):
-        recorded = {}
-
-        async def fake_handle(search_id, limit="", offset=""):
-            recorded["search_id"] = search_id
-            recorded["limit"] = limit
-            recorded["offset"] = offset
-            return "ok"
-
-        self.plugin.handle_novel_get_search_results = fake_handle
-        result = await self.plugin.novel_read_search_results(
-            "search-1",
-            offset="3",
-        )
-
-        self.assertEqual(result, "ok")
-        self.assertEqual(
-            recorded,
-            {
-                "search_id": "search-1",
-                "limit": "",
-                "offset": "3",
-            },
-        )
-
-    async def test_novel_download_cached_result_accepts_runtime_call_without_event_argument(
-        self,
-    ):
-        recorded = {}
-
-        async def fake_handle(
-            search_id,
-            result_index,
-            output_filename="",
-            auto_assemble="true",
-        ):
-            recorded["search_id"] = search_id
-            recorded["result_index"] = result_index
-            recorded["output_filename"] = output_filename
-            recorded["auto_assemble"] = auto_assemble
-            return "ok"
-
-        self.plugin.handle_novel_download_search_result = fake_handle
-        result = await self.plugin.novel_download_cached_result(
-            "search-2",
-            "4",
-            output_filename="输出.txt",
-            auto_assemble="false",
-        )
-
-        self.assertEqual(result, "ok")
-        self.assertEqual(
-            recorded,
-            {
-                "search_id": "search-2",
-                "result_index": "4",
-                "output_filename": "输出.txt",
-                "auto_assemble": "false",
-            },
-        )
 
     def test_plugin_init_uses_explicit_plugin_name_for_data_dir(self):
         expected = self.base_dir / "plugin_data"
@@ -1077,20 +1073,20 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         import_result = json.loads(
-            await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+            await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         )
         self.assertEqual(import_result["imported_count"], 1)
         self.assertTrue(Path(import_result["registry_path"]).exists())
         self.assertEqual(import_result["source_count"], 1)
 
         listed_sources = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         self.assertEqual(listed_sources["total_count"], 1)
         self.assertEqual(listed_sources["sources"][0]["name"], "测试JSON源")
 
         search_result = json.loads(
-            await self._invoke_tool(self.plugin.novel_search_books, "雪中")
+            await self._invoke_tool(self.plugin.webnovel_search_books, "雪中")
         )
         self.assertEqual(search_result["searched_sources"], 1)
         self.assertGreaterEqual(search_result["result_count"], 1)
@@ -1103,19 +1099,15 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             (self.base_dir / "book.html").resolve().as_uri(),
         )
         cached_results = json.loads(
-            await self._invoke_tool(
-                self.plugin.novel_get_search_results,
-                search_result["search_id"],
-                "1",
-                "0",
+            await self.plugin.handle_novel_get_search_results(
+                search_result["search_id"], "1", "0"
             )
         )
         self.assertEqual(cached_results["total_result_count"], 1)
         self.assertEqual(cached_results["results"][0]["result_index"], 0)
 
         preview = json.loads(
-            await self._invoke_tool(
-                self.plugin.novel_fetch_preview,
+            await self.plugin.handle_novel_fetch_preview(
                 (chapters_dir / "1.html").resolve().as_uri(),
                 "",
                 "200",
@@ -1123,21 +1115,20 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("第一章 降生", preview["text_preview"])
 
-        source_id = listed_sources["sources"][0]["source_id"]
-        auto_download_text = await self._invoke_tool(
-            self.plugin.novel_download_book,
-            source_id,
-            (self.base_dir / "book.html").resolve().as_uri(),
-            "雪中悍刀行",
-            "",
-            "true",
+        auto_download_payload = json.loads(
+            await self._invoke_tool(
+                self.plugin.webnovel_download_book,
+                search_result["search_id"],
+                "0",
+                "",
+                "",
+                "true",
+            )
         )
-        self.assertIn("已创建并启动任务", auto_download_text)
-        self.assertIn("预检: source=", auto_download_text)
-        auto_job_id = auto_download_text.splitlines()[0].split(": ", 1)[1]
-        await self.plugin._running_tasks[auto_job_id]
+        self.assertEqual(auto_download_payload["status"], "started")
+        auto_job_id = auto_download_payload["job"]["job_id"]
         auto_status = await self._invoke_tool(
-            self.plugin.novel_download_status, auto_job_id
+            self.plugin.webnovel_download_status, auto_job_id
         )
         self.assertIn("状态: assembled", auto_status)
         auto_output_path = self.plugin.manager.output_dir / "雪中悍刀行.txt"
@@ -1161,8 +1152,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ],
             ensure_ascii=False,
         )
-        start_text = await self._invoke_tool(
-            self.plugin.novel_start_download,
+        start_text = await self.plugin.handle_novel_start_download(
             "测试小说",
             toc_json,
             r"<div id='content'>(.*?)</div>",
@@ -1177,12 +1167,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self.plugin._running_tasks[job_id]
 
-        status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
+        status_text = await self._invoke_tool(self.plugin.webnovel_download_status, job_id)
         self.assertIn("状态: assembled", status_text)
 
-        assembled_text = await self._invoke_tool(
-            self.plugin.novel_assemble_book, job_id, "false"
-        )
+        assembled_text = await self.plugin.handle_novel_assemble_book(job_id, "false")
         self.assertIn("状态: assembled", assembled_text)
 
     async def test_novel_download_end_to_end(self):
@@ -1303,46 +1291,33 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.plugin.auto_probe_on_import = False
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         prepare_result = json.loads(
             await self._invoke_tool(
-                self.plugin.novel_download,
+                self.plugin.webnovel_search_books,
                 "自动下载测试书",
                 "自动作者",
-                "",
                 "10",
-                "2",
-                "",
-                "true",
                 "false",
             )
-        )
-        self.assertEqual(prepare_result["status"], "manual_selection_required")
-        self.assertTrue(prepare_result["download_blocked"])
-        self.assertEqual(
-            prepare_result["recommended_next_tool"], "novel_download_source_book"
         )
         self.assertGreaterEqual(prepare_result["candidate_count"], 2)
         self.assertTrue(Path(prepare_result["search_path"]).exists())
 
-        selected_candidate = next(
-            item
-            for item in prepare_result["candidates"]
-            if item["source_name"] == "B成功源"
+        download_payload = json.loads(
+            await self._invoke_tool(
+                self.plugin.webnovel_download_book,
+                prepare_result["search_id"],
+                "0",
+                "2",
+                "",
+                "true",
+            )
         )
-        download_text = await self._invoke_tool(
-            self.plugin.novel_download_source_book,
-            selected_candidate["source_id"],
-            selected_candidate["book_url"],
-            selected_candidate["title"],
-            selected_candidate["author"],
-            "",
-            "true",
-        )
-        self.assertIn("已创建并启动任务", download_text)
-        job_id = download_text.splitlines()[0].split(": ", 1)[1]
-        await self.plugin._running_tasks[job_id]
-        status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
+        self.assertEqual(download_payload["status"], "started")
+        self.assertEqual(download_payload["selected"]["source_name"], "B成功源")
+        job_id = download_payload["job"]["job_id"]
+        status_text = await self._invoke_tool(self.plugin.webnovel_download_status, job_id)
         self.assertIn("状态: assembled", status_text)
         output_path = self.plugin.manager.output_dir / "自动下载测试书.txt"
         self.assertTrue(output_path.exists())
@@ -1417,24 +1392,20 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.plugin.auto_probe_on_import = False
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         listed_sources = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         source_id = listed_sources["sources"][0]["source_id"]
 
-        source_detail = json.loads(
-            await self._invoke_tool(self.plugin.novel_get_source_detail, source_id)
-        )
+        source_detail = json.loads(await self.plugin.handle_novel_get_source_detail(source_id))
         self.assertEqual(source_detail["source"]["source_id"], source_id)
         self.assertEqual(source_detail["profile"]["template_family"], "generic_html")
         self.assertIn("rule_search_keys", source_detail["normalized"])
 
         candidate_query = json.loads(
-            await self._invoke_tool(
-                self.plugin.novel_query_candidates,
-                "查询测试书",
-                "查询作者",
+            await self.plugin.handle_novel_query_candidates(
+                "查询测试书", "查询作者"
             )
         )
         self.assertEqual(candidate_query["candidate_count"], 1)
@@ -1442,8 +1413,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(candidate_query["search_id"])
 
         inspection = json.loads(
-            await self._invoke_tool(
-                self.plugin.novel_inspect_source_book,
+            await self.plugin.handle_novel_inspect_source_book(
                 source_id,
                 book_path.resolve().as_uri(),
                 "查询测试书",
@@ -1842,6 +1812,58 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             if plugin is not None:
                 plugin.wait_for_bootstrap(2.0)
 
+    def test_plugin_bootstrap_can_disable_bundled_skill_auto_install(self):
+        plugin_base = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.base"
+        )
+        demo_skill_dir = self.base_dir / "disabled-skill"
+        demo_skill_dir.mkdir(parents=True, exist_ok=True)
+        (demo_skill_dir / "SKILL.md").write_text(
+            "---\nname: disabled-skill\nversion: 9.8.7\n---\n",
+            encoding="utf-8",
+        )
+
+        original_list = (
+            plugin_base.JsonlNovelDownloaderPluginBase._list_bundled_skill_dirs
+        )
+        original_install = (
+            plugin_base.JsonlNovelDownloaderPluginBase._install_bundled_skill
+        )
+        installed: list[str] = []
+
+        def fake_list(self):
+            return [demo_skill_dir]
+
+        def fail_if_called(self, skill_dir):
+            installed.append(skill_dir.name)
+            raise AssertionError("disabled bundled skill install was called")
+
+        plugin_base.JsonlNovelDownloaderPluginBase._list_bundled_skill_dirs = fake_list
+        plugin_base.JsonlNovelDownloaderPluginBase._install_bundled_skill = (
+            fail_if_called
+        )
+        plugin = None
+        try:
+            plugin = self._create_plugin({"auto_install_bundled_skills": False})
+            self.assertTrue(plugin.wait_for_bootstrap(0.1))
+            self.assertEqual(installed, [])
+
+            state = json.loads(plugin._bootstrap_state_path.read_text("utf-8"))
+            entry = next(iter(state["bundled_skills"].values()))
+            self.assertEqual(entry["status"], "disabled")
+            self.assertEqual(entry["install_action"], "disabled_by_config")
+            self.assertEqual(entry["skill_name"], "disabled-skill")
+            self.assertEqual(entry["skill_version"], "9.8.7")
+        finally:
+            plugin_base.JsonlNovelDownloaderPluginBase._list_bundled_skill_dirs = (
+                original_list
+            )
+            plugin_base.JsonlNovelDownloaderPluginBase._install_bundled_skill = (
+                original_install
+            )
+            if plugin is not None:
+                plugin.wait_for_bootstrap(2.0)
+
     async def test_download_status_offloads_blocking_status_read(self):
         original_get_status = self.plugin.manager.get_status
 
@@ -1866,7 +1888,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         try:
             start = time.perf_counter()
             task = asyncio.create_task(
-                self.plugin.handle_novel_download_status("job-1")
+                self.plugin.handle_webnovel_download_status("job-1")
             )
             await asyncio.sleep(0.01)
             elapsed = time.perf_counter() - start
@@ -1910,7 +1932,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         try:
             start = time.perf_counter()
             task = asyncio.create_task(
-                self.plugin.handle_novel_import_sources(source_json)
+                self.plugin.handle_webnovel_import_sources(source_json)
             )
             await asyncio.sleep(0.01)
             elapsed = time.perf_counter() - start
@@ -2121,13 +2143,31 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             str(runtime.source_health_store.path).endswith("source_health.json")
         )
-        self.assertEqual(runtime.source_probe_service.config.max_workers, 2)
+        self.assertEqual(runtime.source_probe_service.config.max_workers, 6)
         self.assertEqual(
             runtime.source_probe_service.config.probe_keywords,
             ("诡秘之主", "斗破苍穹", "凡人修仙传"),
         )
 
+    def test_plugin_runtime_uses_fast_default_workers_and_timeouts(self):
+        runtime_module = importlib.import_module(
+            "astrbot_plugin_webnovel_downloader.runtime"
+        )
+        runtime = runtime_module.build_plugin_runtime(self.base_dir / "runtime-defaults")
+
+        self.assertEqual(runtime.manager.config.max_workers, 12)
+        self.assertEqual(runtime.source_download_service.config.max_workers, 12)
+        self.assertEqual(runtime.search_service.config.max_workers, 24)
+        self.assertEqual(runtime.source_probe_service.config.max_workers, 6)
+        self.assertEqual(runtime.manager.config.request_timeout, 15.0)
+        self.assertEqual(
+            runtime.source_download_service.engine.config.request_timeout, 15.0
+        )
+        self.assertEqual(runtime.search_service.engine.config.request_timeout, 8.0)
+        self.assertEqual(runtime.search_service.config.time_budget_seconds, 60.0)
+
     async def test_import_sources_queues_probe_and_list_sources_shows_health(self):
+        self.plugin.auto_probe_on_import = True
         source_json = json.dumps(
             [
                 {
@@ -2164,7 +2204,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
             self.plugin.source_probe_service.enqueue_sources = fake_enqueue_sources
             imported = json.loads(
-                await self.plugin.handle_novel_import_sources(source_json)
+                await self.plugin.handle_webnovel_import_sources(source_json)
             )
         finally:
             self.plugin.source_probe_service.enqueue_sources = original_enqueue_sources
@@ -2191,7 +2231,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         listed_sources = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         self.assertEqual(listed_sources["sources"][0]["source_id"], source_id)
         self.assertEqual(listed_sources["sources"][0]["search_health_state"], "healthy")
@@ -2241,7 +2281,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 }
 
             plugin.source_probe_service.enqueue_sources = fake_enqueue_sources
-            imported = json.loads(await plugin.handle_novel_import_sources(source_json))
+            imported = json.loads(await plugin.handle_webnovel_import_sources(source_json))
         finally:
             plugin.source_probe_service.enqueue_sources = original_enqueue_sources
 
@@ -2289,8 +2329,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ],
             ensure_ascii=False,
         )
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
-        listed = json.loads(await self._invoke_tool(self.plugin.novel_list_sources))
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
+        listed = json.loads(await self._invoke_tool(self.plugin.webnovel_list_sources))
         source_ids = [item["source_id"] for item in listed["sources"]]
         queued_source_ids = []
         original_enqueue_sources = self.plugin.source_probe_service.enqueue_sources
@@ -2316,7 +2356,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             self.plugin.source_probe_service.get_status = fake_get_status
             result = json.loads(
                 await self._invoke_tool(
-                    self.plugin.novel_refresh_sources,
+                    self.plugin.webnovel_refresh_sources,
                     source_ids[0],
                     "false",
                 )
@@ -2424,42 +2464,37 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         search_result = json.loads(
-            await self._invoke_tool(self.plugin.novel_search_books, "缓存小说")
+            await self._invoke_tool(self.plugin.webnovel_search_books, "缓存小说")
         )
         search_id = search_result["search_id"]
         self.assertTrue(search_id)
         self.assertEqual(search_result["results"][0]["result_index"], 0)
 
-        searches = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_searches, "10", "0")
-        )
+        searches = json.loads(await self.plugin.handle_novel_list_searches("10", "0"))
         self.assertEqual(searches["total_count"], 1)
         self.assertEqual(searches["searches"][0]["search_id"], search_id)
 
         cached_page = json.loads(
-            await self._invoke_tool(
-                self.plugin.novel_get_search_results,
-                search_id,
-                "10",
-                "0",
-            )
+            await self.plugin.handle_novel_get_search_results(search_id, "10", "0")
         )
         self.assertEqual(cached_page["total_result_count"], 1)
         self.assertEqual(cached_page["results"][0]["title"], "缓存小说")
 
-        download_text = await self._invoke_tool(
-            self.plugin.novel_download_search_result,
-            search_id,
-            "0",
-            "",
-            "true",
+        download_payload = json.loads(
+            await self._invoke_tool(
+                self.plugin.webnovel_download_book,
+                search_id,
+                "0",
+                "",
+                "",
+                "true",
+            )
         )
-        self.assertIn("已创建并启动任务", download_text)
-        job_id = download_text.splitlines()[0].split(": ", 1)[1]
-        await self.plugin._running_tasks[job_id]
-        status_text = await self._invoke_tool(self.plugin.novel_download_status, job_id)
+        self.assertEqual(download_payload["status"], "started")
+        job_id = download_payload["job"]["job_id"]
+        status_text = await self._invoke_tool(self.plugin.webnovel_download_status, job_id)
         self.assertIn("状态: assembled", status_text)
         output_path = self.plugin.manager.output_dir / "缓存小说.txt"
         self.assertTrue(output_path.exists())
@@ -2552,10 +2587,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         import_result = json.loads(
             await self._invoke_tool(
-                self.plugin.novel_import_clean_rules,
+                self.plugin.webnovel_import_clean_rules,
                 clean_repo_json,
                 "测试净化仓库",
             )
@@ -2566,24 +2601,28 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(Path(import_result["path"]).exists())
 
         repo_list = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0")
+            await self._invoke_tool(self.plugin.webnovel_list_clean_rules, "10", "0")
         )
         self.assertEqual(repo_list["total_count"], 1)
         self.assertEqual(repo_list["repositories"][0]["name"], "测试净化仓库")
 
         search_result = json.loads(
-            await self._invoke_tool(self.plugin.novel_search_books, "净化仓库测试书")
+            await self._invoke_tool(self.plugin.webnovel_search_books, "净化仓库测试书")
         )
-        download_text = await self._invoke_tool(
-            self.plugin.novel_download_search_result,
-            search_result["search_id"],
-            "0",
-            "",
-            "true",
+        download_payload = json.loads(
+            await self._invoke_tool(
+                self.plugin.webnovel_download_book,
+                search_result["search_id"],
+                "0",
+                "",
+                "",
+                "true",
+            )
         )
-        self.assertIn("已创建并启动任务", download_text)
-        job_id = download_text.splitlines()[0].split(": ", 1)[1]
-        await self.plugin._running_tasks[job_id]
+        self.assertEqual(download_payload["status"], "started")
+        job_id = download_payload["job"]["job_id"]
+        status_text = await self._invoke_tool(self.plugin.webnovel_download_status, job_id)
+        self.assertIn("状态: assembled", status_text)
         output_path = self.plugin.manager.output_dir / "净化仓库测试书.txt"
         self.assertTrue(output_path.exists())
         content = output_path.read_text(encoding="utf-8")
@@ -2621,7 +2660,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         result = json.loads(
             await self._invoke_tool(
-                self.plugin.novel_import_clean_rules,
+                self.plugin.webnovel_import_clean_rules,
                 clean_repo_json,
                 "跳过测试仓库",
             )
@@ -2630,7 +2669,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["skipped_rule_count"], 2)
 
         repo_list = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_clean_rules, "10", "0")
+            await self._invoke_tool(self.plugin.webnovel_list_clean_rules, "10", "0")
         )
         self.assertEqual(repo_list["repositories"][0]["rule_count"], 1)
         self.assertEqual(repo_list["repositories"][0]["skipped_rule_count"], 2)
@@ -2667,7 +2706,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         result = json.loads(
-            await self._invoke_tool(self.plugin.novel_import_sources, rss_like_source)
+            await self._invoke_tool(self.plugin.webnovel_import_sources, rss_like_source)
         )
         self.assertEqual(result["imported_count"], 1)
         self.assertEqual(result["supported_search_count"], 0)
@@ -2675,7 +2714,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(result["warning_count"], 0)
         self.assertTrue(result["warnings_preview"])
         listed_sources = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         source = listed_sources["sources"][0]
         self.assertEqual(source["name"], "源仓库(官方纯净)")
@@ -2683,7 +2722,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(source["supports_download"])
         self.assertTrue(source["issues"])
 
-    async def test_js_heavy_source_marks_partial_support_and_skips_search(self):
+    async def test_js_heavy_source_marks_login_runtime_unsupported_and_skips_search(
+        self,
+    ):
         js_heavy_source = json.dumps(
             [
                 {
@@ -2714,13 +2755,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         result = json.loads(
-            await self._invoke_tool(self.plugin.novel_import_sources, js_heavy_source)
+            await self._invoke_tool(self.plugin.webnovel_import_sources, js_heavy_source)
         )
         self.assertEqual(result["imported_count"], 1)
         self.assertEqual(result["supported_search_count"], 0)
         self.assertEqual(result["supported_download_count"], 0)
         listed_sources = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         source = listed_sources["sources"][0]
         self.assertTrue(source["has_js_lib"])
@@ -2730,19 +2771,19 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(source["supports_search"])
         self.assertFalse(source["supports_download"])
         self.assertTrue(
-            any("ruleSearch 含 JS 规则" in issue for issue in source["issues"])
+            any("登录" in issue for issue in source["issues"])
         )
 
         search_result = json.loads(
-            await self._invoke_tool(self.plugin.novel_search_books, "雪中")
+            await self._invoke_tool(self.plugin.webnovel_search_books, "雪中")
         )
         self.assertEqual(search_result["searched_sources"], 0)
         self.assertEqual(len(search_result["skipped_sources"]), 1)
         self.assertIn(
-            "ruleSearch 含 JS 规则", search_result["skipped_sources"][0]["reason"]
+            "登录", search_result["skipped_sources"][0]["reason"]
         )
 
-    async def test_download_book_rejects_js_only_download_source_before_fetch(self):
+    async def test_download_book_rejects_network_js_download_source_before_fetch(self):
         partial_source = json.dumps(
             [
                 {
@@ -2758,7 +2799,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                         "name": "h1&&text",
                     },
                     "ruleToc": {
-                        "chapterList": "<js>return [];</js>",
+                        "chapterList": "<js>java.ajax(baseUrl)</js>",
                     },
                     "ruleContent": {
                         "content": "div.content&&text",
@@ -2769,18 +2810,17 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         json.loads(
-            await self._invoke_tool(self.plugin.novel_import_sources, partial_source)
+            await self._invoke_tool(self.plugin.webnovel_import_sources, partial_source)
         )
         listed_sources = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         source_id = listed_sources["sources"][0]["source_id"]
         self.assertTrue(listed_sources["sources"][0]["supports_search"])
         self.assertFalse(listed_sources["sources"][0]["supports_download"])
 
         with self.assertRaisesRegex(ValueError, "不支持 TXT 下载"):
-            await self._invoke_tool(
-                self.plugin.novel_download_book,
+            await self.plugin.handle_novel_download_book(
                 source_id,
                 "https://example.com/book/1",
                 "测试书",
@@ -2788,7 +2828,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "true",
             )
         listed_again = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         self.assertEqual(
             listed_again["sources"][0]["preflight_health_state"], "unsupported"
@@ -2822,9 +2862,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ],
             ensure_ascii=False,
         )
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         listed_sources = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         source_id = listed_sources["sources"][0]["source_id"]
         original_preflight = self.plugin.source_download_service.preflight_book
@@ -2835,8 +2875,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
             self.plugin.source_download_service.preflight_book = fake_preflight
             with self.assertRaisesRegex(ValueError, "未解析到目录"):
-                await self._invoke_tool(
-                    self.plugin.novel_download_book,
+                await self.plugin.handle_novel_download_book(
                     source_id,
                     "https://example.com/book/1",
                     "测试书",
@@ -2848,7 +2887,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.plugin._running_tasks, {})
         listed_again = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources)
+            await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
         self.assertEqual(listed_again["sources"][0]["preflight_health_state"], "broken")
         self.assertIn(
@@ -2880,7 +2919,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         ]
         result = json.loads(
             await self._invoke_tool(
-                self.plugin.novel_import_sources,
+                self.plugin.webnovel_import_sources,
                 json.dumps(sources, ensure_ascii=False),
             )
         )
@@ -2894,13 +2933,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("sources", result)
 
         second_page = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources, "", "4", "8")
+            await self._invoke_tool(self.plugin.webnovel_list_sources, "", "4", "8")
         )
         self.assertEqual(second_page["returned_count"], 4)
         self.assertFalse(second_page["has_more"])
 
         compact_page = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_sources, "", "12", "0")
+            await self._invoke_tool(self.plugin.webnovel_list_sources, "", "12", "0")
         )
         self.assertEqual(compact_page["returned_count"], 12)
         self.assertLessEqual(
@@ -2951,10 +2990,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         result = json.loads(
             await self._invoke_tool(
-                self.plugin.novel_search_books, "测试", "", "12", "false"
+                self.plugin.webnovel_search_books, "测试", "", "12", "false"
             )
         )
         self.assertEqual(result["result_count"], 12)
@@ -3008,11 +3047,11 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ],
             ensure_ascii=False,
         )
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
 
         result = json.loads(
             await self._invoke_tool(
-                self.plugin.novel_search_books, "诡秘之主", "", "10", "false"
+                self.plugin.webnovel_search_books, "诡秘之主", "", "10", "false"
             )
         )
         self.assertEqual(result["searched_sources"], 2)
@@ -3070,9 +3109,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         result = json.loads(
-            await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主")
+            await self._invoke_tool(self.plugin.webnovel_search_books, "诡秘之主")
         )
         self.assertEqual(result["result_count"], 1)
         self.assertEqual(
@@ -3126,9 +3165,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         result = json.loads(
-            await self._invoke_tool(self.plugin.novel_search_books, "诡秘之主")
+            await self._invoke_tool(self.plugin.webnovel_search_books, "诡秘之主")
         )
         self.assertEqual(result["result_count"], 1)
         self.assertEqual(result["successful_sources"], 1)
@@ -3188,7 +3227,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
         source = self.plugin.source_registry.load_normalized_source(
             sources[0]["source_id"]
@@ -3251,7 +3290,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
         source = self.plugin.source_registry.load_normalized_source(
             sources[0]["source_id"]
@@ -3314,7 +3353,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
         source = self.plugin.source_registry.load_normalized_source(
             sources[0]["source_id"]
@@ -3401,7 +3440,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
         source = self.plugin.source_registry.load_normalized_source(
             sources[0]["source_id"]
@@ -3450,7 +3489,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
         source = self.plugin.source_registry.load_normalized_source(
             sources[0]["source_id"]
@@ -3500,7 +3539,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ensure_ascii=False,
         )
 
-        await self._invoke_tool(self.plugin.novel_import_sources, source_json)
+        await self._invoke_tool(self.plugin.webnovel_import_sources, source_json)
         sources = self.plugin.source_registry.list_sources()
         source = self.plugin.source_registry.load_normalized_source(
             sources[0]["source_id"]
@@ -3535,9 +3574,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "",
             )
 
-        jobs = json.loads(
-            await self._invoke_tool(self.plugin.novel_list_jobs, "12", "0")
-        )
+        jobs = json.loads(await self.plugin.handle_novel_list_jobs("12", "0"))
         self.assertEqual(jobs["returned_count"], 12)
         self.assertLessEqual(len(jobs["jobs"]), self.plugin.max_tool_preview_items)
         self.assertGreater(jobs["omitted_from_inline_count"], 0)
@@ -3547,3 +3584,4 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

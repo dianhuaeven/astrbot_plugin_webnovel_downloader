@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,6 +17,8 @@ class CleanRuleRepositoryStore:
         self.repos_dir = self.clean_rules_dir / "repos"
         self.index_path = self.clean_rules_dir / "index.json"
         self.repos_dir.mkdir(parents=True, exist_ok=True)
+        # 串行化 index.json 的「读-改-写」，避免管理员导入与 bootstrap 导入互相覆盖。
+        self._write_lock = threading.RLock()
 
     def import_rules_from_text(
         self,
@@ -40,9 +43,6 @@ class CleanRuleRepositoryStore:
             "rules": rules,
         }
         repo_path = self.repos_dir / "{repo_id}.json".format(repo_id=repo_id)
-        self._write_json(repo_path, payload)
-
-        index = self._load_index()
         record = {
             "repo_id": repo_id,
             "name": name,
@@ -54,12 +54,17 @@ class CleanRuleRepositoryStore:
             "skipped_rule_count": payload["skipped_rule_count"],
             "path": str(repo_path),
         }
-        index["repos"] = [
-            item for item in index["repos"] if item.get("repo_id") != repo_id
-        ]
-        index["repos"].insert(0, record)
-        index["updated_at"] = imported_at
-        self._write_json(self.index_path, index)
+        # 分片路径含 repo_id（稳定身份），可在锁外写；index.json 的读-改-写须串行。
+        self._write_json(repo_path, payload)
+
+        with self._write_lock:
+            index = self._load_index()
+            index["repos"] = [
+                item for item in index["repos"] if item.get("repo_id") != repo_id
+            ]
+            index["repos"].insert(0, record)
+            index["updated_at"] = imported_at
+            self._write_json(self.index_path, index)
         return record
 
     def list_repositories(self) -> list[dict[str, Any]]:

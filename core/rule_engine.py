@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import unescape
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from .defaults import DEFAULT_JS_TIMEOUT_SECONDS, DEFAULT_REQUEST_TIMEOUT
 from .js_runtime import JavaScriptRuntime, JavaScriptRuntimeConfig
 from .session_scraper import SessionScraper, SessionScraperConfig
+from .url_security import UrlSafetyPolicy
+
+
+logger = logging.getLogger(__name__)
 
 try:
     from jsonpath_ng.ext import parse as parse_jsonpath
@@ -37,7 +43,7 @@ class RequestSpec:
 
 @dataclass
 class RuleEngineConfig:
-    request_timeout: float = 20.0
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
     user_agent: str = (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -46,6 +52,10 @@ class RuleEngineConfig:
     clean_rule_store: Any = None
     scraper: Any = None
     js_runtime: Any = None
+    # JS 规则墙钟硬超时（秒），用于未注入 js_runtime 时构造默认运行时。
+    js_timeout_seconds: float = DEFAULT_JS_TIMEOUT_SECONDS
+    # 当未注入外部 scraper 时，用这个策略构造自建 scraper；默认拒绝内网/非 http(s)。
+    url_safety_policy: UrlSafetyPolicy = field(default_factory=UrlSafetyPolicy)
 
 
 class RuleEngine:
@@ -71,11 +81,36 @@ class RuleEngine:
             SessionScraperConfig(
                 user_agent=self.config.user_agent,
                 use_env_proxy=self.config.use_env_proxy,
+                url_safety_policy=self.config.url_safety_policy,
             )
         )
         self.js_runtime = config.js_runtime or JavaScriptRuntime(
-            JavaScriptRuntimeConfig()
+            JavaScriptRuntimeConfig(timeout_seconds=self.config.js_timeout_seconds)
         )
+
+    def _seed_rule_context(
+        self,
+        rule_context: Dict[str, Any] | None,
+        source: Dict[str, Any],
+        base_url: str = "",
+        extra: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        context = rule_context if rule_context is not None else {}
+        normalized_base_url = str(base_url or "").strip()
+        source_url = str(source.get("source_url") or source.get("bookSourceUrl") or "")
+        if normalized_base_url:
+            context["baseUrl"] = normalized_base_url
+            context["base_url"] = normalized_base_url
+            context["currentUrl"] = normalized_base_url
+        if source_url:
+            context["sourceUrl"] = source_url
+            context["source_url"] = source_url
+        js_lib = str(source.get("js_lib") or source.get("jsLib") or "").strip()
+        if js_lib:
+            context["__js_lib"] = js_lib
+        for key, value in dict(extra or {}).items():
+            context[str(key)] = value
+        return context
 
     def search_books(
         self,
@@ -89,17 +124,19 @@ class RuleEngine:
         if not source.get("rule_search"):
             raise RuleEngineError("书源未提供 rule_search")
 
-        rendered_url = self._render_template(
+        template_variables = {
+            "key": keyword,
+            "keyword": keyword,
+            "keyEncoded": quote(keyword),
+            "key_encoded": quote(keyword),
+            "page": "1",
+            "baseUrl": str(source.get("source_url") or ""),
+            "base_url": str(source.get("source_url") or ""),
+        }
+        rendered_url = self._render_request_template(
+            source,
             search_url,
-            {
-                "key": keyword,
-                "keyword": keyword,
-                "keyEncoded": quote(keyword),
-                "key_encoded": quote(keyword),
-                "page": "1",
-                "baseUrl": str(source.get("source_url") or ""),
-                "base_url": str(source.get("source_url") or ""),
-            },
+            template_variables,
         )
         request_spec = self._build_request_spec(source, rendered_url)
         response_text, final_url = self._fetch_text(
@@ -135,6 +172,9 @@ class RuleEngine:
         book_info_rule = source.get("rule_book_info") or {}
         toc_rule = source.get("rule_toc") or {}
         current_context = dict(rule_context or {})
+        self._seed_rule_context(
+            current_context, source, detail_final_url, {"bookUrl": detail_final_url}
+        )
         payload = self._run_rule_init(
             payload_kind,
             payload,
@@ -224,6 +264,9 @@ class RuleEngine:
                 current_url, headers=source.get("headers") or {}
             )
             payload_kind, payload = self._build_payload(page_text, final_url)
+            self._seed_rule_context(
+                shared_context, source, final_url, {"bookUrl": toc_url}
+            )
             payload = self._run_rule_init(
                 payload_kind,
                 payload,
@@ -394,6 +437,15 @@ class RuleEngine:
                 current_url, headers=source.get("headers") or {}
             )
             payload_kind, payload = self._build_payload(page_text, final_url)
+            self._seed_rule_context(
+                shared_context,
+                source,
+                final_url,
+                {
+                    "bookUrl": chapter_url,
+                    "durChapterTitle": chosen_title or fallback_title,
+                },
+            )
             payload = self._run_rule_init(
                 payload_kind,
                 payload,
@@ -459,6 +511,7 @@ class RuleEngine:
         repo_cleaners = self._load_repo_cleaners(source)
         if repo_cleaners:
             cleaned = self._apply_cleaners(cleaned, repo_cleaners)
+        cleaned = self._normalize_escaped_line_breaks(cleaned)
         cleaned = self._apply_generic_text_cleaners(cleaned)
         cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -712,7 +765,14 @@ class RuleEngine:
             return self._cleaner_cache[clean_url]
         try:
             text, _ = self._fetch_text(clean_url, headers=source.get("headers") or {})
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "加载远程净化规则失败 source_id=%s source_name=%s clean_rule_url=%s error=%s",
+                self._source_debug_id(source),
+                self._source_debug_name(source),
+                clean_url,
+                exc,
+            )
             self._cleaner_cache[clean_url] = []
             return []
         cleaners = self._parse_remote_cleaners(text)
@@ -725,8 +785,31 @@ class RuleEngine:
             return []
         try:
             return list(store.load_applicable_cleaners(source))
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "加载本地净化规则仓库失败 source_id=%s source_name=%s error=%s",
+                self._source_debug_id(source),
+                self._source_debug_name(source),
+                exc,
+            )
             return []
+
+    def _source_debug_id(self, source: Dict[str, Any]) -> str:
+        return str(
+            source.get("source_id")
+            or source.get("id")
+            or source.get("bookSourceUrl")
+            or source.get("source_url")
+            or ""
+        ).strip()
+
+    def _source_debug_name(self, source: Dict[str, Any]) -> str:
+        return str(
+            source.get("name")
+            or source.get("source_name")
+            or source.get("bookSourceName")
+            or ""
+        ).strip()
 
     def _parse_remote_cleaners(self, raw_text: str) -> List[Tuple[str, str]]:
         text = raw_text.strip()
@@ -817,7 +900,17 @@ class RuleEngine:
         keyword: str,
     ) -> List[Dict[str, Any]]:
         rule = source.get("rule_search") or {}
-        shared_context: dict[str, Any] = {}
+        shared_context: dict[str, Any] = self._seed_rule_context(
+            {},
+            source,
+            final_url,
+            {
+                "key": keyword,
+                "keyword": keyword,
+                "page": "1",
+                "bookUrl": final_url,
+            },
+        )
         payload = self._run_rule_init(
             payload_kind,
             payload,
@@ -951,9 +1044,42 @@ class RuleEngine:
                 candidate_rule,
                 rule_context,
             )
-            base_rule, js_code = self._split_js_rule(resolved_rule)
+            base_rule, js_code, suffix_rule = self._split_js_rule_parts(resolved_rule)
             base_rule, put_mapping = self._split_put_directives(base_rule)
             base_rule, cleaners = self._split_cleaners(base_rule)
+            if js_code and suffix_rule:
+                values = self._select_many(
+                    payload_kind,
+                    payload,
+                    resolved_rule,
+                    rule_context=rule_context,
+                )
+                if not values:
+                    continue
+                value = self._stringify(values[0])
+                if cleaners:
+                    value = self._apply_cleaners(value, cleaners)
+                if value.strip():
+                    return value
+                continue
+            if js_code and not base_rule:
+                value = self._stringify_js_result(
+                    self._execute_js(
+                        js_code,
+                        result=self._payload_as_js_input(payload),
+                        payload_kind=payload_kind,
+                        payload=payload,
+                        rule_context=rule_context,
+                    )
+                )
+                self._apply_put_mapping(
+                    payload_kind, payload, put_mapping, rule_context
+                )
+                if cleaners:
+                    value = self._apply_cleaners(value, cleaners)
+                if value.strip():
+                    return self._normalize_text(value)
+                continue
             if "{{" in base_rule and "}}" in base_rule:
                 rendered = self._render_rule_template(
                     payload_kind,
@@ -1039,9 +1165,42 @@ class RuleEngine:
                 candidate_rule,
                 rule_context,
             )
-            base_rule, js_code = self._split_js_rule(resolved_rule)
+            base_rule, js_code, suffix_rule = self._split_js_rule_parts(resolved_rule)
             base_rule, put_mapping = self._split_put_directives(base_rule)
             base_rule, cleaners = self._split_cleaners(base_rule)
+            if js_code and suffix_rule:
+                values = self._select_many(
+                    payload_kind,
+                    payload,
+                    resolved_rule,
+                    rule_context=rule_context,
+                )
+                if not values:
+                    continue
+                joined = "\n".join([self._stringify(value) for value in values])
+                if cleaners:
+                    joined = self._apply_cleaners(joined, cleaners)
+                if joined.strip():
+                    return joined.strip()
+                continue
+            if js_code and not base_rule:
+                value = self._stringify_js_result(
+                    self._execute_js(
+                        js_code,
+                        result=self._payload_as_js_input(payload),
+                        payload_kind=payload_kind,
+                        payload=payload,
+                        rule_context=rule_context,
+                    )
+                )
+                self._apply_put_mapping(
+                    payload_kind, payload, put_mapping, rule_context
+                )
+                if cleaners:
+                    value = self._apply_cleaners(value, cleaners)
+                if value.strip():
+                    return value.strip()
+                continue
             if "{{" in base_rule and "}}" in base_rule:
                 rendered = self._render_rule_template(
                     payload_kind,
@@ -1126,25 +1285,28 @@ class RuleEngine:
         resolved_rule, _ = self._resolve_context_placeholders(
             str(rule_text or ""), rule_context
         )
-        base_rule, js_code = self._split_js_rule(resolved_rule)
+        base_rule, js_code, suffix_rule = self._split_js_rule_parts(resolved_rule)
         base_rule, put_mapping = self._split_put_directives(base_rule)
         base_rule, cleaners = self._split_cleaners(base_rule)
         base_rule = self._normalize_rule_prefix(base_rule, payload_kind)
-        if payload_kind == "json":
-            values = self._select_json_many(payload, base_rule or "$")
+        if base_rule or not js_code:
+            if payload_kind == "json":
+                values = self._select_json_many(payload, base_rule or "$")
+            else:
+                values = self._select_html_many(payload, base_rule or "*")
         else:
-            values = self._select_html_many(payload, base_rule or "*")
+            values = []
         self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
         if js_code:
             js_input: Any
             if values:
-                js_input = values if len(values) > 1 else values[0]
-            else:
                 js_input = (
-                    payload
-                    if payload_kind == "json"
-                    else (payload.get() if hasattr(payload, "get") else "")
+                    [self._value_as_js_input(value) for value in values]
+                    if len(values) > 1
+                    else self._value_as_js_input(values[0])
                 )
+            else:
+                js_input = self._payload_as_js_input(payload)
             js_output = self._execute_js(
                 js_code,
                 result=js_input,
@@ -1152,7 +1314,23 @@ class RuleEngine:
                 payload=payload,
                 rule_context=rule_context,
             )
-            if isinstance(js_output, list):
+            if suffix_rule:
+                suffix_payload_kind, suffix_payload = (
+                    self._coerce_js_output_payload(
+                        js_output,
+                        suffix_rule,
+                        payload_kind,
+                        payload,
+                        rule_context,
+                    )
+                )
+                values = self._select_many(
+                    suffix_payload_kind,
+                    suffix_payload,
+                    suffix_rule,
+                    rule_context=rule_context,
+                )
+            elif isinstance(js_output, list):
                 values = list(js_output)
             elif js_output in (None, ""):
                 values = []
@@ -1165,6 +1343,68 @@ class RuleEngine:
             else:
                 cleaned.append(value)
         return cleaned
+
+    def _payload_as_js_input(self, payload: Any) -> Any:
+        if isinstance(payload, (dict, list)):
+            return json.dumps(payload, ensure_ascii=False)
+        if hasattr(payload, "get"):
+            try:
+                return payload.get() or ""
+            except Exception:
+                return str(payload)
+        return payload
+
+    def _value_as_js_input(self, value: Any) -> Any:
+        if hasattr(value, "get"):
+            try:
+                return value.get() or ""
+            except Exception:
+                return str(value)
+        return value
+
+    def _coerce_js_output_payload(
+        self,
+        js_output: Any,
+        suffix_rule: str,
+        fallback_payload_kind: str,
+        fallback_payload: Any,
+        rule_context: Dict[str, Any] | None,
+    ) -> Tuple[str, Any]:
+        value = js_output
+        if value in (None, ""):
+            value = self._payload_as_js_input(fallback_payload)
+        if isinstance(value, (dict, list)):
+            return "json", value
+
+        text = str(value or "")
+        suffix = str(suffix_rule or "").strip()
+        if (
+            fallback_payload_kind == "json"
+            or suffix.startswith(("$", "@json:"))
+            or re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
+                suffix,
+            )
+        ):
+            try:
+                return "json", json.loads(text)
+            except Exception:
+                if fallback_payload_kind == "json":
+                    return fallback_payload_kind, fallback_payload
+
+        if Selector is None:
+            raise RuleEngineError(
+                "当前环境缺少 parsel，无法解析 JS 规则输出的 HTML"
+            )
+        base_url = ""
+        if rule_context is not None:
+            base_url = str(
+                rule_context.get("baseUrl")
+                or rule_context.get("base_url")
+                or rule_context.get("currentUrl")
+                or ""
+            )
+        return "html", Selector(text=text, base_url=base_url)
 
     def _normalize_rule_prefix(self, rule_text: str, payload_kind: str) -> str:
         normalized = str(rule_text or "").strip()
@@ -1223,7 +1463,7 @@ class RuleEngine:
     def _apply_rule_content_filters(
         self, content_rule: Dict[str, Any], content: str
     ) -> str:
-        cleaned = str(content or "")
+        cleaned = self._normalize_content_text_payload(content)
         if not cleaned:
             return ""
         if self._looks_like_html_fragment(cleaned):
@@ -1236,6 +1476,7 @@ class RuleEngine:
         )
         if extra_cleaners:
             cleaned = self._apply_cleaners(cleaned, extra_cleaners)
+        cleaned = self._normalize_content_text_payload(cleaned)
         return cleaned.strip()
 
     def _parse_rule_cleaners_field(self, raw_value: Any) -> List[Tuple[str, str]]:
@@ -1262,6 +1503,7 @@ class RuleEngine:
         text = re.sub(r"(?is)<[^>]+>", "", text)
         text = unescape(text)
         text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = self._normalize_escaped_line_breaks(text)
         text = re.sub(r"[ \t]+\n", "\n", text)
         text = re.sub(r"\n[ \t]+", "\n", text)
         text = re.sub(r"[ \t]{2,}", " ", text)
@@ -1301,7 +1543,8 @@ class RuleEngine:
         return "\n".join(kept).strip()
 
     def _format_chapter_content(self, content: str) -> str:
-        text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = self._normalize_content_text_payload(content)
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not text:
             return ""
         raw_lines = [line.strip() for line in text.splitlines()]
@@ -1321,6 +1564,63 @@ class RuleEngine:
             if paragraph.strip()
         ]
         return "\n".join(formatted).rstrip()
+
+    def _normalize_content_text_payload(self, value: Any) -> str:
+        text = str(value or "").strip()
+        text = self._unwrap_json_text_payload(text)
+        text = self._normalize_escaped_line_breaks(text)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n[ \t]+", "\n", text)
+        return text
+
+    def _unwrap_json_text_payload(self, value: str) -> str:
+        text = str(value or "")
+        stripped = text.strip()
+        if not stripped or stripped[0] not in "[{":
+            return text
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return text
+        flattened = self._flatten_text_payload(parsed)
+        return flattened if flattened.strip() else text
+
+    def _flatten_text_payload(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            parts = [self._flatten_text_payload(item) for item in value]
+            return "\n".join(part for part in parts if part.strip())
+        if isinstance(value, dict):
+            for key in ("content", "text", "body", "paragraphs", "data"):
+                if key in value:
+                    return self._flatten_text_payload(value.get(key))
+            if len(value) == 1:
+                return self._flatten_text_payload(next(iter(value.values())))
+        return ""
+
+    def _normalize_escaped_line_breaks(self, value: str) -> str:
+        text = str(value or "")
+        if "\\" not in text:
+            return text
+        replacements = (
+            ("\\\\r\\\\n", "\n"),
+            ("\\\\n\\\\r", "\n"),
+            ("\\\\r", "\n"),
+            ("\\\\n", "\n"),
+            ("\\r\\n", "\n"),
+            ("\\n\\r", "\n"),
+            ("\\r", "\n"),
+            ("\\n", "\n"),
+        )
+        for old, new in replacements:
+            text = text.replace(old, new)
+        return text
 
     def _should_merge_paragraphs(self, previous: str, current: str) -> bool:
         prev = str(previous or "").strip()
@@ -1882,16 +2182,24 @@ class RuleEngine:
             return False
         return True
 
-    def _split_js_rule(self, rule_text: str) -> Tuple[str, str]:
+    def _split_js_rule_parts(self, rule_text: str) -> Tuple[str, str, str]:
         text = str(rule_text or "")
         if "<js>" in text and "</js>" in text:
             start = text.index("<js>")
             end = text.index("</js>", start)
-            return text[:start].strip(), text[start + 4 : end].strip()
+            return (
+                text[:start].strip(),
+                text[start + 4 : end].strip(),
+                text[end + 5 :].strip(),
+            )
         if "@js:" in text:
             base, _separator, js_code = text.partition("@js:")
-            return base.strip(), js_code.strip()
-        return text, ""
+            return base.strip(), js_code.strip(), ""
+        return text, "", ""
+
+    def _split_js_rule(self, rule_text: str) -> Tuple[str, str]:
+        base_rule, js_code, _suffix_rule = self._split_js_rule_parts(rule_text)
+        return base_rule, js_code
 
     def _split_top_level(self, text: str, delimiter: str) -> List[str]:
         if not text or delimiter not in text:
@@ -2067,6 +2375,7 @@ class RuleEngine:
         payload: Any,
         rule_context: Dict[str, Any] | None = None,
     ) -> Any:
+        current_context = dict(rule_context or {})
         try:
             return self.js_runtime.evaluate(
                 code,
@@ -2079,6 +2388,18 @@ class RuleEngine:
                     payload,
                     expression,
                     rule_context=rule_context,
+                ),
+                js_lib=str(current_context.get("__js_lib") or ""),
+                base_url=str(
+                    current_context.get("baseUrl")
+                    or current_context.get("base_url")
+                    or current_context.get("currentUrl")
+                    or ""
+                ),
+                source_url=str(
+                    current_context.get("sourceUrl")
+                    or current_context.get("source_url")
+                    or ""
                 ),
             )
         except Exception as exc:
@@ -2100,6 +2421,37 @@ class RuleEngine:
             return variables.get(key, "")
 
         return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", replacer, template)
+
+    def _render_request_template(
+        self,
+        source: Dict[str, Any],
+        template: str,
+        variables: Dict[str, str],
+    ) -> str:
+        rendered = self._render_template(template, variables)
+        base_rule, js_code, suffix_rule = self._split_js_rule_parts(rendered)
+        if not js_code:
+            return rendered
+
+        context = self._seed_rule_context(
+            dict(variables),
+            source,
+            variables.get("baseUrl") or variables.get("base_url") or "",
+            variables,
+        )
+        js_result = self._execute_js(
+            js_code,
+            result=base_rule or rendered,
+            payload_kind="text",
+            payload=rendered,
+            rule_context=context,
+        )
+        result_text = self._stringify_js_result(js_result)
+        if result_text:
+            return result_text
+        if suffix_rule:
+            return suffix_rule.strip()
+        return base_rule.strip()
 
     def _render_rule_template(
         self,

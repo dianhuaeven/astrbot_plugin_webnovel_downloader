@@ -115,6 +115,7 @@ class LocalSmokeCliTest(unittest.TestCase):
                     "--keyword",
                     "诡秘之主",
                     "--list-sources",
+                    "--allow-unsafe-urls",
                 ]
             )
 
@@ -142,6 +143,7 @@ class LocalSmokeCliTest(unittest.TestCase):
                     str(data_dir),
                     "--source-json",
                     sources_url,
+                    "--allow-unsafe-urls",
                 ]
             )
 
@@ -158,6 +160,7 @@ class LocalSmokeCliTest(unittest.TestCase):
                     str(data_dir),
                     "--keyword",
                     "雪中悍刀行",
+                    "--allow-unsafe-urls",
                 ]
             )
 

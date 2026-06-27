@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .defaults import DEFAULT_SEARCH_MAX_WORKERS, DEFAULT_SEARCH_TIME_BUDGET
 from .rule_engine import RuleEngine, RuleEngineError
 from .search_stats_store import SearchStatsStore
 from .source_registry import SourceRegistry
@@ -14,8 +15,8 @@ from .source_registry import SourceRegistry
 
 @dataclass
 class SearchServiceConfig:
-    max_workers: int = 4
-    time_budget_seconds: float = 45.0
+    max_workers: int = DEFAULT_SEARCH_MAX_WORKERS
+    time_budget_seconds: float = DEFAULT_SEARCH_TIME_BUDGET
     health_path: str | Path | None = None
 
 

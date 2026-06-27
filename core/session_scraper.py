@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request
 
 from ..http_utils import open_url
+from .url_security import UrlSafetyPolicy, build_redirect_validator
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,9 @@ class SessionScraperConfig:
     max_retries: int = 2
     retry_backoff: float = 1.5
     per_host_limit: int = 2
+    # 默认对“规则构造 URL”施加内网/非 http(s) 拒绝策略。把策略放在 scraper 这道唯一
+    # 咽喉，所有抓取路径（搜索、目录、正文、模板抽取）都自动受保护，无需各调用点重复校验。
+    url_safety_policy: UrlSafetyPolicy = field(default_factory=UrlSafetyPolicy)
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,9 @@ class SessionScraper:
 
     def __init__(self, config: SessionScraperConfig):
         self.config = config
+        self._redirect_validator: Callable[[str], None] | None = (
+            build_redirect_validator(config.url_safety_policy)
+        )
 
     def request(
         self,
@@ -63,6 +70,7 @@ class SessionScraper:
                         request,
                         timeout,
                         use_env_proxy=self.config.use_env_proxy,
+                        redirect_validator=self._redirect_validator,
                     ) as response:
                         return ScraperResponse(
                             body=response.read(),

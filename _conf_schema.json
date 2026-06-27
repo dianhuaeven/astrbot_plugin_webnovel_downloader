@@ -2,32 +2,32 @@
   "max_workers": {
     "type": "int",
     "description": "[下载配置] 最大并发线程数",
-    "hint": "同时抓取多少个章节。默认更保守；站点开始连续报 403/失败时，下载器也会提前停止继续派发新章节。",
-    "default": 3
+    "hint": "同时抓取多少个章节。调大可以提升正文下载速度；站点开始连续报 403/失败时，下载器也会提前停止继续派发新章节。",
+    "default": 12
   },
   "search_max_workers": {
     "type": "int",
     "description": "[搜索配置] 最大并发线程数",
-    "hint": "搜索书源时同时并发多少个请求。建议按机器和网络情况逐步调大，例如 12 到 24。",
-    "default": 6
+    "hint": "搜索书源时同时并发多少个请求。坏源很多时可以继续调大，例如 24 到 48；若频繁 429/403 则调小。",
+    "default": 24
   },
   "request_timeout": {
     "type": "float",
     "description": "[下载配置] 单次请求超时（秒，必须大于 0）",
     "hint": "章节页面超过该时长未返回即视为失败，进入重试。填 0 或负数会在插件启动时直接报配置错误。",
-    "default": 20.0
+    "default": 15.0
   },
   "search_request_timeout": {
     "type": "float",
     "description": "[搜索配置] 单个书源搜索请求超时（秒，必须大于 0）",
-    "hint": "只影响搜书阶段；默认跟随 request_timeout。搜索通常可配得比正文下载更短，例如 3 到 6 秒。",
-    "default": 20.0
+    "hint": "只影响搜书阶段。搜索通常可配得比正文下载更短，坏源多时可以调到 5 到 8 秒。",
+    "default": 8.0
   },
   "search_time_budget": {
     "type": "float",
     "description": "[搜索配置] 单次跨书源搜索的总时间预算（秒，必须大于 0）",
     "hint": "到达这个时间预算后会提前返回当前已拿到的部分结果，避免 AstrBot 工具调用整体超时；搜索拿到足够多精确命中后也会提前收手。",
-    "default": 45.0
+    "default": 60.0
   },
   "auto_probe_on_import": {
     "type": "bool",
@@ -38,8 +38,8 @@
   "probe_max_workers": {
     "type": "int",
     "description": "[健康探测] 后台探测线程数",
-    "hint": "控制后台同时探测多少个书源。建议保持较小值，例如 2 到 4，避免与正文下载争抢资源。",
-    "default": 2
+    "hint": "控制后台同时探测多少个书源。建议保持中等值，例如 4 到 8，避免与正文下载争抢资源。",
+    "default": 6
   },
   "probe_keywords": {
     "type": "list",
@@ -143,6 +143,12 @@
       "type": "string"
     },
     "default": []
+  },
+  "auto_install_bundled_skills": {
+    "type": "bool",
+    "description": "[启动导入] 自动安装插件自带 skill",
+    "hint": "默认开启。安装会在后台执行，并写入 bootstrap_state.json；失败只记录状态和日志，不影响插件主功能。关闭后仍会保留书源和净化规则的启动导入。",
+    "default": true
   },
   "user_agent": {
     "type": "string",

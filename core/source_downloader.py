@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from .defaults import DEFAULT_MAX_WORKERS
 from .download_manager import ExtractionRules, NovelDownloadManager
 from .rule_engine import RuleEngine, RuleEngineError
 from .source_registry import SourceRegistry
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class SourceDownloadConfig:
-    max_workers: int = 3
+    max_workers: int = DEFAULT_MAX_WORKERS
     sample_chapters: int = 1
     sample_min_chars: int = 1
     stop_after_consecutive_failures: int = 6
@@ -383,20 +388,37 @@ class SourceDownloadService:
                 str(manifest.get("book_name") or "").strip(),
                 rule_context=dict(metadata.get("rule_vars") or {}),
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "恢复章节规则上下文失败 source_id=%s book_url=%s missing_count=%s error=%s",
+                source_id,
+                book_url,
+                len(chapters),
+                exc,
+            )
             return chapters
 
-        toc = list(preflight.get("toc") or [])
-        rule_vars_by_url = {
-            str(item.get("url") or "").strip(): dict(item.get("_rule_vars") or {})
-            for item in toc
-            if str(item.get("url") or "").strip()
-        }
-        rule_vars_by_index = {
-            int(item.get("index", -1) or -1): dict(item.get("_rule_vars") or {})
-            for item in toc
-            if int(item.get("index", -1) or -1) >= 0
-        }
+        try:
+            toc = list(preflight.get("toc") or [])
+            rule_vars_by_url = {
+                str(item.get("url") or "").strip(): dict(item.get("_rule_vars") or {})
+                for item in toc
+                if str(item.get("url") or "").strip()
+            }
+            rule_vars_by_index = {
+                int(item.get("index", -1) or -1): dict(item.get("_rule_vars") or {})
+                for item in toc
+                if int(item.get("index", -1) or -1) >= 0
+            }
+        except Exception as exc:
+            logger.warning(
+                "恢复章节规则上下文映射失败 source_id=%s book_url=%s toc_count=%s error=%s",
+                source_id,
+                book_url,
+                len(list(preflight.get("toc") or [])),
+                exc,
+            )
+            return chapters
         for chapter in chapters:
             existing_rule_vars = dict(chapter.get("_rule_vars") or {})
             if existing_rule_vars:

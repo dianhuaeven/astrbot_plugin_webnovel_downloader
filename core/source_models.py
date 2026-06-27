@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -10,6 +11,20 @@ from typing import Any, Dict, Iterable, List
 
 REGISTRY_SCHEMA_VERSION = 1
 JS_RULE_MARKERS = ("<js>", "@js:")
+UNSUPPORTED_JS_TOKENS = (
+    "java.ajax",
+    "java.post",
+    "startbrowserawait",
+    "fetch(",
+    "xmlhttprequest",
+    "document.",
+    "window.",
+    "location.",
+    "getverificationcode",
+    "getcookie",
+    "cookie.",
+    "source.getlogininfomap",
+)
 WEBVIEW_MARKERS = (
     '"webview":true',
     '"webview": true',
@@ -67,6 +82,14 @@ def parse_headers(raw_headers: Any) -> Dict[str, str]:
     except Exception:
         parsed = None
 
+    if not isinstance(parsed, dict):
+        try:
+            literal = ast.literal_eval(text)
+        except Exception:
+            literal = None
+        if isinstance(literal, dict):
+            parsed = literal
+
     if isinstance(parsed, dict):
         return _stringify_dict(parsed)
 
@@ -105,6 +128,19 @@ def _contains_js_marker(value: Any) -> bool:
     for item in _iter_string_values(value):
         lowered = item.lower()
         if any(marker in lowered for marker in JS_RULE_MARKERS):
+            return True
+    return False
+
+
+def _contains_unsupported_js(value: Any) -> bool:
+    for item in _iter_string_values(value):
+        lowered = str(item or "").lower()
+        if any(token in lowered for token in UNSUPPORTED_JS_TOKENS):
+            return True
+        if re.search(
+            r"\bjava\.get\s*\(\s*(baseurl|sourceurl|book\.|source\.|url\b|['\"]https?://)",
+            lowered,
+        ):
             return True
     return False
 
@@ -177,14 +213,34 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "single_url": bool(raw_source.get("singleUrl", False)),
         "load_with_base_url": bool(raw_source.get("loadWithBaseUrl", False)),
         "enable_js": bool(raw_source.get("enableJs", False)),
+        "js_lib": _clean_text(raw_source.get("jsLib")),
         "has_js_lib": bool(_clean_text(raw_source.get("jsLib"))),
         "has_web_js": bool(_clean_text(raw_source.get("webJs"))),
         "has_login_flow": bool(raw_source.get("loginUi"))
         or _looks_like_script_or_login_flow(raw_source.get("loginUrl")),
+        "search_url_uses_js": _contains_js_marker(raw_source.get("searchUrl")),
         "rule_search_uses_js": _contains_js_marker(raw_source.get("ruleSearch")),
         "rule_book_info_uses_js": _contains_js_marker(raw_source.get("ruleBookInfo")),
         "rule_toc_uses_js": _contains_js_marker(raw_source.get("ruleToc")),
         "rule_content_uses_js": _contains_js_marker(raw_source.get("ruleContent")),
+        "js_lib_uses_unsupported_js": _contains_unsupported_js(
+            raw_source.get("jsLib")
+        ),
+        "search_url_uses_unsupported_js": _contains_unsupported_js(
+            raw_source.get("searchUrl")
+        ),
+        "rule_search_uses_unsupported_js": _contains_unsupported_js(
+            raw_source.get("ruleSearch")
+        ),
+        "rule_book_info_uses_unsupported_js": _contains_unsupported_js(
+            raw_source.get("ruleBookInfo")
+        ),
+        "rule_toc_uses_unsupported_js": _contains_unsupported_js(
+            raw_source.get("ruleToc")
+        ),
+        "rule_content_uses_unsupported_js": _contains_unsupported_js(
+            raw_source.get("ruleContent")
+        ),
         "search_uses_webview": _contains_webview_marker(
             (
                 raw_source.get("searchUrl"),
@@ -225,6 +281,8 @@ class SourceSummary:
     has_rule_content: bool
     search_uses_js: bool
     download_uses_js: bool
+    search_uses_unsupported_js: bool
+    download_uses_unsupported_js: bool
     search_uses_webview: bool
     download_uses_webview: bool
     supports_search: bool
@@ -247,14 +305,31 @@ def build_source_summary(
         and bool(normalized.get("rule_toc"))
         and bool(normalized.get("rule_content"))
     )
-    search_uses_js = bool(normalized.get("enable_js")) or bool(
-        normalized.get("rule_search_uses_js")
+    search_uses_js = bool(normalized.get("enable_js")) or any(
+        (
+            normalized.get("search_url_uses_js"),
+            normalized.get("rule_search_uses_js"),
+        )
     )
     download_uses_js = bool(normalized.get("enable_js")) or any(
         (
             normalized.get("rule_book_info_uses_js"),
             normalized.get("rule_toc_uses_js"),
             normalized.get("rule_content_uses_js"),
+        )
+    )
+    search_uses_unsupported_js = any(
+        (
+            normalized.get("search_url_uses_unsupported_js"),
+            normalized.get("rule_search_uses_unsupported_js"),
+        )
+    )
+    download_uses_unsupported_js = any(
+        (
+            normalized.get("js_lib_uses_unsupported_js"),
+            normalized.get("rule_book_info_uses_unsupported_js"),
+            normalized.get("rule_toc_uses_unsupported_js"),
+            normalized.get("rule_content_uses_unsupported_js"),
         )
     )
     search_uses_webview = bool(normalized.get("search_uses_webview"))
@@ -265,31 +340,39 @@ def build_source_summary(
         or normalized.get("has_web_js")
     )
     supports_search = (
-        has_required_search and not search_uses_js and not search_uses_webview
+        has_required_search
+        and not search_uses_unsupported_js
+        and not search_uses_webview
+        and not bool(normalized.get("has_login_flow"))
     )
     supports_download = (
-        has_required_download and not download_uses_js and not download_uses_webview
+        has_required_download
+        and not download_uses_unsupported_js
+        and not download_uses_webview
+        and not bool(normalized.get("has_login_flow"))
     )
     issues: List[str] = []
     if normalized.get("single_url") and not has_required_search:
         issues.append("检测到 singleUrl 单链接/RSS 源，当前不支持按书名搜索下载")
-    if normalized.get("enable_js"):
-        issues.append("该源启用了 enableJs，当前路线 A 不支持 JS 执行")
-    if normalized.get("rule_search_uses_js"):
-        issues.append("ruleSearch 含 JS 规则，当前无法按书名搜索")
+    if search_uses_unsupported_js:
+        issues.append(
+            "searchUrl/ruleSearch 含网络、浏览器或 App 环境 JS，当前无法按书名搜索"
+        )
     if search_uses_webview:
         issues.append("搜索规则依赖 webView/浏览器渲染，当前服务端模式不支持")
-    download_js_blocks = []
-    if normalized.get("rule_book_info_uses_js"):
-        download_js_blocks.append("ruleBookInfo")
-    if normalized.get("rule_toc_uses_js"):
-        download_js_blocks.append("ruleToc")
-    if normalized.get("rule_content_uses_js"):
-        download_js_blocks.append("ruleContent")
-    if download_js_blocks:
+    download_unsupported_blocks = []
+    if normalized.get("js_lib_uses_unsupported_js"):
+        download_unsupported_blocks.append("jsLib")
+    if normalized.get("rule_book_info_uses_unsupported_js"):
+        download_unsupported_blocks.append("ruleBookInfo")
+    if normalized.get("rule_toc_uses_unsupported_js"):
+        download_unsupported_blocks.append("ruleToc")
+    if normalized.get("rule_content_uses_unsupported_js"):
+        download_unsupported_blocks.append("ruleContent")
+    if download_unsupported_blocks:
         issues.append(
-            "{blocks} 含 JS 规则，当前无法稳定抓目录/正文并下载 TXT".format(
-                blocks="/".join(download_js_blocks)
+            "{blocks} 含网络、浏览器或 App 环境 JS，当前无法稳定抓目录/正文并下载 TXT".format(
+                blocks="/".join(download_unsupported_blocks)
             )
         )
     download_webview_blocks = []
@@ -307,13 +390,9 @@ def build_source_summary(
                 blocks="/".join(download_webview_blocks)
             )
         )
-    if normalized.get("has_js_lib"):
-        issues.append(
-            "检测到 jsLib 脚本库；当前纯 Python 路线不会执行其中的 JS 辅助逻辑"
-        )
     if normalized.get("has_login_flow"):
         issues.append(
-            "检测到 loginUrl/loginUi 登录或脚本流程；当前路线 A 不支持登录态与脚本登录"
+            "检测到 loginUrl/loginUi 登录或脚本流程；当前轻量 JS 路线不支持登录态与脚本登录"
         )
     if not has_required_search:
         issues.append("缺少 searchUrl 或 ruleSearch，无法按书名搜索")
@@ -339,6 +418,8 @@ def build_source_summary(
         has_rule_content=bool(normalized.get("rule_content")),
         search_uses_js=bool(search_uses_js),
         download_uses_js=bool(download_uses_js),
+        search_uses_unsupported_js=bool(search_uses_unsupported_js),
+        download_uses_unsupported_js=bool(download_uses_unsupported_js),
         search_uses_webview=bool(search_uses_webview),
         download_uses_webview=bool(download_uses_webview),
         supports_search=supports_search,

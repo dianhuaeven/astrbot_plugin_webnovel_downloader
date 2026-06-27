@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ class SearchCacheStore:
         self.searches_dir = self.base_dir / "searches"
         self.index_path = self.searches_dir / "index.json"
         self.searches_dir.mkdir(parents=True, exist_ok=True)
+        # 串行化 index.json 的「读-改-写」，避免并发搜索的 save_search 互相覆盖历史。
+        self._write_lock = threading.RLock()
 
     def save_search(
         self,
@@ -40,25 +43,31 @@ class SearchCacheStore:
             "source_ids": list(source_ids or []),
             "include_disabled": bool(include_disabled),
             "limit": limit,
-            "searched_sources": result.get("searched_sources", 0),
-            "successful_sources": result.get("successful_sources", 0),
-            "result_count": len(result.get("results") or []),
-            "error_count": len(result.get("errors") or []),
+            "searched_sources": self._search_stat(result, "searched_sources"),
+            "successful_sources": self._search_stat(result, "successful_sources"),
+            "result_count": self._result_count(result),
+            "candidate_group_count": len(result.get("candidate_groups") or []),
+            "error_count": len(self._search_errors(result)),
             "path": str(search_path),
         }
         stored = {
             "record": record,
             "result": result,
         }
+        # 分片文件路径含 search_id（关键字+时间戳+摘要），实际不冲突，可在锁外写。
+        # index.json 的读-改-写则必须串行，否则并发搜索会丢历史记录。
         self._write_json(search_path, stored)
 
-        index = self._load_index()
-        index["searches"] = [
-            item for item in index["searches"] if item.get("search_id") != search_id
-        ]
-        index["searches"].insert(0, record)
-        index["updated_at"] = created_at
-        self._write_json(self.index_path, index)
+        with self._write_lock:
+            index = self._load_index()
+            index["searches"] = [
+                item
+                for item in index["searches"]
+                if item.get("search_id") != search_id
+            ]
+            index["searches"].insert(0, record)
+            index["updated_at"] = created_at
+            self._write_json(self.index_path, index)
         return record
 
     def list_searches(self) -> list[dict[str, Any]]:
@@ -81,7 +90,8 @@ class SearchCacheStore:
         self, search_id: str, result_index: int
     ) -> dict[str, Any]:
         payload = self.load_search(search_id)
-        results = list(payload.get("result", {}).get("results") or [])
+        result = dict(payload.get("result") or {})
+        results = list(self._search_result(result).get("results") or [])
         if result_index < 0 or result_index >= len(results):
             raise ValueError(
                 "搜索缓存 {search_id} 中不存在 result_index={index}".format(
@@ -145,3 +155,21 @@ class SearchCacheStore:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_path, path)
+
+    def _search_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        nested = result.get("search_result")
+        if isinstance(nested, dict):
+            return nested
+        return result
+
+    def _search_stat(self, result: dict[str, Any], key: str) -> int:
+        search_result = self._search_result(result)
+        return int(search_result.get(key, 0) or 0)
+
+    def _search_errors(self, result: dict[str, Any]) -> list[Any]:
+        return list(self._search_result(result).get("errors") or [])
+
+    def _result_count(self, result: dict[str, Any]) -> int:
+        if result.get("candidate_groups") is not None:
+            return len(result.get("candidate_groups") or [])
+        return len(self._search_result(result).get("results") or [])

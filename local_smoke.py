@@ -79,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="沿用当前进程的 http_proxy/https_proxy/no_proxy 环境变量",
     )
     parser.add_argument(
+        "--allow-unsafe-urls",
+        action="store_true",
+        help="放行 file://、localhost、内网地址等不安全 URL，仅供本地联调/抓取自建服务使用",
+    )
+    parser.add_argument(
         "--max-tool-response-chars",
         type=int,
         default=2800,
@@ -124,6 +129,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
             "search_request_timeout": args.search_request_timeout,
             "search_time_budget": args.search_time_budget,
             "use_env_proxy": bool(args.use_env_proxy),
+            "allow_unsafe_urls": bool(args.allow_unsafe_urls),
         },
     )
     reports_dir = data_dir / "reports"

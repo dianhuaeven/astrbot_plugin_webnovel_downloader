@@ -9,6 +9,7 @@ from astrbot_plugin_webnovel_downloader.core.book_resolution_service import (
 )
 from astrbot_plugin_webnovel_downloader.core.download_orchestrator import (
     DownloadOrchestrator,
+    DownloadOrchestratorConfig,
 )
 from astrbot_plugin_webnovel_downloader.core.search_service import (
     SearchService,
@@ -346,6 +347,73 @@ class BookResolutionPhase4Test(unittest.TestCase):
             payload["candidates"][0]["preferred_extractor"], "template_novelfull_like"
         )
 
+    def test_resolver_groups_same_title_and_author_across_sources(self):
+        registry = _ResolutionRegistry(
+            {
+                "source-a": {
+                    "source_id": "source-a",
+                    "name": "源A",
+                    "supports_download": True,
+                    "issues": [],
+                },
+                "source-b": {
+                    "source_id": "source-b",
+                    "name": "源B",
+                    "supports_download": True,
+                    "issues": [],
+                },
+                "source-c": {
+                    "source_id": "source-c",
+                    "name": "源C",
+                    "supports_download": True,
+                    "issues": [],
+                },
+            }
+        )
+        search_service = _FakeSearchService(
+            [
+                {
+                    "source_id": "source-a",
+                    "source_name": "源A",
+                    "title": "测试书",
+                    "author": "测试作者",
+                    "book_url": "https://example.com/a",
+                },
+                {
+                    "source_id": "source-b",
+                    "source_name": "源B",
+                    "title": "测试书",
+                    "author": "测试作者",
+                    "book_url": "https://example.com/b",
+                },
+                {
+                    "source_id": "source-c",
+                    "source_name": "源C",
+                    "title": "另一本书",
+                    "author": "测试作者",
+                    "book_url": "https://example.com/c",
+                },
+            ]
+        )
+        resolver = BookResolutionService(registry, search_service, self.health_store)
+
+        payload = resolver.resolve("测试书", author="测试作者", limit=10)
+        groups = list(payload.get("candidate_groups") or [])
+        matched = [
+            item
+            for item in groups
+            if item.get("title") == "测试书" and item.get("author") == "测试作者"
+        ]
+
+        self.assertEqual(payload["candidate_group_count"], 2)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["candidate_count"], 2)
+        self.assertEqual(matched[0]["source_count"], 2)
+        self.assertEqual(
+            {item["source_id"] for item in matched[0]["candidates"]},
+            {"source-a", "source-b"},
+        )
+
 
 class DownloadOrchestratorPhase4Test(unittest.TestCase):
     def test_orchestrator_default_budget_reaches_success_beyond_first_five_candidates(
@@ -463,6 +531,56 @@ class DownloadOrchestratorPhase4Test(unittest.TestCase):
         self.assertEqual(payload["attempts"][0]["outcome"], "job_create_failed")
         self.assertEqual(payload["attempts"][1]["outcome"], "started")
         self.assertEqual(payload["job"]["source_id"], "job-good")
+
+    def test_orchestrator_downloads_candidate_group_as_single_job(self):
+        group = {
+            "title": "测试书",
+            "author": "测试作者",
+            "source_count": 2,
+            "candidates": [
+                {
+                    "source_id": "bad-source",
+                    "source_name": "坏源",
+                    "title": "测试书",
+                    "author": "测试作者",
+                    "book_url": "https://example.com/bad",
+                },
+                {
+                    "source_id": "good-source",
+                    "source_name": "好源",
+                    "title": "测试书",
+                    "author": "测试作者",
+                    "book_url": "https://example.com/good",
+                },
+            ],
+            "skipped_candidates": [],
+        }
+        downloader = _FakeSourceDownloadService()
+        downloader.preflight_errors[("bad-source", "https://example.com/bad")] = (
+            RuntimeError("目录页失败")
+        )
+        orchestrator = DownloadOrchestrator(
+            _FakeResolutionService([]),
+            downloader,
+            DownloadOrchestratorConfig(group_preflight_workers=1),
+        )
+
+        payload = orchestrator.download_candidate_group(
+            group,
+            attempt_limit=2,
+            output_filename="测试书.txt",
+        )
+
+        self.assertEqual(payload["status"], "started")
+        self.assertEqual(payload["selected"]["source_id"], "good-source")
+        self.assertEqual(payload["attempted_count"], 2)
+        self.assertEqual(payload["attempts"][0]["outcome"], "preflight_failed")
+        self.assertEqual(payload["attempts"][1]["outcome"], "started")
+        self.assertEqual(len(downloader.create_job_calls), 1)
+        self.assertEqual(
+            downloader.create_job_calls[0][0]["source_id"],
+            "good-source",
+        )
 
 
 if __name__ == "__main__":

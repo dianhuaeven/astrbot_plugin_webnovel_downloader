@@ -249,7 +249,28 @@ class SourceHealthStore:
         return enriched
 
     def enrich_sources(self, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [self.enrich_source(item) for item in sources]
+        source_ids = [
+            self._normalize_source_id(item.get("source_id", "")) for item in sources
+        ]
+        entries = self.get_many(source_ids)
+        enriched_sources: list[dict[str, Any]] = []
+        for source in sources:
+            source_id = self._normalize_source_id(source.get("source_id", ""))
+            entry = entries.get(source_id, _make_source_entry())
+            enriched = dict(source)
+            for stage in HEALTH_STAGES:
+                stage_entry = entry[stage]
+                enriched["{stage}_health_state".format(stage=stage)] = stage_entry.get(
+                    "state", "unknown"
+                )
+                enriched["{stage}_health_summary".format(stage=stage)] = (
+                    self._format_stage_summary(stage_entry)
+                )
+                enriched["{stage}_health_updated_at".format(stage=stage)] = float(
+                    stage_entry.get("updated_at", 0.0) or 0.0
+                )
+            enriched_sources.append(enriched)
+        return enriched_sources
 
     def _mark_state(
         self,

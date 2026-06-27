@@ -38,7 +38,12 @@ def _build_js_source(name: str, source_url: str) -> dict[str, object]:
     payload = _build_html_source(name, source_url)
     payload["enableJs"] = True
     payload["ruleSearch"] = {
-        "bookList": "<js> return fetchBooks()",
+        "bookList": "<js> return java.ajax(baseUrl)",
+    }
+    payload["ruleToc"] = {
+        "chapterList": "<js> return java.ajax(baseUrl)",
+        "chapterName": "text",
+        "chapterUrl": "href",
     }
     return payload
 

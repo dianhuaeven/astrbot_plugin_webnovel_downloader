@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Webnovel downloader icon">
+  <rect width="256" height="256" rx="56" fill="#18202f"/>
+  <path d="M58 67c0-9 7-16 16-16h43c13 0 25 5 34 14 9-9 21-14 34-14h17c9 0 16 7 16 16v115c0 9-7 16-16 16h-27c-9 0-18 4-24 10-6-6-15-10-24-10H74c-9 0-16-7-16-16V67z" fill="#f7f2e8"/>
+  <path d="M82 79h34c9 0 17 4 23 10v84c-7-4-15-6-23-6H82V79zm58 10c6-6 14-10 23-10h11v45h-34V89z" fill="#3e7fbf"/>
+  <path d="M182 79h-19c-9 0-17 4-23 10v84c7-4 15-6 23-6h19V79z" fill="#88c15f"/>
+  <path d="M171 108h16v34h21l-29 32-29-32h21v-34z" fill="#f4c542"/>
+  <path d="M82 188h38c11 0 22 4 31 11 9-7 20-11 31-11h20" fill="none" stroke="#101522" stroke-width="10" stroke-linecap="round"/>
+</svg>

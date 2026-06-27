@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from urllib.error import HTTPError, URLError
 
+from .defaults import DEFAULT_MAX_WORKERS, DEFAULT_REQUEST_TIMEOUT
 from .session_scraper import SessionScraper, SessionScraperConfig
 
 
@@ -55,8 +56,8 @@ class ExtractionRules:
 
 @dataclass
 class RuntimeConfig:
-    max_workers: int = 3
-    request_timeout: float = 20.0
+    max_workers: int = DEFAULT_MAX_WORKERS
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT
     use_env_proxy: bool = False
     max_retries: int = 3
     retry_backoff: float = 1.6
@@ -320,7 +321,9 @@ class NovelDownloadManager:
                     raw_line = journal_handle.readline()
                     record = json.loads(raw_line.decode("utf-8"))
                     output_handle.write(f"{record['title']}\n\n")
-                    output_handle.write(record["content"])
+                    output_handle.write(
+                        self._normalize_content_text_payload(record["content"])
+                    )
                     output_handle.write("\n\n")
             output_handle.flush()
             os.fsync(output_handle.fileno())
@@ -600,7 +603,8 @@ class NovelDownloadManager:
         html_unescape_enabled: bool = True,
         normalize_whitespace: bool = True,
     ) -> str:
-        text = value.replace("\r\n", "\n").replace("\r", "\n")
+        text = self._normalize_content_text_payload(value)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         text = re.sub(r"(?is)<script.*?</script>", "", text)
         text = re.sub(r"(?is)<style.*?</style>", "", text)
         if strip_html_tags:
@@ -618,6 +622,63 @@ class NovelDownloadManager:
             text = re.sub(r"\n{3,}", "\n\n", text)
             text = re.sub(r"[ \t]{2,}", " ", text)
         return text.strip()
+
+    def _normalize_content_text_payload(self, value: Any) -> str:
+        text = str(value or "").strip()
+        text = self._unwrap_json_text_payload(text)
+        text = self._normalize_escaped_line_breaks(text)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n[ \t]+", "\n", text)
+        return text
+
+    def _unwrap_json_text_payload(self, value: str) -> str:
+        text = str(value or "")
+        stripped = text.strip()
+        if not stripped or stripped[0] not in "[{":
+            return text
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return text
+        flattened = self._flatten_text_payload(parsed)
+        return flattened if flattened.strip() else text
+
+    def _flatten_text_payload(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            parts = [self._flatten_text_payload(item) for item in value]
+            return "\n".join(part for part in parts if part.strip())
+        if isinstance(value, dict):
+            for key in ("content", "text", "body", "paragraphs", "data"):
+                if key in value:
+                    return self._flatten_text_payload(value.get(key))
+            if len(value) == 1:
+                return self._flatten_text_payload(next(iter(value.values())))
+        return ""
+
+    def _normalize_escaped_line_breaks(self, value: str) -> str:
+        text = str(value or "")
+        if "\\" not in text:
+            return text
+        replacements = (
+            ("\\\\r\\\\n", "\n"),
+            ("\\\\n\\\\r", "\n"),
+            ("\\\\r", "\n"),
+            ("\\\\n", "\n"),
+            ("\\r\\n", "\n"),
+            ("\\n\\r", "\n"),
+            ("\\r", "\n"),
+            ("\\n", "\n"),
+        )
+        for old, new in replacements:
+            text = text.replace(old, new)
+        return text
 
     def _best_group(self, match: re.Match) -> str:
         if match.lastindex:

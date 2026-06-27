@@ -1,54 +1,78 @@
 # Tool Catalog
 
-## Exposed LLM Tools
+## Exposed LLM Tools In 1.0.0
 
 | Tool | Main use | Key inputs | Notes |
 | --- | --- | --- | --- |
-| `novel_import_sources` | 导入 Legado/阅读书源 | `source_json` | 支持 URL、文件路径或原始 JSON；沙箱模式下若要读取宿主机文件，先用 `astrbot_upload_file` 上传到 `/workspace` |
-| `novel_import_clean_rules` | 导入正文净化规则仓库 | `repo_json`, `repo_name` | 后续下载会自动应用；沙箱模式下若要读取宿主机文件，先用 `astrbot_upload_file` 上传到 `/workspace` |
-| `novel_list_sources` | 查看书源清单 | `enabled_only`, `limit`, `offset` | 适合确认哪些源可参与搜索或下载 |
-| `novel_get_source_detail` | 查看单个书源详情 | `source_id` | 返回健康状态、编译后的 profile 和关键规则摘要 |
-| `novel_refresh_sources` | 刷新书源健康度 | `source_ids_json`, `include_disabled` | 后台异步探测，不等待完成 |
-| `novel_probe_status` | 查看后台探测进度和健康摘要 | `source_ids_json`, `include_disabled`, `limit`, `offset` | 用于接住 refresh 后的异步探测过程 |
-| `novel_list_clean_rules` | 查看净化规则仓库 | `limit`, `offset` | 仅做查看 |
-| `novel_remove_source` | 删除书源 | `source_id` | 适合移除失效或重复书源 |
-| `novel_query_candidates` | 只查候选源和排序结果 | `keyword`, `author`, `source_ids_json`, `limit`, `offset`, `include_disabled` | 返回 `search_id`，便于后续分页或续下 |
-| `novel_inspect_source_book` | 只读检查单个候选源 | `source_id`, `book_url`, `book_name` | 不创建任务，适合做目录预检和正文抽样 |
-| `novel_download_source_book` | 指定源精确下载 | `source_id`, `book_url`, `book_name`, `author`, `output_filename`, `auto_assemble` | 要求 `book_name + author` 都与候选结果精确一致 |
-| `novel_read_search_results` | 分页读取缓存搜索结果 | `search_id`, `limit`, `offset` | 避免重复发起同一次搜索 |
-| `novel_download_status` | 查询进度 | `job_id`, `limit`, `offset` | 未传 `job_id` 时返回任务列表摘要 |
+| `webnovel_search_books` | 搜索并聚合同名同作者书籍 | `keyword`, `author`, `limit`, `include_disabled` | 返回 `search_id` 和 `candidate_groups`；后续下载必须使用这个缓存 |
+| `webnovel_download_book` | 下载缓存候选组中的一本书 | `search_id`, `group_index`, `attempt_limit`, `output_filename`, `auto_assemble` | 不接受外部 `book_url`；组内多源预检后只创建一个正式任务 |
+| `webnovel_download_status` | 查询进度或任务列表 | `job_id`, `limit`, `offset` | 未传 `job_id` 时返回任务列表摘要 |
+| `webnovel_import_sources` | 导入 Legado/阅读书源 | `source_json` | 管理员工具；支持 URL、文件路径或原始 JSON |
+| `webnovel_list_sources` | 查看书源清单和健康摘要 | `enabled_only`, `limit`, `offset` | 适合确认哪些源可参与搜索或下载 |
+| `webnovel_refresh_sources` | 刷新书源健康度 | `source_ids_json`, `include_disabled` | 管理员工具；后台异步探测，不等待完成 |
+| `webnovel_probe_status` | 查看后台探测进度和健康摘要 | `source_ids_json`, `include_disabled`, `limit`, `offset` | 用于接住 refresh 后的异步探测过程 |
+| `webnovel_import_clean_rules` | 导入正文净化规则仓库 | `repo_json`, `repo_name` | 管理员工具；后续下载会自动应用 |
+| `webnovel_list_clean_rules` | 查看净化规则仓库 | `limit`, `offset` | 仅做查看 |
 
-## Manual Command Mapping
+## Removed From Public LLM Surface
 
-这些命令更适合人类手动输入，或对应插件内部/隐藏调试路径。它们和 LLM 工具有不少共享缓存或受控映射，但不等于“这类能力没有暴露给模型”。
+旧 `novel_*` 工具名不再作为 LLM 工具使用。不要在工作流里调用或推荐它们。
 
-| Human command / path | LLM counterpart | Notes |
+| Old path | Current status | Replacement |
 | --- | --- | --- |
-| `novel_import` | `novel_import_sources` | 都用于导入 Legado/阅读书源 |
-| `novel_import_clean` | `novel_import_clean_rules` | 都用于导入正文净化规则 |
-| `novel_sources` | `novel_list_sources` / `novel_get_source_detail` | LLM 侧拆成列表和单源详情两个入口 |
-| `novel_refresh` | `novel_refresh_sources` + `novel_probe_status` | 刷新是异步入队；状态查看单独走 probe 工具 |
-| `novel_clean_rules` | `novel_list_clean_rules` | 查看已导入净化规则仓库 |
-| `novel_auto` | `novel_query_candidates` | 兼容命令现在也只返回候选摘要，不再直接启动下载 |
-| `novel_search` | `novel_query_candidates` / `novel_read_search_results` | LLM 先拿候选摘要和 `search_id`，需要查看更多原始结果时再读缓存 |
-| `novel_search_results` | `novel_read_search_results` | 都按 `search_id` 分页读取缓存搜索结果 |
-| `novel_download_result` | none | 该命令已停用，提示先查候选再指定源下载 |
-| `novel_download <source_id> <book_url>` | `novel_download_source_book` | LLM 侧需要补全 `book_name + author` 后才能精确下载 |
-| `novel_status` | `novel_download_status` | 查看任务状态和结果摘要 |
-| `novel_remove` | `novel_remove_source` | 删除已导入书源 |
-| `novel_preview` | none | 仍主要用于人工诊断页面结构 |
-| `novel_jobs` | none | 仍主要用于低层任务调试或恢复 |
+| `novel_download` | 不应暴露；自由 URL 下载风险高 | `webnovel_search_books` -> `webnovel_download_book` |
+| `novel_inspect_source_book` | 不应暴露给普通 LLM 流程；自由 URL 预检风险高 | 使用缓存候选组和后台探测摘要 |
+| `novel_download_source_book` | 不再作为 1.0 LLM 工具 | `webnovel_download_book` |
+| `novel_query_candidates` | 不再作为 1.0 LLM 工具 | `webnovel_search_books` |
+| `novel_read_search_results` | 不再作为 1.0 LLM 工具 | 由 `webnovel_search_books` 返回聚合摘要；必要时开发新分页工具 |
+| `novel_download_cached_result` | 不应暴露 | `webnovel_download_book` |
+| `novel_start_download` | 手工 regex 诊断路径，不给 LLM | 无 |
+| `novel_fetch_preview` | 管理员/隐藏诊断路径 | 无 |
 
-## Important Limits
+## Safe Download Contract
 
-- `astrbot_upload_file` 用于把宿主机文件上传到沙箱 `/workspace`，给后续工具或代码读取；它不是“把文件发给用户”的工具。
-- `send_message_to_user` 用于把文本、图片、语音、视频或文件直接发送给当前用户；当插件已经产出宿主机上的下载文件时，优先用它交付结果。
-- 当前对 LLM 的默认下载流程是 `novel_query_candidates -> novel_download_source_book`，不要再按旧文档直接调用 `novel_download`。
-- 当书名歧义明显、需要人工挑源、要确认探测状态，或已经有 `search_id` 需要翻页/查看更多原始结果时，再切到 `novel_query_candidates`、`novel_probe_status`、`novel_read_search_results`、`novel_download_source_book` 这些分支工具。
-- `novel_refresh_sources` 只是把书源加入后台健康探测队列；想确认进度时要再调用 `novel_probe_status`。
-- `novel_inspect_source_book` 是只读预检工具，不会创建下载任务。
-- `novel_download_source_book` 会在预检后再次校验 `book_name + author`，不一致就拒绝创建任务。
-- `novel_download`、`novel_download_cached_result` 等兼容入口仍在代码里，但不再对 LLM 暴露。
-- 如果书源提示 JS、登录或动态渲染限制，应尽早向用户说明兼容边界。
-- 当工具参数支持“文件路径”时，沙箱模式读取的是沙箱内 `/workspace` 相对路径；宿主机文件需要先通过 `astrbot_upload_file` 上传进去。
-- 当插件返回 `output_path` 一类宿主机文件路径且用户想直接拿到文件时，优先把这个路径交给 `send_message_to_user` 的 `file` 消息，而不是先上传回沙箱。
+- LLM 下载入口只能使用 `search_id + group_index`。
+- `search_id` 必须来自最近一次 `webnovel_search_books` 返回的搜索缓存。
+- `group_index` 必须来自该搜索结果的 `candidate_groups`。
+- 工具内部可以在候选组内尝试多个源，但最终只创建一个正式任务。
+- 不允许 LLM 或普通用户传入任意 `book_url` 触发抓取。
+- 如果未来恢复单源预检或 URL 诊断工具，必须至少满足：
+  - admin only；
+  - 禁 `file://`；
+  - 拒绝 loopback/private/link-local/本机地址；
+  - 只允许 http/https；
+  - 同源校验或候选缓存校验；
+  - 明确日志记录。
+
+## QuickJS Policy
+
+- 目前 QuickJS 规则执行不能被视为强沙箱。
+- 在没有子进程硬超时或等价墙钟超时前，不要默认信任第三方 JS 规则。
+- 看到 `jsLib`、`loginUrl/loginUi`、`webView`、复杂 `@js` 时，应提示兼容性和安全边界。
+- 搜索线程的 `Future.cancel()` 杀不掉已经卡住的 JS 工作线程，这一点不要在说明中轻描淡写。
+
+## Storage And Bootstrap Policy
+
+- 自动安装 bundled skill 是本插件的预期行为；必须保持幂等、可配置、可追踪，并记录版本、来源和失败原因。失败不能影响插件主功能。
+- JSON 注册表、搜索缓存、净化规则仓库等共享状态若继续使用读-改-写文件，必须补锁；长期建议统一 SQLite。
+- 静默吞错会隐藏真实故障；新增代码应记录失败来源、源 ID、阶段和可读错误摘要。
+
+## Human Command Notes
+
+人工命令可以保留用于兼容或诊断，但不要把它们等同于 LLM 工具面。
+
+| Human command / path | Notes |
+| --- | --- |
+| `novel_import` | 导入书源，对应 `webnovel_import_sources` |
+| `novel_sources` | 查看书源，对应 `webnovel_list_sources` |
+| `novel_refresh` | 刷新探测，对应 `webnovel_refresh_sources` |
+| `novel_search` / `novel_auto` | 应只返回聚合候选摘要，不直接下载 |
+| `novel_download` | 若保留，必须避免任意 URL SSRF/本地文件读取风险 |
+| `novel_preview` | 管理员诊断路径，必须受 URL 安全策略约束 |
+| `novel_status` | 查看下载状态，对应 `webnovel_download_status` |
+
+## File Transfer Notes
+
+- `astrbot_upload_file` 用于把宿主机文件上传到沙箱 `/workspace`，给后续工具或代码读取。
+- `send_message_to_user` 用于把文本、图片、语音、视频或文件直接发送给当前用户。
+- 当插件已经产出宿主机上的下载文件且用户想拿到文件时，优先把该路径交给 `send_message_to_user` 的 `file` 消息。

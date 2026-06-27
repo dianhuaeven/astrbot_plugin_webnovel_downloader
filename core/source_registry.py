@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -23,25 +24,43 @@ class SourceRegistry:
         self.registry_path = self.sources_dir / "registry.json"
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.normalized_dir.mkdir(parents=True, exist_ok=True)
+        # 串行化 registry.json 的「读-改-写」序列，避免管理员导入、bootstrap 导入、
+        # 启停/删除在多线程（命令线程池、bootstrap 线程、后台 worker）下相互覆盖。
+        # 读路径（list/load）依赖 _write_json 的 tmp+os.replace 原子换名，无需加锁。
+        self._write_lock = threading.RLock()
 
-    def import_sources_from_text(self, raw_text: str) -> Dict[str, Any]:
+    def import_sources_from_text(
+        self,
+        raw_text: str,
+        progress_callback: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         payload = parse_source_payload(raw_text)
+        # 解析在锁外完成（纯计算）；从加载注册表到落盘的整段 RMW 必须在锁内串行。
+        with self._write_lock:
+            return self._import_parsed_sources(payload, progress_callback)
+
+    def _import_parsed_sources(
+        self,
+        payload: List[Dict[str, Any]],
+        progress_callback: Optional[Any],
+    ) -> Dict[str, Any]:
         registry = self._load_registry()
         imported: List[Dict[str, Any]] = []
         warnings: List[str] = []
+        total = len(payload)
 
-        for raw_source in payload:
+        for index, raw_source in enumerate(payload, start=1):
             normalized = normalize_book_source(raw_source)
             source_id = normalized["source_id"]
             updated_at = time.time()
 
-            self._write_json(
-                self.raw_dir / "{source_id}.json".format(source_id=source_id),
-                raw_source,
-            )
+            # 只写 normalized 分片（load_normalized_source 会读它）。
+            # raw 原文副本此前从不被读取，仅在导入时写、删除时清，纯属冗余写盘，
+            # 占了导入耗时的一半，故不再写出。
             self._write_json(
                 self.normalized_dir / "{source_id}.json".format(source_id=source_id),
                 normalized,
+                fsync=False,
             )
 
             summary = build_source_summary(normalized, updated_at).to_dict()
@@ -54,6 +73,14 @@ class SourceRegistry:
                         issues="；".join(summary.get("issues", [])),
                     )
                 )
+            # 大批量导入时每隔若干条回报进度，便于调用方显示「正在导入 N/总数」。
+            if progress_callback is not None and (
+                index == total or index % 50 == 0
+            ):
+                try:
+                    progress_callback(index, total)
+                except Exception:
+                    pass
 
         registry["updated_at"] = time.time()
         self._write_json(self.registry_path, registry)
@@ -128,35 +155,40 @@ class SourceRegistry:
         return result
 
     def set_enabled(self, source_id: str, enabled: bool) -> Dict[str, Any]:
-        registry = self._load_registry()
-        if source_id not in registry["sources"]:
-            raise ValueError("未找到书源 {source_id}".format(source_id=source_id))
-        registry["sources"][source_id]["enabled"] = bool(enabled)
-        registry["sources"][source_id]["updated_at"] = time.time()
-        self._write_json(self.registry_path, registry)
+        with self._write_lock:
+            registry = self._load_registry()
+            if source_id not in registry["sources"]:
+                raise ValueError(
+                    "未找到书源 {source_id}".format(source_id=source_id)
+                )
+            registry["sources"][source_id]["enabled"] = bool(enabled)
+            registry["sources"][source_id]["updated_at"] = time.time()
+            self._write_json(self.registry_path, registry)
 
-        normalized = self.load_normalized_source(source_id)
-        normalized["enabled"] = bool(enabled)
-        normalized["last_imported_at"] = time.time()
-        self._write_json(
-            self.normalized_dir / "{source_id}.json".format(source_id=source_id),
-            normalized,
-        )
-        return registry["sources"][source_id]
+            normalized = self.load_normalized_source(source_id)
+            normalized["enabled"] = bool(enabled)
+            normalized["last_imported_at"] = time.time()
+            self._write_json(
+                self.normalized_dir / "{source_id}.json".format(source_id=source_id),
+                normalized,
+            )
+            return registry["sources"][source_id]
 
     def remove_source(self, source_id: str) -> Dict[str, Any]:
-        registry = self._load_registry()
-        if source_id not in registry["sources"]:
-            raise ValueError("未找到书源 {source_id}".format(source_id=source_id))
-        removed = registry["sources"].pop(source_id)
-        registry["updated_at"] = time.time()
-        self._write_json(self.registry_path, registry)
+        with self._write_lock:
+            registry = self._load_registry()
+            if source_id not in registry["sources"]:
+                raise ValueError(
+                    "未找到书源 {source_id}".format(source_id=source_id)
+                )
+            removed = registry["sources"].pop(source_id)
+            registry["updated_at"] = time.time()
+            self._write_json(self.registry_path, registry)
 
-        for directory in (self.raw_dir, self.normalized_dir):
-            path = directory / "{source_id}.json".format(source_id=source_id)
-            if path.exists():
-                path.unlink()
-        return removed
+            for directory in (self.raw_dir, self.normalized_dir):
+                path = directory / "{source_id}.json".format(source_id=source_id)
+                self._unlink_if_exists(path)
+            return removed
 
     def _load_registry(self) -> Dict[str, Any]:
         if not self.registry_path.exists():
@@ -174,11 +206,25 @@ class SourceRegistry:
         data.setdefault("sources", {})
         return data
 
-    def _write_json(self, path: Path, payload: Any) -> None:
+    def _write_json(self, path: Path, payload: Any, fsync: bool = True) -> None:
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         with open(tmp_path, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
             handle.flush()
-            os.fsync(handle.fileno())
+            # 批量导入时对每个分片文件 fsync 会拖慢到几秒级（每文件一次刷盘）。
+            # 这些分片可由最终 registry.json 重建，故批量写入时跳过 fsync，
+            # 只在收尾写 registry 时强制刷盘以保证可恢复。
+            if fsync:
+                os.fsync(handle.fileno())
         os.replace(tmp_path, path)
+
+    def _unlink_if_exists(self, path: Path) -> None:
+        for attempt in range(5):
+            try:
+                path.unlink(missing_ok=True)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
