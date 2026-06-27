@@ -2680,6 +2680,37 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo_list["repositories"][0]["rule_count"], 1)
         self.assertEqual(repo_list["repositories"][0]["skipped_rule_count"], 2)
 
+    async def test_import_clean_rules_does_not_echo_large_inline_payload(self):
+        clean_repo_json = json.dumps(
+            [
+                {
+                    "name": "大仓库规则{index}".format(index=index),
+                    "pattern": "广告{index}".format(index=index),
+                    "replacement": "",
+                    "isRegex": False,
+                    "scopeContent": True,
+                }
+                for index in range(80)
+            ],
+            ensure_ascii=False,
+        )
+
+        text = await self._invoke_tool(
+            self.plugin.webnovel_import_clean_rules,
+            clean_repo_json,
+            "大仓库",
+        )
+        result = json.loads(text)
+
+        self.assertEqual(result["rule_count"], 80)
+        self.assertEqual(result["source_ref_length"], len(clean_repo_json))
+        self.assertTrue(result["source_ref_truncated"])
+        self.assertLessEqual(
+            len(result["source_ref"]),
+            self.plugin.max_tool_preview_text,
+        )
+        self.assertLessEqual(len(text), self.plugin.max_tool_response_chars)
+
     async def test_plugin_terminate_shuts_down_probe_service(self):
         calls = []
         original_shutdown = self.plugin.source_probe_service.shutdown

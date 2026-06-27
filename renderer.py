@@ -47,11 +47,18 @@ class ToolResultRenderer:
         return self.to_json_text(summary)
 
     def render_clean_rule_import_summary(self, record: dict[str, Any]) -> str:
+        source_ref = str(record.get("source_ref") or "")
+        source_ref_preview = self.truncate_text(
+            source_ref,
+            self.config.max_tool_preview_text,
+        )
         return self.to_json_text(
             {
                 "repo_id": record.get("repo_id", ""),
                 "name": record.get("name", ""),
-                "source_ref": record.get("source_ref", ""),
+                "source_ref": source_ref_preview,
+                "source_ref_length": len(source_ref),
+                "source_ref_truncated": source_ref_preview != source_ref,
                 "imported_at": record.get("imported_at", 0),
                 "rule_count": record.get("rule_count", 0),
                 "enabled_rule_count": record.get("enabled_rule_count", 0),
