@@ -223,9 +223,7 @@ def normalize_book_source(raw_source: Dict[str, Any]) -> Dict[str, Any]:
         "rule_book_info_uses_js": _contains_js_marker(raw_source.get("ruleBookInfo")),
         "rule_toc_uses_js": _contains_js_marker(raw_source.get("ruleToc")),
         "rule_content_uses_js": _contains_js_marker(raw_source.get("ruleContent")),
-        "js_lib_uses_unsupported_js": _contains_unsupported_js(
-            raw_source.get("jsLib")
-        ),
+        "js_lib_uses_unsupported_js": _contains_unsupported_js(raw_source.get("jsLib")),
         "search_url_uses_unsupported_js": _contains_unsupported_js(
             raw_source.get("searchUrl")
         ),

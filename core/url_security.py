@@ -111,7 +111,9 @@ def _resolve_host_addresses(host: str) -> list[str]:
     return addresses
 
 
-def _is_blocked_ip(address: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def _is_blocked_ip(
+    address: str | ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
     ip = (
         address
         if isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address))

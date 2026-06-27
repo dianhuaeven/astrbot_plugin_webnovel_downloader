@@ -31,9 +31,7 @@ from astrbot_plugin_webnovel_downloader.core.url_security import UrlSafetyPolicy
 def _allow_local_engine_config(**overrides) -> RuleEngineConfig:
     # 部分用例通过 file:// 加载本地 HTML 夹具，默认 URL 策略会拒绝 file://，
     # 故这些用例显式放行不安全 URL。
-    overrides.setdefault(
-        "url_safety_policy", UrlSafetyPolicy(allow_unsafe_urls=True)
-    )
+    overrides.setdefault("url_safety_policy", UrlSafetyPolicy(allow_unsafe_urls=True))
     return RuleEngineConfig(**overrides)
 
 
@@ -441,7 +439,9 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(plan["toc"][0]["index"], 0)
         self.assertEqual(plan["toc"][1]["index"], 1)
 
-    def test_rule_engine_decodes_json_array_and_escaped_line_breaks_in_chapter_content(self):
+    def test_rule_engine_decodes_json_array_and_escaped_line_breaks_in_chapter_content(
+        self,
+    ):
         engine = RuleEngine(_allow_local_engine_config())
         chapter_path = self.base_dir / "escaped-line-breaks.html"
         chapter_path.write_text(
@@ -465,8 +465,8 @@ class LegadoPhase5Test(unittest.TestCase):
             "第一章",
         )
 
-        self.assertNotIn("[\"", chapter["content"])
-        self.assertNotIn("\"]", chapter["content"])
+        self.assertNotIn('["', chapter["content"])
+        self.assertNotIn('"]', chapter["content"])
         self.assertNotIn("\\r\\n", chapter["content"])
         self.assertNotIn("\\n", chapter["content"])
         self.assertEqual(

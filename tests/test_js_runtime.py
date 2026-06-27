@@ -41,9 +41,9 @@ class JavaScriptRuntimeTest(unittest.TestCase):
         for text in ("abc", "Hello, World!", "诡秘之主"):
             with self.subTest(text=text):
                 self.assertEqual(
-                    runtime.evaluate("java.md5Encode({text})".format(
-                        text=_js_string(text)
-                    )),
+                    runtime.evaluate(
+                        "java.md5Encode({text})".format(text=_js_string(text))
+                    ),
                     hashlib.md5(text.encode("utf-8")).hexdigest(),
                 )
 

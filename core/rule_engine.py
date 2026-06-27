@@ -1315,14 +1315,12 @@ class RuleEngine:
                 rule_context=rule_context,
             )
             if suffix_rule:
-                suffix_payload_kind, suffix_payload = (
-                    self._coerce_js_output_payload(
-                        js_output,
-                        suffix_rule,
-                        payload_kind,
-                        payload,
-                        rule_context,
-                    )
+                suffix_payload_kind, suffix_payload = self._coerce_js_output_payload(
+                    js_output,
+                    suffix_rule,
+                    payload_kind,
+                    payload,
+                    rule_context,
                 )
                 values = self._select_many(
                     suffix_payload_kind,
@@ -1393,9 +1391,7 @@ class RuleEngine:
                     return fallback_payload_kind, fallback_payload
 
         if Selector is None:
-            raise RuleEngineError(
-                "当前环境缺少 parsel，无法解析 JS 规则输出的 HTML"
-            )
+            raise RuleEngineError("当前环境缺少 parsel，无法解析 JS 规则输出的 HTML")
         base_url = ""
         if rule_context is not None:
             base_url = str(

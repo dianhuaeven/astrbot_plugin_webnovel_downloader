@@ -1589,9 +1589,7 @@ class JsonlNovelDownloaderPluginBase(Star):
                         declared_skill_name=str(
                             skill_metadata.get("name") or skill_name
                         ).strip(),
-                        skill_version=str(
-                            skill_metadata.get("version") or ""
-                        ).strip(),
+                        skill_version=str(skill_metadata.get("version") or "").strip(),
                         installed_name=skill_name,
                         install_action="already_exists",
                         synced_sandboxes=False,
@@ -1636,7 +1634,9 @@ class JsonlNovelDownloaderPluginBase(Star):
                 if str(item.name).strip()
             }
         except Exception as exc:
-            logger.warning("查询已安装 skill 列表失败，将继续尝试自动安装 error=%s", exc)
+            logger.warning(
+                "查询已安装 skill 列表失败，将继续尝试自动安装 error=%s", exc
+            )
             return set()
 
     def _load_bundled_skill_metadata(self, skill_dir: Path) -> dict[str, str]:

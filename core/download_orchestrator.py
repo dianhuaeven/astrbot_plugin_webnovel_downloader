@@ -386,7 +386,9 @@ class DownloadOrchestrator:
                 sample = {}
                 try:
                     sample = self.source_download_service.sample_book(preflight)
-                    self._update_profile_after_sample(source_id, preflight, sample=sample)
+                    self._update_profile_after_sample(
+                        source_id, preflight, sample=sample
+                    )
                 except Exception as exc:
                     attempt.update(
                         {
@@ -400,7 +402,9 @@ class DownloadOrchestrator:
                             "preflight": preflight,
                         }
                     )
-                    self._update_profile_after_sample(source_id, preflight, error=str(exc))
+                    self._update_profile_after_sample(
+                        source_id, preflight, error=str(exc)
+                    )
                     attempts.append(attempt)
                     continue
 

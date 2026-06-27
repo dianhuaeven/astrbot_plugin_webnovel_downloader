@@ -61,9 +61,7 @@ class SearchCacheStore:
         with self._write_lock:
             index = self._load_index()
             index["searches"] = [
-                item
-                for item in index["searches"]
-                if item.get("search_id") != search_id
+                item for item in index["searches"] if item.get("search_id") != search_id
             ]
             index["searches"].insert(0, record)
             index["updated_at"] = created_at

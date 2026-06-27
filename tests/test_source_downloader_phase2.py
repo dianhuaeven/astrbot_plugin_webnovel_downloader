@@ -202,7 +202,7 @@ class SourceDownloaderPhase2Test(unittest.TestCase):
             0,
             "第一章",
             "https://example.com/1",
-            "[\"第一段。\\r\\n 第二段！\\n 第三段。\"]",
+            '["第一段。\\r\\n 第二段！\\n 第三段。"]',
             "utf-8",
             1,
         )
@@ -210,8 +210,8 @@ class SourceDownloaderPhase2Test(unittest.TestCase):
         status = self.manager.assemble(job["job_id"])
         content = Path(status["output_path"]).read_text(encoding="utf-8")
 
-        self.assertNotIn("[\"", content)
-        self.assertNotIn("\"]", content)
+        self.assertNotIn('["', content)
+        self.assertNotIn('"]', content)
         self.assertNotIn("\\r\\n", content)
         self.assertNotIn("\\n", content)
         self.assertIn("第一段。\n第二段！\n第三段。", content)

@@ -74,9 +74,7 @@ class SourceRegistry:
                     )
                 )
             # 大批量导入时每隔若干条回报进度，便于调用方显示「正在导入 N/总数」。
-            if progress_callback is not None and (
-                index == total or index % 50 == 0
-            ):
+            if progress_callback is not None and (index == total or index % 50 == 0):
                 try:
                     progress_callback(index, total)
                 except Exception:
@@ -158,9 +156,7 @@ class SourceRegistry:
         with self._write_lock:
             registry = self._load_registry()
             if source_id not in registry["sources"]:
-                raise ValueError(
-                    "未找到书源 {source_id}".format(source_id=source_id)
-                )
+                raise ValueError("未找到书源 {source_id}".format(source_id=source_id))
             registry["sources"][source_id]["enabled"] = bool(enabled)
             registry["sources"][source_id]["updated_at"] = time.time()
             self._write_json(self.registry_path, registry)
@@ -178,9 +174,7 @@ class SourceRegistry:
         with self._write_lock:
             registry = self._load_registry()
             if source_id not in registry["sources"]:
-                raise ValueError(
-                    "未找到书源 {source_id}".format(source_id=source_id)
-                )
+                raise ValueError("未找到书源 {source_id}".format(source_id=source_id))
             removed = registry["sources"].pop(source_id)
             registry["updated_at"] = time.time()
             self._write_json(self.registry_path, registry)
