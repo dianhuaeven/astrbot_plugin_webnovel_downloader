@@ -390,8 +390,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             "novel_read_search_results",
             "novel_download_cached_result",
             "novel_download_status",
+            "webnovel_fetch_preview",
         ):
             self.assertNotIn(old_tool_name, tool_names)
+        self.assertFalse(hasattr(self.plugin, "webnovel_fetch_preview"))
         for admin_tool_name in (
             "webnovel_import_clean_rules",
             "webnovel_import_sources",
