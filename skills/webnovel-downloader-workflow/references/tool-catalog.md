@@ -5,7 +5,7 @@
 | Tool | Main use | Key inputs | Notes |
 | --- | --- | --- | --- |
 | `webnovel_search_books` | 搜索并聚合同名同作者书籍 | `keyword`, `author`, `limit`, `include_disabled` | 返回 `search_id` 和 `candidate_groups`；后续下载必须使用这个缓存 |
-| `webnovel_download_book` | 下载缓存候选组中的一本书 | `search_id`, `group_index`, `attempt_limit`, `output_filename`, `auto_assemble` | 不接受外部 `book_url`；组内多源预检后只创建一个正式任务 |
+| `webnovel_download_book` | 下载缓存候选组中的一本书 | `search_id`, `group_index`, `attempt_limit`, `output_filename`, `auto_assemble`, `skip_source_ids` | 不接受外部 `book_url`；可临时排除多个坏源，组内多源预检后只创建一个正式任务 |
 | `webnovel_download_status` | 查询进度或任务列表 | `job_id`, `limit`, `offset` | 未传 `job_id` 时返回任务列表摘要 |
 | `webnovel_import_sources` | 导入 Legado/阅读书源 | `source_json` | 管理员工具；支持 URL、文件路径或原始 JSON |
 | `webnovel_list_sources` | 查看书源清单和健康摘要 | `enabled_only`, `limit`, `offset` | 适合确认哪些源可参与搜索或下载 |
@@ -33,6 +33,7 @@
 
 - LLM 下载入口只能使用 `search_id + group_index`。
 - `search_id` 必须来自最近一次 `webnovel_search_books` 返回的搜索缓存。
+- `skip_source_ids` 支持单个 ID、逗号/中文逗号/换行分隔或 JSON 数组，只影响本轮选择。
 - `group_index` 必须来自该搜索结果的 `candidate_groups`。
 - 工具内部可以在候选组内尝试多个源，但最终只创建一个正式任务。
 - 不允许 LLM 或普通用户传入任意 `book_url` 触发抓取。

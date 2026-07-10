@@ -5,7 +5,7 @@ from astrbot.api.star import register
 
 from .base import JsonlNovelDownloaderPluginBase
 from .core.download_manager import ExtractionRules
-from .support import compat_admin_only, compat_llm_tool
+from .support import compat_admin_only, compat_hidden_tool, compat_llm_tool
 
 
 @register(
@@ -50,6 +50,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         attempt_limit: str = "",
         output_filename: str = "",
         auto_assemble: str = "true",
+        skip_source_ids: str = "",
     ) -> str:
         """
         从一次聚合搜索结果中选择一本书下载；会在组内多个书源中预检择优，并且只创建一个正式下载任务。
@@ -60,13 +61,17 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             attempt_limit(string): 可选，最多尝试多少个候选书源。
             output_filename(string): 可选，自定义输出 TXT 文件名。
             auto_assemble(string): 是否下载完成后自动装订 TXT，支持 true/false/1/0/yes/no。
+            skip_source_ids(string): 可选，本次跳过的书源 ID；支持单个、逗号分隔、中文逗号、换行或 JSON 数组。
         """
+        kwargs = {"event": event} if event is not None else {}
         return await self.handle_webnovel_download_book(
             search_id,
             group_index,
             attempt_limit,
             output_filename,
             auto_assemble,
+            skip_source_ids,
+            **kwargs,
         )
 
     @compat_llm_tool(name="webnovel_download_status")
@@ -85,7 +90,9 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             limit(string): 可选，列出任务时最多返回多少条。
             offset(string): 可选，列出任务时从第几条开始返回。
         """
-        return await self.handle_webnovel_download_status(job_id, limit, offset)
+        return await self.handle_webnovel_download_status(
+            job_id, limit, offset, event=event
+        )
 
     @compat_admin_only()
     @compat_llm_tool(name="webnovel_import_sources")
@@ -198,9 +205,20 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_webnovel_list_clean_rules(limit, offset)
 
+    @compat_admin_only()
+    @compat_hidden_tool()
+    async def webnovel_fetch_preview(
+        self,
+        event: AstrMessageEvent,
+        url: str,
+        encoding: str = "",
+        max_chars: str = "",
+    ) -> str:
+        return await self.handle_novel_fetch_preview(url, encoding, max_chars)
+
     @filter.command("novel_jobs")
     async def novel_jobs_command(self, event):
-        yield event.plain_result(await self.handle_novel_list_jobs())
+        yield event.plain_result(await self.handle_novel_list_jobs(event=event))
 
     @filter.command("novel_sources")
     async def novel_sources_command(self, event):
@@ -289,6 +307,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         attempt_limit: str = "",
         output_filename: str = "",
         auto_assemble: str = "true",
+        skip_source_ids: str = "",
     ):
         yield event.plain_result(
             await self.handle_webnovel_download_book(
@@ -297,6 +316,8 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
                 attempt_limit,
                 output_filename,
                 auto_assemble,
+                skip_source_ids,
+                event=event,
             )
         )
 
@@ -309,7 +330,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         offset: str = "",
     ):
         yield event.plain_result(
-            await self.handle_novel_download_status(job_id, limit, offset)
+            await self.handle_novel_download_status(job_id, limit, offset, event=event)
         )
 
     @compat_admin_only()

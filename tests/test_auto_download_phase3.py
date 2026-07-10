@@ -649,6 +649,110 @@ class DownloadOrchestratorPhase3ContractTest(
         self.assertEqual(job_info["job_id"], "job-for-second-good")
         self.assertEqual(job_info["source_id"], "second-good")
 
+    def test_orchestrator_skips_active_cooldown_unless_retry_is_forced(self):
+        candidates = [
+            {
+                "source_id": "cooling-source",
+                "source_name": "冷却源",
+                "title": "黎明医生",
+                "author": "机器人瓦力",
+                "book_url": "https://example.com/cooling",
+            },
+            {
+                "source_id": "healthy-source",
+                "source_name": "健康源",
+                "title": "黎明医生",
+                "author": "机器人瓦力",
+                "book_url": "https://example.com/healthy",
+            },
+        ]
+        for _ in range(3):
+            self.health_store.record_failure(
+                "cooling-source",
+                "download",
+                error_code="http_403",
+                error_summary="HTTP 403: Forbidden",
+            )
+        resolution_service = _FakeResolutionService(candidates)
+        download_service = _FakeSourceDownloadService()
+        download_service.add_success("cooling-source", "https://example.com/cooling")
+        download_service.add_success("healthy-source", "https://example.com/healthy")
+        module, orchestrator_class = self._load_phase3_class(
+            "astrbot_plugin_webnovel_downloader.core.download_orchestrator",
+            "DownloadOrchestrator",
+        )
+        orchestrator = self._build_instance(
+            module,
+            orchestrator_class,
+            {
+                "resolver": resolution_service,
+                "source_download_service": download_service,
+                "source_health_store": self.health_store,
+            },
+        )
+
+        payload = orchestrator.auto_download("黎明医生", attempt_limit=1)
+
+        self.assertEqual(
+            [item["source_id"] for item in download_service.preflight_calls],
+            ["healthy-source"],
+        )
+        self.assertEqual(payload["selected"]["source_id"], "healthy-source")
+        self.assertEqual(
+            payload["skipped_candidates"][0]["source_id"], "cooling-source"
+        )
+        self.assertIn("冷却中", payload["skipped_candidates"][0]["skip_reason"])
+
+        download_service.preflight_calls.clear()
+        forced = orchestrator.auto_download(
+            "黎明医生",
+            attempt_limit=1,
+            force_retry_source_ids=["cooling-source"],
+        )
+
+        self.assertEqual(
+            [item["source_id"] for item in download_service.preflight_calls],
+            ["cooling-source"],
+        )
+        self.assertEqual(forced["selected"]["source_id"], "cooling-source")
+
+    def test_sample_quality_failure_degrades_health_without_opening_source_circuit(
+        self,
+    ):
+        from astrbot_plugin_webnovel_downloader.core.download_orchestrator import (
+            DownloadOrchestrator,
+        )
+
+        candidate = {
+            "source_id": "quality-source",
+            "source_name": "质量失败源",
+            "title": "测试书",
+            "author": "测试作者",
+            "book_url": "https://example.com/quality",
+        }
+        resolution_service = _FakeResolutionService([candidate])
+        download_service = _FakeSourceDownloadService()
+        download_service.add_success("quality-source", "https://example.com/quality")
+        download_service.add_sample_failure(
+            "quality-source",
+            "https://example.com/quality",
+            RuntimeError("正文抽样疑似无效: 阅读器收藏提示页"),
+        )
+        orchestrator = DownloadOrchestrator(
+            resolution_service,
+            download_service,
+            source_health_store=self.health_store,
+        )
+
+        result = orchestrator.auto_download("测试书", author="测试作者")
+        health = self.health_store.get_source_health("quality-source")["download"]
+
+        self.assertEqual(result["attempts"][0]["outcome"], "sample_failed")
+        self.assertEqual(download_service.create_job_calls, [])
+        self.assertEqual(health["state"], "degraded")
+        self.assertEqual(health["last_failure_scope"], "book")
+        self.assertEqual(health["consecutive_failures"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

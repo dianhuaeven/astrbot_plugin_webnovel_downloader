@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import re
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, Dict, Optional
 
 from .defaults import DEFAULT_MAX_WORKERS
@@ -22,6 +24,10 @@ class SourceDownloadConfig:
     sample_min_chars: int = 1
     stop_after_consecutive_failures: int = 6
     stop_after_same_error: int = 3
+
+
+class SampleQualityError(RuleEngineError):
+    pass
 
 
 class SourceDownloadService:
@@ -80,8 +86,10 @@ class SourceDownloadService:
         self,
         plan: Dict[str, Any],
         output_filename: str = "",
+        ownership: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         source_id = str(plan.get("source_id") or "").strip()
+        owner = dict(ownership or {})
         job = self.manager.create_job(
             str(plan.get("book_name") or "").strip() or "未命名小说",
             list(plan.get("toc") or []),
@@ -99,6 +107,8 @@ class SourceDownloadService:
                 "sampled_chapter_count": int(plan.get("sampled_chapter_count", 0) or 0),
                 "rule_vars": dict(plan.get("_rule_vars") or {}),
             },
+            requester_id=str(owner.get("requester_id") or "").strip(),
+            session_id=str(owner.get("session_id") or "").strip(),
         )
         return {
             "job_id": job["job_id"],
@@ -148,6 +158,7 @@ class SourceDownloadService:
         )
         chapters = self._select_sample_chapters(toc, sample_size)
         sampled_chapters: list[dict[str, Any]] = []
+        sampled_contents: list[str] = []
         sample_errors: list[dict[str, Any]] = []
         last_error: Exception | None = None
 
@@ -156,13 +167,16 @@ class SourceDownloadService:
             try:
                 payload = self._download_one_chapter(source, chapter)
                 content = str(payload.get("content") or "").strip()
-                if len(content) < min_chars:
-                    raise RuleEngineError(
+                effective_chars = self._effective_content_chars(content)
+                if effective_chars < min_chars:
+                    raise SampleQualityError(
                         "正文抽样内容过短: {size} < {minimum}".format(
-                            size=len(content),
+                            size=effective_chars,
                             minimum=min_chars,
                         )
                     )
+                self._validate_sample_content_quality(content)
+                sampled_contents.append(content)
                 sampled_chapters.append(
                     {
                         "index": int(chapter.get("index", 0) or 0),
@@ -171,6 +185,7 @@ class SourceDownloadService:
                         ).strip(),
                         "url": str(chapter.get("url") or "").strip(),
                         "content_chars": len(content),
+                        "effective_content_chars": effective_chars,
                         "elapsed_ms": round(
                             (time.monotonic() - started_at) * 1000.0, 3
                         ),
@@ -189,11 +204,17 @@ class SourceDownloadService:
                         ),
                     }
                 )
+                if isinstance(exc, SampleQualityError):
+                    raise RuleEngineError(
+                        "正文抽样失败：{error}".format(error=exc)
+                    ) from exc
 
         if not sampled_chapters:
             if last_error is None:
                 raise ValueError("正文抽样失败：未选到可抓取章节")
             raise RuleEngineError("正文抽样失败：{error}".format(error=last_error))
+
+        self._validate_sample_set_quality(sampled_contents)
 
         return {
             "sampled_chapter_count": len(sampled_chapters),
@@ -202,6 +223,46 @@ class SourceDownloadService:
             "sample_errors": sample_errors,
             "min_content_chars": min_chars,
         }
+
+    @staticmethod
+    def _effective_content_chars(content: str) -> int:
+        without_urls = re.sub(r"https?://\S+|www\.\S+", "", str(content or ""))
+        return len(re.findall(r"[\w\u4e00-\u9fff]", without_urls, flags=re.UNICODE))
+
+    def _validate_sample_content_quality(self, content: str) -> None:
+        normalized = re.sub(r"\s+", "", str(content or ""))
+        if not normalized:
+            raise SampleQualityError("正文抽样疑似无效: 内容为空")
+        suspicious_patterns = [
+            (r"为了方便下次阅读.*收藏.*记录本次", "阅读器收藏提示页"),
+            (r"请向你的朋友.*推荐本书", "站点推荐提示"),
+            (r"当前版本过低.*立即升级", "客户端升级提示"),
+            (r"一秒记住.*首发", "站点广告提示"),
+            (r"百度搜索.*最新章节", "搜索引流广告"),
+            (r"本章未完.*请点击下一页", "分页提示未处理"),
+        ]
+        for pattern, reason in suspicious_patterns:
+            if re.search(pattern, normalized, flags=re.IGNORECASE):
+                raise SampleQualityError(
+                    "正文抽样疑似无效: {reason}".format(reason=reason)
+                )
+        url_count = len(re.findall(r"https?://|www\.", normalized, re.IGNORECASE))
+        chinese_count = len(re.findall(r"[\u4e00-\u9fff]", normalized))
+        if url_count >= 2 and chinese_count < 120:
+            raise SampleQualityError("正文抽样疑似无效: URL/广告内容占比过高")
+
+    def _validate_sample_set_quality(self, contents: list[str]) -> None:
+        if len(contents) < 2:
+            return
+        normalized = [re.sub(r"\s+", "", item)[:5000] for item in contents]
+        for left_index, left in enumerate(normalized):
+            if len(left) < 80:
+                continue
+            for right in normalized[left_index + 1 :]:
+                if len(right) < 80:
+                    continue
+                if SequenceMatcher(None, left, right, autojunk=False).ratio() >= 0.97:
+                    raise SampleQualityError("正文抽样疑似无效: 多个章节内容高度重复")
 
     def resume_book_job(
         self, job_id: str, auto_assemble: bool = True
@@ -577,13 +638,18 @@ class SourceDownloadService:
                 error_summary = ""
                 if latest_errors:
                     error_summary = str(latest_errors[0].get("error") or "").strip()
+                error_summary = error_summary or "正文下载未完成"
+                failure_scope = self._classify_download_failure_scope(error_summary)
+                failure_metadata = dict(summary_metadata)
+                failure_metadata["failure_scope"] = failure_scope
                 self.source_health_store.record_failure(
                     source_id,
                     "download",
                     elapsed_ms=elapsed_ms,
                     error_code="download_failed",
-                    error_summary=error_summary or "正文下载未完成",
-                    metadata=summary_metadata,
+                    error_summary=error_summary,
+                    failure_scope=failure_scope,
+                    metadata=failure_metadata,
                 )
         if self.source_profile_service is not None:
             try:
@@ -601,6 +667,33 @@ class SourceDownloadService:
                 )
             except Exception:
                 pass
+
+    def _classify_download_failure_scope(self, error: str) -> str:
+        text = str(error or "").strip().casefold()
+        source_wide_markers = (
+            "http 401",
+            "http 403",
+            "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "connection reset",
+            "name resolution",
+            "dns",
+            "连接超时",
+            "连接被拒绝",
+            "连接被重置",
+            "域名解析",
+        )
+        return (
+            "source"
+            if any(marker in text for marker in source_wide_markers)
+            else "book"
+        )
 
     def _get_supported_download_summary(self, source_id: str) -> Dict[str, Any]:
         summary = self.registry.get_source_summary(source_id)

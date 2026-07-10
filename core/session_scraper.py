@@ -19,6 +19,7 @@ class SessionScraperConfig:
     max_retries: int = 2
     retry_backoff: float = 1.5
     per_host_limit: int = 2
+    max_response_bytes: int = 8 * 1024 * 1024
     # 默认对“规则构造 URL”施加内网/非 http(s) 拒绝策略。把策略放在 scraper 这道唯一
     # 咽喉，所有抓取路径（搜索、目录、正文、模板抽取）都自动受保护，无需各调用点重复校验。
     url_safety_policy: UrlSafetyPolicy = field(default_factory=UrlSafetyPolicy)
@@ -71,6 +72,7 @@ class SessionScraper:
                         timeout,
                         use_env_proxy=self.config.use_env_proxy,
                         redirect_validator=self._redirect_validator,
+                        max_response_bytes=max(1, int(self.config.max_response_bytes)),
                     ) as response:
                         return ScraperResponse(
                             body=response.read(),

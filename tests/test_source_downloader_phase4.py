@@ -13,6 +13,7 @@ from astrbot_plugin_webnovel_downloader.core.source_downloader import (
     SourceDownloadConfig,
     SourceDownloadService,
 )
+from astrbot_plugin_webnovel_downloader.core.rule_engine import RuleEngineError
 from astrbot_plugin_webnovel_downloader.core.source_health_store import (
     SourceHealthStore,
 )
@@ -58,6 +59,14 @@ class _AlwaysForbiddenEngine(object):
         del source, max_pages
         self.chapter_calls.append((chapter_url, fallback_title))
         raise RuntimeError("HTTP 403: Forbidden")
+
+
+class _BookSpecificFailureEngine(object):
+    def fetch_chapter_content(
+        self, source, chapter_url, fallback_title="", max_pages=5
+    ):
+        del source, chapter_url, fallback_title, max_pages
+        raise RuntimeError("当前书籍未解析到正文")
 
 
 class _RuleContextEngine(object):
@@ -113,6 +122,30 @@ class _RuleContextEngine(object):
         }
 
 
+class _BadSampleEngine(object):
+    def fetch_chapter_content(
+        self, source, chapter_url, fallback_title="", max_pages=5
+    ):
+        del source, chapter_url, fallback_title, max_pages
+        return {
+            "title": "广告章",
+            "content": "为了方便下次阅读，请收藏本站，记录本次阅读位置。",
+            "encoding": "utf-8",
+        }
+
+
+class _RepeatedSampleEngine(object):
+    def fetch_chapter_content(
+        self, source, chapter_url, fallback_title="", max_pages=5
+    ):
+        del source, chapter_url, max_pages
+        return {
+            "title": fallback_title,
+            "content": "这是被错误重复返回的正文内容。" * 20,
+            "encoding": "utf-8",
+        }
+
+
 class SourceDownloaderPhase4Test(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -160,6 +193,53 @@ class SourceDownloaderPhase4Test(unittest.TestCase):
         self.assertEqual(sample["sampled_chapter_count"], 1)
         self.assertEqual(sample["sampled_chapters"][0]["title"], "第一章")
         self.assertGreater(sample["sampled_chapters"][0]["content_chars"], 10)
+
+    def test_sample_book_rejects_suspicious_non_novel_content(self):
+        service = SourceDownloadService(
+            self.registry,
+            _BadSampleEngine(),
+            self.manager,
+            SourceDownloadConfig(max_workers=1, sample_chapters=1, sample_min_chars=1),
+            source_health_store=self.health_store,
+        )
+        plan = {
+            "source_id": "source-1",
+            "source_name": "测试源",
+            "book_url": "https://example.com/book",
+            "book_name": "测试书",
+            "toc": [
+                {"index": 0, "title": "第一章", "url": "https://example.com/chapter-1"}
+            ],
+        }
+
+        with self.assertRaisesRegex(RuleEngineError, "正文抽样疑似无效"):
+            service.sample_book(plan)
+
+    def test_sample_book_rejects_highly_repeated_chapters(self):
+        service = SourceDownloadService(
+            self.registry,
+            _RepeatedSampleEngine(),
+            self.manager,
+            SourceDownloadConfig(max_workers=1, sample_chapters=3, sample_min_chars=20),
+            source_health_store=self.health_store,
+        )
+        plan = {
+            "source_id": "source-1",
+            "source_name": "测试源",
+            "book_url": "https://example.com/book",
+            "book_name": "测试书",
+            "toc": [
+                {
+                    "index": index,
+                    "title": "第{index}章".format(index=index + 1),
+                    "url": "https://example.com/chapter-{index}".format(index=index),
+                }
+                for index in range(3)
+            ],
+        }
+
+        with self.assertRaisesRegex(RuleEngineError, "多个章节内容高度重复"):
+            service.sample_book(plan)
 
     def test_resume_book_job_records_download_health_after_success(self):
         plan = {
@@ -231,6 +311,43 @@ class SourceDownloaderPhase4Test(unittest.TestCase):
         self.assertIn("HTTP 403: Forbidden", status["latest_errors"][0]["error"])
         self.assertEqual(replay["last_state"], "failed")
         self.assertEqual(manifest["metadata"]["source_id"], "source-1")
+        health = self.health_store.get_source_health("source-1")["download"]
+        self.assertEqual(health["state"], "degraded")
+        self.assertEqual(health["consecutive_failures"], 1)
+        self.assertEqual(health["last_failure_scope"], "source")
+        self.assertEqual(self.health_store.get_active_cooldown("source-1"), {})
+
+    def test_book_specific_download_failure_does_not_trip_source_circuit(self):
+        self.service = SourceDownloadService(
+            self.registry,
+            _BookSpecificFailureEngine(),
+            self.manager,
+            SourceDownloadConfig(max_workers=1),
+            source_health_store=self.health_store,
+        )
+        plan = {
+            "source_id": "source-1",
+            "source_name": "测试源",
+            "book_url": "https://example.com/book-specific",
+            "book_name": "规则异常书籍",
+            "toc": [
+                {
+                    "index": 0,
+                    "title": "第一章",
+                    "url": "https://example.com/book-specific/chapter-1",
+                }
+            ],
+        }
+        job_info = self.service.create_job_from_plan(plan)
+
+        status = self.service.resume_book_job(job_info["job_id"], auto_assemble=False)
+
+        self.assertEqual(status["state"], "failed")
+        health = self.health_store.get_source_health("source-1")["download"]
+        self.assertEqual(health["state"], "degraded")
+        self.assertEqual(health["consecutive_failures"], 0)
+        self.assertEqual(health["last_failure_scope"], "book")
+        self.assertEqual(self.health_store.get_active_cooldown("source-1"), {})
 
     def test_create_job_preserves_chapter_rule_vars_for_resume_download(self):
         self.engine = _RuleContextEngine()

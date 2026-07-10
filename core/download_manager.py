@@ -17,7 +17,7 @@ from .defaults import DEFAULT_MAX_WORKERS, DEFAULT_REQUEST_TIMEOUT
 from .session_scraper import SessionScraper, SessionScraperConfig
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def sanitize_filename(name: str) -> str:
@@ -66,6 +66,7 @@ class RuntimeConfig:
     preview_chars: int = 4000
     auto_assemble: bool = True
     cleanup_journal_after_assemble: bool = False
+    max_response_bytes: int = 8 * 1024 * 1024
     user_agent: str = (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -92,6 +93,7 @@ class NovelDownloadManager:
                 use_env_proxy=self.config.use_env_proxy,
                 max_retries=self.config.max_retries,
                 retry_backoff=self.config.retry_backoff,
+                max_response_bytes=self.config.max_response_bytes,
             )
         )
 
@@ -118,14 +120,21 @@ class NovelDownloadManager:
         source_url: str = "",
         encoding: str = "",
         metadata: Optional[Dict[str, Any]] = None,
+        requester_id: str = "",
+        session_id: str = "",
     ) -> Dict[str, Any]:
         normalized_toc = self._normalize_toc(toc)
         job_id = self._build_job_id(book_name, normalized_toc)
-        job_dir = self.jobs_dir / job_id
+        job_dir = self._job_dir(job_id)
         job_dir.mkdir(parents=True, exist_ok=True)
         journal_path = job_dir / "job.jsonl"
 
         if journal_path.exists():
+            manifest = self.load_manifest(job_id)
+            if (requester_id or session_id) and not self._manifest_belongs_to(
+                manifest, requester_id, session_id
+            ):
+                raise PermissionError("该下载任务属于其他用户，不能复用")
             status = self.get_status(job_id)
             return {
                 "job_id": job_id,
@@ -140,6 +149,8 @@ class NovelDownloadManager:
             "schema_version": SCHEMA_VERSION,
             "created_at": time.time(),
             "job_id": job_id,
+            "requester_id": str(requester_id or "").strip(),
+            "session_id": str(session_id or "").strip(),
             "book_name": book_name,
             "source_url": source_url,
             "encoding": encoding or self.config.default_encoding,
@@ -369,6 +380,20 @@ class NovelDownloadManager:
         }
         return status
 
+    def get_status_for(
+        self,
+        job_id: str,
+        requester_id: str = "",
+        session_id: str = "",
+        is_admin: bool = False,
+    ) -> Dict[str, Any]:
+        manifest = self.load_manifest(job_id)
+        if not is_admin and not self._manifest_belongs_to(
+            manifest, requester_id, session_id
+        ):
+            raise PermissionError("无权查看该下载任务")
+        return self.get_status(job_id)
+
     def list_jobs(self) -> List[Dict[str, Any]]:
         jobs: List[Dict[str, Any]] = []
         for job_dir in sorted(self.jobs_dir.iterdir()):
@@ -389,6 +414,27 @@ class NovelDownloadManager:
                 )
         return jobs
 
+    def list_jobs_for(
+        self,
+        requester_id: str = "",
+        session_id: str = "",
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        if is_admin:
+            return self.list_jobs()
+        jobs: List[Dict[str, Any]] = []
+        for job_dir in sorted(self.jobs_dir.iterdir()):
+            if not job_dir.is_dir():
+                continue
+            try:
+                manifest = self.load_manifest(job_dir.name)
+                if not self._manifest_belongs_to(manifest, requester_id, session_id):
+                    continue
+                jobs.append(self.get_status(job_dir.name))
+            except Exception:
+                continue
+        return jobs
+
     def record_state(self, job_id: str, state: str, **extra: Any) -> None:
         journal_path = self._journal_path(job_id)
         if not journal_path.exists():
@@ -403,7 +449,7 @@ class NovelDownloadManager:
 
     def _download_one(self, manifest: Dict[str, Any], chapter: Dict[str, Any]) -> None:
         rules = ExtractionRules(**manifest["rules"])
-        journal_path = self.jobs_dir / manifest["job_id"] / "job.jsonl"
+        journal_path = self._journal_path(str(manifest["job_id"]))
         attempts = max(1, self.config.max_retries)
         encoding = manifest.get("encoding") or self.config.default_encoding
 
@@ -499,7 +545,7 @@ class NovelDownloadManager:
     ) -> None:
         final_path = self.output_dir / output_filename
         if final_path.exists():
-            raise FileExistsError(f"输出文件已存在: {final_path}")
+            raise FileExistsError(f"输出文件已存在: {output_filename}")
 
         # Also reject names already reserved by another job's manifest so we do not let
         # two background tasks race toward the same assembled TXT path.
@@ -515,10 +561,7 @@ class NovelDownloadManager:
             if str(manifest.get("output_filename") or "").strip() != output_filename:
                 continue
             raise FileExistsError(
-                "输出文件名已被任务 {job_id} 占用: {path}".format(
-                    job_id=job_dir.name,
-                    path=final_path,
-                )
+                "输出文件名已被任务占用: {filename}".format(filename=output_filename)
             )
 
     def _normalize_toc(self, toc: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -698,7 +741,44 @@ class NovelDownloadManager:
                     os.fsync(handle.fileno())
 
     def _journal_path(self, job_id: str) -> Path:
-        return self.jobs_dir / job_id / "job.jsonl"
+        return self._job_dir(job_id) / "job.jsonl"
+
+    def _job_dir(self, job_id: str) -> Path:
+        normalized = self._validate_job_id(job_id)
+        jobs_root = self.jobs_dir.resolve()
+        job_dir = (jobs_root / normalized).resolve()
+        if jobs_root not in job_dir.parents:
+            raise ValueError("job_id 解析后超出任务目录")
+        return job_dir
+
+    @staticmethod
+    def _validate_job_id(job_id: str) -> str:
+        normalized = str(job_id or "").strip()
+        if not normalized or len(normalized) > 128:
+            raise ValueError("job_id 格式无效")
+        if normalized in {".", ".."} or ".." in normalized:
+            raise ValueError("job_id 不允许包含 ..")
+        if any(char in normalized for char in '<>:"/\\|?*'):
+            raise ValueError("job_id 包含文件名或路径禁用字符")
+        if normalized.endswith((" ", ".")):
+            raise ValueError("job_id 不允许以空格或点结尾")
+        if Path(normalized).is_absolute() or any(ord(char) < 32 for char in normalized):
+            raise ValueError("job_id 格式无效")
+        return normalized
+
+    @staticmethod
+    def _manifest_belongs_to(
+        manifest: Dict[str, Any], requester_id: str, session_id: str
+    ) -> bool:
+        owner_id = str(manifest.get("requester_id") or "").strip()
+        owner_session = str(manifest.get("session_id") or "").strip()
+        requester = str(requester_id or "").strip()
+        session = str(session_id or "").strip()
+        if owner_id:
+            return bool(requester) and requester == owner_id
+        if owner_session:
+            return bool(session) and session == owner_session
+        return False
 
     def _replay_job(
         self, job_id: str

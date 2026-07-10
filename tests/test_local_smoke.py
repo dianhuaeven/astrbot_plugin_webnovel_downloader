@@ -110,7 +110,12 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.tempdir.cleanup()
 
     def _create_plugin(self, config=None):
-        test_config = {"allow_unsafe_urls": True, "auto_probe_on_import": False}
+        test_config = {
+            "allow_unsafe_urls": True,
+            "auto_probe_on_import": False,
+            "download_sample_chapters": 1,
+            "download_sample_min_chars": 1,
+        }
         test_config.update(dict(config or {}))
         plugin = self.module.JsonlNovelDownloaderPlugin(
             context=object(), config=test_config
@@ -193,6 +198,12 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 return self
 
         class DummyEvent(object):
+            unified_msg_origin = "aiocqhttp:FriendMessage:42"
+            role = "member"
+
+            def get_sender_id(self):
+                return "42"
+
             def plain_result(self, text):
                 return DummyMessageEventResult().message(text)
 
@@ -390,10 +401,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             "novel_read_search_results",
             "novel_download_cached_result",
             "novel_download_status",
-            "webnovel_fetch_preview",
         ):
             self.assertNotIn(old_tool_name, tool_names)
-        self.assertFalse(hasattr(self.plugin, "webnovel_fetch_preview"))
         for admin_tool_name in (
             "webnovel_import_clean_rules",
             "webnovel_import_sources",
@@ -450,12 +459,14 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             attempt_limit="",
             output_filename="",
             auto_assemble="true",
+            skip_source_ids="",
         ):
             recorded["search_id"] = search_id
             recorded["group_index"] = group_index
             recorded["attempt_limit"] = attempt_limit
             recorded["output_filename"] = output_filename
             recorded["auto_assemble"] = auto_assemble
+            recorded["skip_source_ids"] = skip_source_ids
             return "ok"
 
         self.plugin.handle_webnovel_download_book = fake_handle
@@ -474,8 +485,579 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "attempt_limit": "3",
                 "output_filename": "",
                 "auto_assemble": "true",
+                "skip_source_ids": "",
             },
         )
+
+    async def test_webnovel_download_book_forwards_runtime_event_for_notification(self):
+        recorded = {}
+
+        async def fake_handle(
+            search_id,
+            group_index,
+            attempt_limit="",
+            output_filename="",
+            auto_assemble="true",
+            skip_source_ids="",
+            event=None,
+        ):
+            recorded["event"] = event
+            return "ok"
+
+        self.plugin.handle_webnovel_download_book = fake_handle
+        event = sys.modules["astrbot.api.event"].AstrMessageEvent()
+
+        result = await self.plugin.webnovel_download_book(event, "search-1", "0")
+
+        self.assertEqual(result, "ok")
+        self.assertIs(recorded["event"], event)
+
+    def test_download_callback_without_event_is_disabled_without_storage(self):
+        result = self.plugin._register_download_callback(
+            None,
+            "job-no-event",
+            "run-no-event",
+            {"job": {"job_id": "job-no-event"}},
+        )
+
+        self.assertFalse(result["enabled"])
+        self.assertEqual(result["reason"], "no AstrBot event context")
+        self.assertFalse(self.plugin._download_callback_path.exists())
+
+    def test_skip_source_ids_parser_supports_all_documented_forms(self):
+        self.assertEqual(self.plugin._parse_string_list("source-a"), ["source-a"])
+        self.assertEqual(
+            self.plugin._parse_string_list("source-a,source-b，source-c\nsource-a"),
+            ["source-a", "source-b", "source-c"],
+        )
+        self.assertEqual(
+            self.plugin._parse_string_list('["source-a", "source-b", "source-a"]'),
+            ["source-a", "source-b"],
+        )
+
+    def test_candidate_filter_uses_skip_registry_and_health_at_download_time(self):
+        class FakeRegistry(object):
+            def get_source_summary(self, source_id):
+                summaries = {
+                    "source-a": {"enabled": True, "supports_download": True},
+                    "source-b": {"enabled": True, "supports_download": True},
+                    "source-c": {"enabled": False, "supports_download": True},
+                    "source-d": {"enabled": True, "supports_download": True},
+                }
+                if source_id not in summaries:
+                    raise ValueError("missing")
+                return summaries[source_id]
+
+        class FakeHealthStore(object):
+            def get_many(self, _source_ids):
+                return {
+                    "source-b": {
+                        "download": {
+                            "state": "unsupported",
+                            "note": "运行时不支持",
+                        }
+                    }
+                }
+
+        self.plugin.source_registry = FakeRegistry()
+        self.plugin.source_health_store = FakeHealthStore()
+        candidates = [
+            {
+                "source_id": source_id,
+                "source_name": source_id,
+                "book_url": "https://example.com/{source_id}".format(
+                    source_id=source_id
+                ),
+                "supports_download": True,
+            }
+            for source_id in ("source-a", "source-b", "source-c", "source-d", "deleted")
+        ]
+
+        filtered = self.plugin._filter_safe_candidate_group(
+            {"candidates": candidates}, ["source-a"]
+        )
+
+        self.assertEqual(
+            [item["source_id"] for item in filtered["candidates"]], ["source-d"]
+        )
+        skipped = {
+            item["source_id"]: item["skip_reason"]
+            for item in filtered["skipped_candidates"]
+        }
+        self.assertIn("用户本次要求跳过", skipped["source-a"])
+        self.assertIn("运行时不支持", skipped["source-b"])
+        self.assertIn("禁用", skipped["source-c"])
+        self.assertIn("不在当前注册表", skipped["deleted"])
+
+    async def test_download_finished_notification_falls_back_direct_once(self):
+        self.plugin.notify_mode = "llm"
+        event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:GroupMessage:1000",
+            role="member",
+            get_sender_id=lambda: "42",
+        )
+        run_id = "run-1"
+        result = self.plugin._register_download_callback(
+            event,
+            "job-notify-1",
+            run_id,
+            {
+                "selected": {"title": "通知测试书", "source_id": "source-1"},
+                "job": {
+                    "job_id": "job-notify-1",
+                    "book_name": "通知测试书",
+                    "source_id": "source-1",
+                    "source_name": "测试源",
+                },
+            },
+        )
+        self.assertEqual(result["run_id"], run_id)
+
+        def fake_get_status(job_id):
+            self.assertEqual(job_id, "job-notify-1")
+            return {
+                "job_id": job_id,
+                "state": "downloaded",
+                "book_name": "通知测试书",
+                "completed_chapters": 2,
+                "total_chapters": 2,
+                "output_filename": "通知测试书.txt",
+            }
+
+        sent = []
+
+        async def fake_wake(callback, status, text):
+            sent.append(("wake", callback, status, text))
+            return False
+
+        async def fake_direct(callback, text):
+            sent.append(("direct", callback, {}, text))
+            return True
+
+        self.plugin.manager.get_status = fake_get_status
+        self.plugin._wake_llm_for_download_result = fake_wake
+        self.plugin._send_direct_download_notification = fake_direct
+
+        await self.plugin._notify_download_finished("job-notify-1", run_id)
+        await self.plugin._notify_download_finished("job-notify-1", run_id)
+
+        self.assertEqual([item[0] for item in sent], ["wake", "direct"])
+        self.assertIn("下载完成", sent[-1][3])
+        payload = json.loads(self.plugin._download_callback_path.read_text("utf-8"))
+        self.assertEqual(payload["callbacks"], {})
+
+    async def test_download_finished_notification_prefers_llm_without_direct_fallback(
+        self,
+    ):
+        event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:42",
+            role="member",
+            get_sender_id=lambda: "42",
+        )
+        self.plugin._register_download_callback(
+            event,
+            "job-llm-success",
+            "run-llm-success",
+            {"job": {"job_id": "job-llm-success", "book_name": "LLM 通知书"}},
+        )
+        self.plugin.manager.get_status = lambda _job_id: {
+            "job_id": "job-llm-success",
+            "state": "assembled",
+            "book_name": "LLM 通知书",
+            "completed_chapters": 1,
+            "total_chapters": 1,
+        }
+        calls = []
+
+        async def fake_wake(callback, status, text):
+            calls.append(("llm", callback["run_id"], status["state"], text))
+            return True
+
+        async def fail_direct(_callback, _text):
+            raise AssertionError("LLM wake 成功后不应调用 direct fallback")
+
+        self.plugin._wake_llm_for_download_result = fake_wake
+        self.plugin._send_direct_download_notification = fail_direct
+
+        await self.plugin._notify_download_finished(
+            "job-llm-success", "run-llm-success"
+        )
+        await self.plugin._notify_download_finished(
+            "job-llm-success", "run-llm-success"
+        )
+
+        self.assertEqual([item[0] for item in calls], ["llm"])
+        payload = json.loads(self.plugin._download_callback_path.read_text("utf-8"))
+        self.assertEqual(payload["callbacks"], {})
+
+    async def test_notification_double_failure_is_persisted_without_auto_retry(self):
+        event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:42",
+            role="member",
+            get_sender_id=lambda: "42",
+        )
+        self.plugin._register_download_callback(
+            event,
+            "job-delivery-failed",
+            "run-delivery-failed",
+            {"job": {"job_id": "job-delivery-failed", "book_name": "失败通知书"}},
+        )
+        self.plugin.manager.get_status = lambda _job_id: {
+            "job_id": "job-delivery-failed",
+            "state": "failed",
+            "book_name": "失败通知书",
+            "completed_chapters": 0,
+            "total_chapters": 1,
+            "output_path": "失败通知书.txt",
+            "journal_path": "(hidden)",
+            "latest_errors": [],
+            "corrupt_lines": 0,
+        }
+        calls = []
+
+        async def fake_wake(*_args):
+            calls.append("llm")
+            return False
+
+        async def fake_direct(*_args):
+            calls.append("direct")
+            return False
+
+        self.plugin._wake_llm_for_download_result = fake_wake
+        self.plugin._send_direct_download_notification = fake_direct
+        await self.plugin._notify_download_finished(
+            "job-delivery-failed", "run-delivery-failed"
+        )
+        await self.plugin._notify_download_finished(
+            "job-delivery-failed", "run-delivery-failed"
+        )
+
+        self.assertEqual(calls, ["llm", "direct"])
+        notification = self.plugin._notification_statuses_for_jobs(
+            {"job-delivery-failed"}
+        )["job-delivery-failed"]
+        self.assertEqual(notification["state"], "delivery_failed")
+        self.assertIn("LLM wake", notification["failure_summary"])
+        rendered = self.plugin.renderer.render_status(
+            self.plugin._attach_notification_status(
+                self.plugin.manager.get_status("job-delivery-failed")
+            ),
+            False,
+        )
+        self.assertIn("通知: delivery_failed", rendered)
+
+    async def test_llm_wake_executes_astrbot_background_agent_flow(self):
+        recorded = {}
+
+        class ToolSet(object):
+            def add_tool(self, tool):
+                recorded["tool"] = tool
+
+        class MainAgentBuildConfig(object):
+            def __init__(self, **kwargs):
+                recorded["build_config"] = kwargs
+
+        class Conversation(object):
+            history = "[]"
+
+        async def get_session_conv(**kwargs):
+            recorded["conversation_event"] = kwargs["event"]
+            return Conversation()
+
+        class Runner(object):
+            async def step_until_done(self, _limit):
+                yield None
+
+            def get_final_llm_resp(self):
+                return types.SimpleNamespace(completion_text="已通知")
+
+        async def build_main_agent(**kwargs):
+            recorded["request"] = kwargs["req"]
+            return types.SimpleNamespace(agent_runner=Runner())
+
+        class CronMessageEvent(object):
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.role = ""
+
+            def get_extra(self, key, default=None):
+                if key == "_send_message_to_user_current_session_plain_texts":
+                    return ["sent"]
+                return default
+
+        class MessageSession(object):
+            @staticmethod
+            def from_str(value):
+                recorded["session"] = value
+                return types.SimpleNamespace(message_type="FriendMessage")
+
+        class ProviderRequest(object):
+            def __init__(self):
+                self.conversation = None
+                self.contexts = []
+                self.system_prompt = ""
+                self.prompt = ""
+                self.func_tool = None
+
+            def _print_friendly_context(self):
+                return ""
+
+        class SendMessageToUserTool(object):
+            pass
+
+        async def persist_agent_history(*_args, **kwargs):
+            recorded["history_event"] = kwargs["event"]
+
+        fake_modules = {
+            "astrbot.core.agent.tool": types.SimpleNamespace(ToolSet=ToolSet),
+            "astrbot.core.astr_main_agent": types.SimpleNamespace(
+                MainAgentBuildConfig=MainAgentBuildConfig,
+                _get_session_conv=get_session_conv,
+                build_main_agent=build_main_agent,
+            ),
+            "astrbot.core.astr_main_agent_resources": types.SimpleNamespace(
+                BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT="result={background_task_result}"
+            ),
+            "astrbot.core.cron.events": types.SimpleNamespace(
+                CronMessageEvent=CronMessageEvent
+            ),
+            "astrbot.core.platform.message_session": types.SimpleNamespace(
+                MessageSession=MessageSession
+            ),
+            "astrbot.core.provider.entities": types.SimpleNamespace(
+                ProviderRequest=ProviderRequest
+            ),
+            "astrbot.core.tools.message_tools": types.SimpleNamespace(
+                SendMessageToUserTool=SendMessageToUserTool
+            ),
+            "astrbot.core.utils.history_saver": types.SimpleNamespace(
+                persist_agent_history=persist_agent_history
+            ),
+        }
+        sys.modules.update(fake_modules)
+        self.plugin.context = types.SimpleNamespace(
+            get_config=lambda _origin: {"provider_settings": {}},
+            get_llm_tool_manager=lambda: types.SimpleNamespace(
+                get_builtin_tool=lambda _tool: "send-message-tool"
+            ),
+            conversation_manager=object(),
+        )
+
+        delivered = await self.plugin._wake_llm_for_download_result(
+            {
+                "job_id": "job-real-wake",
+                "run_id": "run-real-wake",
+                "unified_msg_origin": "aiocqhttp:FriendMessage:42",
+                "role": "member",
+            },
+            {
+                "job_id": "job-real-wake",
+                "state": "assembled",
+                "book_name": "唤醒测试书",
+                "completed_chapters": 1,
+                "total_chapters": 1,
+            },
+            "下载完成",
+        )
+
+        self.assertTrue(delivered)
+        self.assertEqual(recorded["tool"], "send-message-tool")
+        self.assertIn("send_message_to_user", recorded["request"].prompt)
+        self.assertIs(recorded["conversation_event"], recorded["history_event"])
+
+    async def test_download_notification_retries_same_job_with_new_run_id(self):
+        event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:42",
+            role="member",
+            get_sender_id=lambda: "42",
+        )
+        statuses = iter(
+            [
+                {
+                    "job_id": "job-retry",
+                    "state": "failed",
+                    "book_name": "重试通知测试书",
+                    "completed_chapters": 0,
+                    "total_chapters": 2,
+                    "state_details": {"error": "temporary failure"},
+                },
+                {
+                    "job_id": "job-retry",
+                    "state": "assembled",
+                    "book_name": "重试通知测试书",
+                    "completed_chapters": 2,
+                    "total_chapters": 2,
+                    "output_filename": "重试通知测试书.txt",
+                },
+            ]
+        )
+        self.plugin.manager.get_status = lambda _job_id: next(statuses)
+        sent = []
+
+        async def fake_direct(callback, text):
+            sent.append((callback["run_id"], text))
+            return True
+
+        self.plugin._send_direct_download_notification = fake_direct
+        orchestration = {"job": {"job_id": "job-retry", "book_name": "重试通知测试书"}}
+        self.plugin._register_download_callback(
+            event, "job-retry", "attempt-failed", orchestration
+        )
+        await self.plugin._notify_download_finished("job-retry", "attempt-failed")
+        self.plugin._register_download_callback(
+            event, "job-retry", "attempt-success", orchestration
+        )
+        await self.plugin._notify_download_finished("job-retry", "attempt-success")
+
+        self.assertEqual(
+            [item[0] for item in sent], ["attempt-failed", "attempt-success"]
+        )
+        self.assertIn("下载失败", sent[0][1])
+        self.assertIn("下载完成", sent[1][1])
+
+    async def test_callback_storage_failure_does_not_block_task_start(self):
+        event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:42",
+            role="member",
+            get_sender_id=lambda: "42",
+        )
+        started = []
+
+        def fail_write(_callbacks):
+            raise OSError("read only callback storage")
+
+        async def fake_run(job_id, auto_assemble, run_id):
+            started.append((job_id, auto_assemble, run_id))
+
+        self.plugin._write_download_callbacks_unlocked = fail_write
+        self.plugin._run_rule_job = fake_run
+        notification = await self.plugin._ensure_rule_job_running(
+            "job-storage-failure",
+            True,
+            event=event,
+            orchestration={"job": {"job_id": "job-storage-failure"}},
+        )
+        await self.plugin._running_tasks["job-storage-failure"]
+
+        self.assertFalse(notification["enabled"])
+        self.assertEqual(started[0][:2], ("job-storage-failure", True))
+        self.assertEqual(started[0][2], notification["run_id"])
+
+    async def test_cancelled_run_is_not_notified_and_resume_gets_new_run_id(self):
+        event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:42",
+            role="member",
+            get_sender_id=lambda: "42",
+        )
+        release_cancelled_worker = threading.Event()
+
+        def blocked_resume(_job_id, _auto_assemble):
+            release_cancelled_worker.wait(1.0)
+
+        self.plugin.source_download_service.resume_book_job = blocked_resume
+        first = await self.plugin._ensure_rule_job_running(
+            "job-cancel-resume",
+            True,
+            event=event,
+            orchestration={"job": {"job_id": "job-cancel-resume"}},
+        )
+        first_task = self.plugin._running_tasks["job-cancel-resume"]
+        await asyncio.sleep(0)
+        first_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first_task
+        release_cancelled_worker.set()
+
+        sent = []
+        self.plugin.source_download_service.resume_book_job = lambda *_args: None
+        self.plugin.manager.get_status = lambda _job_id: {
+            "job_id": "job-cancel-resume",
+            "state": "downloaded",
+            "book_name": "取消恢复测试书",
+            "completed_chapters": 1,
+            "total_chapters": 1,
+        }
+
+        async def fake_direct(callback, text):
+            sent.append((callback["run_id"], text))
+            return True
+
+        self.plugin._send_direct_download_notification = fake_direct
+        second = await self.plugin._ensure_rule_job_running(
+            "job-cancel-resume",
+            True,
+            event=event,
+            orchestration={"job": {"job_id": "job-cancel-resume"}},
+        )
+        await self.plugin._running_tasks["job-cancel-resume"]
+
+        self.assertNotEqual(first["run_id"], second["run_id"])
+        self.assertEqual([item[0] for item in sent], [second["run_id"]])
+
+    def test_render_auto_download_summary_includes_notification_status(self):
+        payload = json.loads(
+            self.plugin.renderer.render_auto_download_summary(
+                {
+                    "status": "started",
+                    "notification": {
+                        "enabled": True,
+                        "mode": "direct",
+                        "final_only": True,
+                        "run_id": "run-summary",
+                    },
+                },
+                {"search_id": "search-1", "path": "search.json"},
+                {},
+            )
+        )
+
+        self.assertEqual(payload["notification"]["run_id"], "run-summary")
+
+    async def test_job_status_enforces_owner_and_redacts_paths_for_regular_user(self):
+        job = self.plugin.manager.create_job(
+            "权限测试书",
+            [{"title": "第一章", "url": "https://example.com/chapter/1"}],
+            self.module.ExtractionRules(content_regex=r"(?s)(.*)"),
+            requester_id="owner-1",
+            session_id="aiocqhttp:FriendMessage:owner-1",
+        )
+        owner_event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:owner-1",
+            role="member",
+            get_sender_id=lambda: "owner-1",
+        )
+        other_event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:owner-2",
+            role="member",
+            get_sender_id=lambda: "owner-2",
+        )
+        admin_event = types.SimpleNamespace(
+            unified_msg_origin="aiocqhttp:FriendMessage:admin",
+            role="admin",
+            get_sender_id=lambda: "admin",
+        )
+
+        owner_status = await self.plugin.handle_novel_download_status(
+            job["job_id"], event=owner_event
+        )
+        self.assertIn("输出: 权限测试书.txt", owner_status)
+        self.assertNotIn(str(self.plugin.manager.output_dir), owner_status)
+        self.assertNotIn(str(self.plugin.manager.jobs_dir), owner_status)
+        with self.assertRaises(PermissionError):
+            await self.plugin.handle_novel_download_status(
+                job["job_id"], event=other_event
+            )
+        admin_status = await self.plugin.handle_novel_download_status(
+            job["job_id"], event=admin_event
+        )
+        self.assertIn(str(self.plugin.manager.output_dir), admin_status)
+
+        other_jobs = await self.plugin.handle_novel_download_status(event=other_event)
+        self.assertEqual(other_jobs, "当前没有任何下载任务。")
+        admin_jobs = json.loads(
+            await self.plugin.handle_novel_list_jobs(event=admin_event)
+        )
+        self.assertEqual(admin_jobs["total_count"], 1)
 
     async def test_webnovel_refresh_sources_accepts_runtime_call_without_event_argument(
         self,
@@ -851,6 +1433,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 config={"request_timeout": 0},
             )
 
+    def test_plugin_init_rejects_non_positive_max_response_bytes(self):
+        with self.assertRaisesRegex(ValueError, "max_response_bytes.*必须大于 0"):
+            self.module.JsonlNovelDownloaderPlugin(
+                context=object(),
+                config={"max_response_bytes": 0},
+            )
+
     def test_open_url_ignores_env_proxy_by_default(self):
         http_utils = importlib.import_module(
             "astrbot_plugin_webnovel_downloader.http_utils"
@@ -1169,9 +1758,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         await self.plugin._running_tasks[job_id]
 
-        status_text = await self._invoke_tool(
-            self.plugin.webnovel_download_status, job_id
-        )
+        status_text = await self.plugin.handle_webnovel_download_status(job_id)
         self.assertIn("状态: assembled", status_text)
 
         assembled_text = await self.plugin.handle_novel_assemble_book(job_id, "false")
@@ -2926,7 +3513,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         listed_again = json.loads(
             await self._invoke_tool(self.plugin.webnovel_list_sources)
         )
-        self.assertEqual(listed_again["sources"][0]["preflight_health_state"], "broken")
+        self.assertEqual(
+            listed_again["sources"][0]["preflight_health_state"], "degraded"
+        )
         self.assertIn(
             "未解析到目录", listed_again["sources"][0]["preflight_health_summary"]
         )
@@ -3594,6 +4183,42 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("但是啊，今天有我在", lines[1])
         self.assertNotIn("\n\n", chapter["content"])
         self.assertEqual(lines[2].strip(), "第二段也应该保留。")
+
+    async def test_fetch_chapter_content_preserves_text_rule_block_paragraphs(self):
+        chapter_page = self.base_dir / "chapter-text-rule-paragraphs.html"
+        chapter_page.write_text(
+            "<html><body>"
+            "<h1>第一章</h1>"
+            "<div id='content'>"
+            "<p>第一段应该保留换行。</p>"
+            "<p>第二段也应该另起一行。</p>"
+            "</div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        source = {
+            "source_id": "paragraph-source",
+            "source_url": "https://example.com",
+            "headers": {},
+            "rule_content": {
+                "title": "h1&&text",
+                "content": "#content&&text",
+            },
+        }
+
+        chapter = (
+            self.plugin.search_service.engine.fallback_extractor.fetch_chapter_content(
+                source,
+                chapter_page.resolve().as_uri(),
+                "第一章",
+            )
+        )
+
+        lines = [line for line in chapter["content"].splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0].strip(), "第一段应该保留换行。")
+        self.assertEqual(lines[1].strip(), "第二段也应该另起一行。")
+        self.assertTrue(all(line.startswith("\u3000\u3000") for line in lines))
 
     async def test_list_jobs_large_result_writes_local_report(self):
         for index in range(12):

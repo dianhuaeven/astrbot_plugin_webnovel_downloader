@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import atexit
+import gzip
 import threading
+import zlib
 from email.message import Message
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -22,6 +24,11 @@ except ImportError:
 # 都是按线程缓存复用的。用线程本地槽位在单次 open_url 期间挂上当前请求的校验器，
 # 由客户端级 event hook / 重定向 handler 在每一跳读取，避免把可变策略烤进缓存对象。
 RedirectValidator = Callable[[str], None]
+
+
+class ResponseTooLargeError(ValueError):
+    pass
+
 
 _THREAD_LOCAL = threading.local()
 _ACTIVE_REDIRECT_VALIDATOR = threading.local()
@@ -72,9 +79,21 @@ def _open_with_urllib(
     request: Request,
     timeout: float,
     use_env_proxy: bool = False,
+    max_response_bytes: int | None = None,
 ) -> Any:
     opener = _get_urllib_opener(use_env_proxy=use_env_proxy)
-    return opener.open(request, timeout=timeout)
+    response = opener.open(request, timeout=timeout)
+    if max_response_bytes is None:
+        return response
+    try:
+        body = _read_urllib_response_limited(response, max_response_bytes)
+        return _BytesResponse(
+            body,
+            dict(getattr(response, "headers", {}) or {}),
+            str(getattr(response, "url", request.full_url) or request.full_url),
+        )
+    finally:
+        response.close()
 
 
 def _get_urllib_opener(use_env_proxy: bool) -> Any:
@@ -96,29 +115,125 @@ def _open_with_httpx(
     request: Request,
     timeout: float,
     use_env_proxy: bool = False,
+    max_response_bytes: int | None = None,
 ) -> _BytesResponse:
     assert httpx is not None
     client = _get_thread_local_httpx_client(use_env_proxy)
-    response = client.request(
-        method=request.get_method(),
-        url=request.full_url,
-        headers=dict(request.header_items()),
-        content=request.data,
-        timeout=timeout,
-    )
-    if response.status_code >= 400:
-        raise HTTPError(
-            request.full_url,
-            response.status_code,
-            response.reason_phrase,
+    request_kwargs = {
+        "method": request.get_method(),
+        "url": request.full_url,
+        "headers": dict(request.header_items()),
+        "content": request.data,
+        "timeout": timeout,
+    }
+    if max_response_bytes is None:
+        response = client.request(**request_kwargs)
+        _raise_for_http_status(request, response)
+        return _BytesResponse(
+            response.content,
             dict(response.headers),
-            None,
+            str(response.url),
         )
-    return _BytesResponse(
-        response.content,
+    with client.stream(**request_kwargs) as response:
+        _raise_for_http_status(request, response)
+        _reject_oversized_content_length(response.headers, max_response_bytes)
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > max_response_bytes:
+                raise ResponseTooLargeError(
+                    "HTTP 响应解压后超过 {limit} 字节上限".format(
+                        limit=max_response_bytes
+                    )
+                )
+            chunks.append(chunk)
+        return _BytesResponse(
+            b"".join(chunks),
+            dict(response.headers),
+            str(response.url),
+        )
+
+
+def _raise_for_http_status(request: Request, response: Any) -> None:
+    if int(response.status_code) < 400:
+        return
+    raise HTTPError(
+        request.full_url,
+        response.status_code,
+        response.reason_phrase,
         dict(response.headers),
-        str(response.url),
+        None,
     )
+
+
+def _reject_oversized_content_length(headers: Any, max_response_bytes: int) -> None:
+    raw_length = ""
+    if hasattr(headers, "get"):
+        raw_length = str(headers.get("Content-Length") or "").strip()
+    if not raw_length:
+        return
+    try:
+        content_length = int(raw_length)
+    except (TypeError, ValueError):
+        return
+    if content_length > max_response_bytes:
+        raise ResponseTooLargeError(
+            "HTTP Content-Length={size} 超过 {limit} 字节上限".format(
+                size=content_length,
+                limit=max_response_bytes,
+            )
+        )
+
+
+def _read_urllib_response_limited(response: Any, max_response_bytes: int) -> bytes:
+    headers = getattr(response, "headers", {}) or {}
+    _reject_oversized_content_length(headers, max_response_bytes)
+    content_encoding = ""
+    if hasattr(headers, "get"):
+        content_encoding = str(headers.get("Content-Encoding") or "").strip().lower()
+    if content_encoding in {"", "identity"}:
+        body = response.read(max_response_bytes + 1)
+    elif content_encoding in {"gzip", "x-gzip"}:
+        with gzip.GzipFile(fileobj=response) as decoded:
+            body = decoded.read(max_response_bytes + 1)
+    elif content_encoding == "deflate":
+        body = _read_deflate_limited(response, max_response_bytes)
+    else:
+        raise ResponseTooLargeError(
+            "urllib 不支持安全解压 Content-Encoding={encoding}".format(
+                encoding=content_encoding
+            )
+        )
+    if len(body) > max_response_bytes:
+        raise ResponseTooLargeError(
+            "HTTP 响应解压后超过 {limit} 字节上限".format(limit=max_response_bytes)
+        )
+    return body
+
+
+def _read_deflate_limited(response: Any, max_response_bytes: int) -> bytes:
+    decoder = zlib.decompressobj()
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        compressed = response.read(65536)
+        if not compressed:
+            break
+        decoded = decoder.decompress(compressed, max_response_bytes - total + 1)
+        total += len(decoded)
+        if total > max_response_bytes:
+            raise ResponseTooLargeError(
+                "HTTP 响应解压后超过 {limit} 字节上限".format(limit=max_response_bytes)
+            )
+        chunks.append(decoded)
+    tail = decoder.flush(max_response_bytes - total + 1)
+    if total + len(tail) > max_response_bytes:
+        raise ResponseTooLargeError(
+            "HTTP 响应解压后超过 {limit} 字节上限".format(limit=max_response_bytes)
+        )
+    chunks.append(tail)
+    return b"".join(chunks)
 
 
 def _get_thread_local_httpx_client(use_env_proxy: bool) -> Any:
@@ -181,6 +296,7 @@ def open_url(
     timeout: float,
     use_env_proxy: bool = False,
     redirect_validator: RedirectValidator | None = None,
+    max_response_bytes: int | None = None,
 ) -> Any:
     # 初始目标先过一遍校验，再把校验器挂到线程本地，由后续每一跳重定向复用。
     if redirect_validator is not None:
@@ -189,12 +305,24 @@ def open_url(
     _ACTIVE_REDIRECT_VALIDATOR.fn = redirect_validator
     try:
         if request.full_url.startswith("file://") or httpx is None:
-            return _open_with_urllib(request, timeout, use_env_proxy=use_env_proxy)
+            return _open_with_urllib(
+                request,
+                timeout,
+                use_env_proxy=use_env_proxy,
+                max_response_bytes=max_response_bytes,
+            )
         try:
-            return _open_with_httpx(request, timeout, use_env_proxy=use_env_proxy)
+            return _open_with_httpx(
+                request,
+                timeout,
+                use_env_proxy=use_env_proxy,
+                max_response_bytes=max_response_bytes,
+            )
         except HTTPError:
             raise
         except URLError:
+            raise
+        except ResponseTooLargeError:
             raise
         except Exception as exc:
             # 校验失败（含重定向到内网）属于策略拒绝，原样抛出，不要包成 URLError，

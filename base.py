@@ -4,10 +4,12 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import tempfile
 import zipfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +97,29 @@ class JsonlNovelDownloaderPluginBase(Star):
             )
         except (TypeError, ValueError):
             self.download_status_settle_seconds = 2.0
+        self.notify_on_download_complete = _parse_bool_config(
+            self.config.get("notify_on_download_complete"),
+            True,
+        )
+        self.notify_on_success = _parse_bool_config(
+            self.config.get("notify_on_success"),
+            True,
+        )
+        self.notify_on_failure = _parse_bool_config(
+            self.config.get("notify_on_failure"),
+            True,
+        )
+        self.notify_progress = _parse_bool_config(
+            self.config.get("notify_progress"),
+            False,
+        )
+        self.notify_mode = str(self.config.get("notify_mode") or "llm").strip().lower()
+        if self.notify_mode not in {"llm", "direct", "off"}:
+            self.notify_mode = "llm"
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._running_run_ids: dict[str, str] = {}
+        self._download_callback_path = self.plugin_data_dir / "download_callbacks.json"
+        self._download_callback_lock = threading.RLock()
         self._bootstrap_state_path = self.plugin_data_dir / "bootstrap_state.json"
         self.auto_install_bundled_skills = _parse_bool_config(
             self.config.get("auto_install_bundled_skills"),
@@ -491,6 +515,8 @@ class JsonlNovelDownloaderPluginBase(Star):
         attempt_limit: str = "",
         output_filename: str = "",
         auto_assemble: str = "true",
+        skip_source_ids: str = "",
+        event: Any | None = None,
     ) -> str:
         normalized_search_id = str(search_id or "").strip()
         if not normalized_search_id:
@@ -525,7 +551,12 @@ class JsonlNovelDownloaderPluginBase(Star):
                     index=group_index_value,
                 )
             )
-        selected_group = self._filter_safe_candidate_group(selected_group)
+        selected_group = await run_blocking(
+            self._filter_safe_candidate_group,
+            selected_group,
+            self._parse_string_list(skip_source_ids),
+        )
+        access = self._event_access_context(event)
 
         raw_attempt_limit = self._parse_optional_int(attempt_limit)
         attempt_limit_value = max(1, raw_attempt_limit) if raw_attempt_limit else 0
@@ -534,15 +565,32 @@ class JsonlNovelDownloaderPluginBase(Star):
             selected_group,
             attempt_limit_value,
             output_filename,
+            None,
+            {
+                "requester_id": access["requester_id"],
+                "session_id": access["session_id"],
+            }
+            if event is not None
+            else None,
         )
         await run_blocking(self._record_auto_download_attempts, orchestration)
         job_status = {}
         job_id = str(orchestration.get("job", {}).get("job_id") or "").strip()
         if job_id:
-            await self._ensure_rule_job_running(
-                job_id, self._parse_bool(auto_assemble, True)
+            orchestration["notification"] = await self._ensure_rule_job_running(
+                job_id,
+                self._parse_bool(auto_assemble, True),
+                event=event,
+                orchestration=orchestration,
             )
             job_status = await run_blocking(self.manager.get_status, job_id)
+            if event is not None and not access["is_admin"]:
+                job_status = self._redact_job_status(job_status)
+        else:
+            orchestration["notification"] = {
+                "enabled": False,
+                "reason": "download job was not created",
+            }
         return await run_blocking(
             self.renderer.render_auto_download_summary,
             orchestration,
@@ -555,11 +603,14 @@ class JsonlNovelDownloaderPluginBase(Star):
         job_id: str = "",
         limit: str = "",
         offset: str = "",
+        event: Any | None = None,
     ) -> str:
         normalized_job_id = str(job_id or "").strip()
         if normalized_job_id:
             await self._settle_running_task(normalized_job_id)
-        return await self.handle_novel_download_status(job_id, limit, offset)
+        return await self.handle_novel_download_status(
+            job_id, limit, offset, event=event
+        )
 
     async def handle_novel_prepare_download(
         self,
@@ -992,18 +1043,45 @@ class JsonlNovelDownloaderPluginBase(Star):
         job_id: str = "",
         limit: str = "",
         offset: str = "",
+        *,
+        event: Any | None = None,
     ) -> str:
+        access = self._event_access_context(event)
         if job_id:
-            return await self._render_job_status(job_id, created=False)
+            if event is None:
+                return await self._render_job_status(job_id, created=False)
+            status = await run_blocking(
+                self.manager.get_status_for,
+                job_id,
+                access["requester_id"],
+                access["session_id"],
+                access["is_admin"],
+            )
+            status = await run_blocking(self._attach_notification_status, status)
+            if not access["is_admin"]:
+                status = self._redact_job_status(status)
+            return await run_blocking(self.renderer.render_status, status, False)
 
-        jobs = await run_blocking(self.manager.list_jobs)
+        if event is None:
+            jobs = await run_blocking(self.manager.list_jobs)
+        else:
+            jobs = await run_blocking(
+                self.manager.list_jobs_for,
+                access["requester_id"],
+                access["session_id"],
+                access["is_admin"],
+            )
+            if not access["is_admin"]:
+                jobs = [self._redact_job_status(item) for item in jobs]
         if not jobs:
             return "当前没有任何下载任务。"
+        jobs = await run_blocking(self._attach_notification_statuses, jobs)
         return await run_blocking(
             self.renderer.render_jobs_summary,
             jobs,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
+            event is None or access["is_admin"],
         )
 
     async def handle_novel_assemble_book(
@@ -1019,14 +1097,64 @@ class JsonlNovelDownloaderPluginBase(Star):
         )
         return await run_blocking(self.renderer.render_status, status, False)
 
-    async def handle_novel_list_jobs(self, limit: str = "", offset: str = "") -> str:
-        jobs = await run_blocking(self.manager.list_jobs)
+    async def handle_novel_list_jobs(
+        self,
+        limit: str = "",
+        offset: str = "",
+        *,
+        event: Any | None = None,
+    ) -> str:
+        access = self._event_access_context(event)
+        if event is None:
+            jobs = await run_blocking(self.manager.list_jobs)
+        else:
+            jobs = await run_blocking(
+                self.manager.list_jobs_for,
+                access["requester_id"],
+                access["session_id"],
+                access["is_admin"],
+            )
+            if not access["is_admin"]:
+                jobs = [self._redact_job_status(item) for item in jobs]
+        jobs = await run_blocking(self._attach_notification_statuses, jobs)
         return await run_blocking(
             self.renderer.render_jobs_summary,
             jobs,
             self._parse_optional_int(limit) or self.max_tool_preview_items,
             self._parse_non_negative_int(offset, 0),
+            event is None or access["is_admin"],
         )
+
+    @staticmethod
+    def _event_access_context(event: Any | None) -> dict[str, Any]:
+        if event is None:
+            return {"requester_id": "", "session_id": "", "is_admin": True}
+        requester_id = ""
+        get_sender_id = getattr(event, "get_sender_id", None)
+        if callable(get_sender_id):
+            try:
+                requester_id = str(get_sender_id() or "").strip()
+            except Exception:
+                requester_id = ""
+        session_id = str(
+            getattr(event, "unified_msg_origin", "")
+            or getattr(event, "session", "")
+            or ""
+        ).strip()
+        role = str(getattr(event, "role", "") or "").strip().lower()
+        return {
+            "requester_id": requester_id,
+            "session_id": session_id,
+            "is_admin": role in {"admin", "administrator", "owner"},
+        }
+
+    @staticmethod
+    def _redact_job_status(status: dict[str, Any]) -> dict[str, Any]:
+        redacted = dict(status)
+        redacted["output_path"] = str(redacted.get("output_filename") or "")
+        redacted["journal_path"] = "(hidden)"
+        redacted["host_paths_redacted"] = True
+        return redacted
 
     async def _ensure_job_running(self, job_id: str, auto_assemble: bool) -> None:
         existing = self._running_tasks.get(job_id)
@@ -1036,11 +1164,39 @@ class JsonlNovelDownloaderPluginBase(Star):
         task = asyncio.create_task(self._run_job(job_id, auto_assemble))
         self._running_tasks[job_id] = task
 
-    def _filter_safe_candidate_group(self, group: dict[str, Any]) -> dict[str, Any]:
+    def _filter_safe_candidate_group(
+        self,
+        group: dict[str, Any],
+        skip_source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         candidates = [dict(item) for item in list(group.get("candidates") or [])]
         skipped = [dict(item) for item in list(group.get("skipped_candidates") or [])]
+        skip_ids = {str(item or "").strip() for item in list(skip_source_ids or [])}
+        skip_ids.discard("")
+        source_ids = [
+            str(item.get("source_id") or "").strip()
+            for item in candidates
+            if str(item.get("source_id") or "").strip()
+        ]
+        try:
+            health_by_source = (
+                self.source_health_store.get_many(source_ids) if source_ids else {}
+            )
+        except Exception:
+            health_by_source = {}
         safe_candidates: list[dict[str, Any]] = []
         for candidate in candidates:
+            source_id = str(candidate.get("source_id") or "").strip()
+            runtime_skip_reason = self._candidate_runtime_skip_reason(
+                source_id,
+                skip_ids,
+                dict(health_by_source.get(source_id) or {}),
+            )
+            if runtime_skip_reason:
+                blocked = dict(candidate)
+                blocked["skip_reason"] = runtime_skip_reason
+                skipped.append(blocked)
+                continue
             book_url = str(candidate.get("book_url") or "").strip()
             try:
                 candidate["book_url"] = validate_user_fetch_url(
@@ -1057,7 +1213,9 @@ class JsonlNovelDownloaderPluginBase(Star):
                 continue
             safe_candidates.append(candidate)
         if not safe_candidates:
-            raise ValueError("候选组内没有通过 URL 安全策略的可下载书源")
+            raise ValueError(
+                "候选组内没有可下载书源；可能已被禁用、删除、跳过或未通过安全策略"
+            )
 
         safe_group = dict(group)
         safe_group["candidates"] = safe_candidates
@@ -1074,12 +1232,78 @@ class JsonlNovelDownloaderPluginBase(Star):
             safe_group["best_book_url"] = safe_candidates[0].get("book_url", "")
         return safe_group
 
-    async def _ensure_rule_job_running(self, job_id: str, auto_assemble: bool) -> None:
+    def _candidate_runtime_skip_reason(
+        self,
+        source_id: str,
+        skip_ids: set[str],
+        health: dict[str, Any],
+    ) -> str:
+        if source_id and source_id in skip_ids:
+            return "用户本次要求跳过该书源"
+        if not source_id:
+            return "候选缺少 source_id，无法校验注册表状态"
+        try:
+            summary = self.source_registry.get_source_summary(source_id)
+        except Exception:
+            return "书源不在当前注册表中，已跳过"
+        if not bool(summary.get("enabled", True)):
+            return "书源已在注册表中禁用，已跳过"
+        if not bool(summary.get("supports_download", False)):
+            issues = "；".join(summary.get("issues") or [])
+            return issues or "书源当前不支持 TXT 下载"
+        for stage in ("preflight", "download"):
+            stage_entry = dict(health.get(stage) or {})
+            if str(stage_entry.get("state") or "unknown") != "unsupported":
+                continue
+            return str(
+                stage_entry.get("note")
+                or stage_entry.get("last_error_summary")
+                or "{stage} 阶段已标记为不支持".format(stage=stage)
+            ).strip()
+        return ""
+
+    async def _ensure_rule_job_running(
+        self,
+        job_id: str,
+        auto_assemble: bool,
+        *,
+        event: Any | None = None,
+        orchestration: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         existing = self._running_tasks.get(job_id)
         if existing and not existing.done():
-            return
-        task = asyncio.create_task(self._run_rule_job(job_id, auto_assemble))
+            return {
+                "enabled": False,
+                "reason": "download job is already running",
+                "run_id": self._running_run_ids.get(job_id, ""),
+            }
+
+        run_id = uuid.uuid4().hex
+        try:
+            notification = await run_blocking(
+                self._register_download_callback,
+                event,
+                job_id,
+                run_id,
+                orchestration or {},
+            )
+        except Exception as exc:
+            logger.warning(
+                "保存下载通知回调失败，任务仍会继续 job_id=%s run_id=%s error=%s",
+                job_id,
+                run_id,
+                exc,
+            )
+            notification = {
+                "enabled": False,
+                "reason": "notification callback could not be stored",
+                "run_id": run_id,
+            }
+
+        task = asyncio.create_task(self._run_rule_job(job_id, auto_assemble, run_id))
         self._running_tasks[job_id] = task
+        self._running_run_ids[job_id] = run_id
+        return notification
 
     async def _settle_running_task(self, job_id: str) -> None:
         task = self._running_tasks.get(job_id)
@@ -1106,23 +1330,538 @@ class JsonlNovelDownloaderPluginBase(Star):
             await run_blocking(self._record_failed_state, job_id, str(exc))
             logger.exception("小说下载任务失败 job_id=%s error=%s", job_id, exc)
 
-    async def _run_rule_job(self, job_id: str, auto_assemble: bool) -> None:
+    async def _run_rule_job(
+        self, job_id: str, auto_assemble: bool, run_id: str
+    ) -> None:
+        should_notify = False
         try:
             await run_blocking(
                 self.source_download_service.resume_book_job,
                 job_id,
                 auto_assemble,
             )
+            should_notify = True
+        except asyncio.CancelledError:
+            try:
+                await run_blocking(self._discard_download_callback, job_id, run_id)
+            except Exception as exc:
+                logger.warning(
+                    "清理已取消任务的通知回调失败 job_id=%s run_id=%s error=%s",
+                    job_id,
+                    run_id,
+                    exc,
+                )
+            raise
         except Exception as exc:
             await run_blocking(self._record_failed_state, job_id, str(exc))
+            should_notify = True
             logger.exception("书源规则下载任务失败 job_id=%s error=%s", job_id, exc)
+        finally:
+            if should_notify:
+                await self._notify_download_finished(job_id, run_id)
 
     async def _render_job_status(self, job_id: str, created: bool) -> str:
         status = await run_blocking(self.manager.get_status, job_id)
+        status = await run_blocking(self._attach_notification_status, status)
         return await run_blocking(self.renderer.render_status, status, created)
 
     def _record_failed_state(self, job_id: str, error: str) -> None:
         self.manager.record_state(job_id, "failed", error=error)
+
+    def _register_download_callback(
+        self,
+        event: Any | None,
+        job_id: str,
+        run_id: str,
+        orchestration: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.notify_on_download_complete or self.notify_mode == "off":
+            return {
+                "enabled": False,
+                "reason": "download notification is disabled",
+                "run_id": run_id,
+            }
+        if event is None:
+            return {
+                "enabled": False,
+                "reason": "no AstrBot event context",
+                "run_id": run_id,
+            }
+        unified_msg_origin = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if not unified_msg_origin:
+            unified_msg_origin = str(getattr(event, "session", "") or "").strip()
+        if not unified_msg_origin:
+            return {
+                "enabled": False,
+                "reason": "event has no session",
+                "run_id": run_id,
+            }
+        sender_id = ""
+        get_sender_id = getattr(event, "get_sender_id", None)
+        if callable(get_sender_id):
+            try:
+                sender_id = str(get_sender_id() or "").strip()
+            except Exception:
+                sender_id = ""
+        selected = dict(orchestration.get("selected") or {})
+        job = dict(orchestration.get("job") or {})
+        callback = {
+            "job_id": job_id,
+            "run_id": run_id,
+            "unified_msg_origin": unified_msg_origin,
+            "sender_id": sender_id,
+            "role": str(getattr(event, "role", "") or "member"),
+            "tool_name": "webnovel_download_book",
+            "book_name": str(job.get("book_name") or selected.get("title") or ""),
+            "source_id": str(job.get("source_id") or selected.get("source_id") or ""),
+            "source_name": str(
+                job.get("source_name") or selected.get("source_name") or ""
+            ),
+            "created_at": time.time(),
+            "notify_mode": self.notify_mode,
+            "delivery_state": "pending",
+            "delivery_attempt_count": 0,
+        }
+        key = self._download_callback_key(job_id, run_id)
+        with self._download_callback_lock:
+            callbacks = self._load_download_callbacks_unlocked()
+            callbacks[key] = callback
+            self._write_download_callbacks_unlocked(callbacks)
+        return {
+            "enabled": True,
+            "mode": self.notify_mode,
+            "final_only": True,
+            "run_id": run_id,
+        }
+
+    async def _notify_download_finished(self, job_id: str, run_id: str) -> None:
+        try:
+            status = await run_blocking(self.manager.get_status, job_id)
+        except Exception as exc:
+            logger.warning(
+                "读取下载任务状态失败，无法通知 job_id=%s run_id=%s error=%s",
+                job_id,
+                run_id,
+                exc,
+            )
+            return
+        state = str(status.get("state") or "").strip()
+        should_deliver = (
+            state in {"assembled", "downloaded"} and self.notify_on_success
+        ) or (state == "failed" and self.notify_on_failure)
+        if state not in {"assembled", "downloaded", "failed"} or not should_deliver:
+            try:
+                await run_blocking(self._discard_download_callback, job_id, run_id)
+            except Exception as exc:
+                logger.warning(
+                    "清理无需发送的下载回调失败 job_id=%s run_id=%s error=%s",
+                    job_id,
+                    run_id,
+                    exc,
+                )
+            return
+
+        try:
+            callback = await run_blocking(self._claim_download_callback, job_id, run_id)
+        except Exception as exc:
+            logger.warning(
+                "领取下载通知回调失败，跳过发送 job_id=%s run_id=%s error=%s",
+                job_id,
+                run_id,
+                exc,
+            )
+            return
+        if not callback:
+            return
+
+        text = self._render_download_finished_message(callback, status)
+        delivered = False
+        llm_attempted = False
+        if str(callback.get("notify_mode") or self.notify_mode) == "llm":
+            llm_attempted = True
+            delivered = await self._wake_llm_for_download_result(callback, status, text)
+        if not delivered:
+            delivered = await self._send_direct_download_notification(callback, text)
+        if delivered:
+            try:
+                await run_blocking(self._complete_download_callback, job_id, run_id)
+            except Exception as exc:
+                logger.warning(
+                    "清理已送达通知回调失败 job_id=%s run_id=%s error=%s",
+                    job_id,
+                    run_id,
+                    exc,
+                )
+            return
+
+        failure_summary = (
+            "LLM wake 和 direct fallback 均发送失败"
+            if llm_attempted
+            else "direct notification 发送失败"
+        )
+        try:
+            await run_blocking(
+                self._mark_download_callback_failed,
+                job_id,
+                run_id,
+                failure_summary,
+            )
+        except Exception as exc:
+            logger.warning(
+                "保存通知失败状态失败 job_id=%s run_id=%s error=%s",
+                job_id,
+                run_id,
+                exc,
+            )
+        logger.warning(
+            "下载完成通知发送失败 job_id=%s run_id=%s reason=%s",
+            job_id,
+            run_id,
+            failure_summary,
+        )
+
+    @staticmethod
+    def _download_callback_key(job_id: str, run_id: str) -> str:
+        return "{job_id}:{run_id}".format(job_id=job_id, run_id=run_id)
+
+    def _claim_download_callback(self, job_id: str, run_id: str) -> dict[str, Any]:
+        key = self._download_callback_key(job_id, run_id)
+        with self._download_callback_lock:
+            callbacks = self._load_download_callbacks_unlocked()
+            callback = dict(callbacks.get(key) or {})
+            if not callback:
+                return {}
+            state = str(callback.get("delivery_state") or "pending")
+            if state != "pending":
+                return {}
+            callback["delivery_state"] = "delivering"
+            callback["delivery_started_at"] = time.time()
+            callback["delivery_attempt_count"] = (
+                int(callback.get("delivery_attempt_count", 0) or 0) + 1
+            )
+            callbacks[key] = callback
+            self._write_download_callbacks_unlocked(callbacks)
+        return callback
+
+    def _complete_download_callback(self, job_id: str, run_id: str) -> None:
+        self._discard_download_callback(job_id, run_id)
+
+    def _mark_download_callback_failed(
+        self,
+        job_id: str,
+        run_id: str,
+        failure_summary: str,
+    ) -> None:
+        key = self._download_callback_key(job_id, run_id)
+        with self._download_callback_lock:
+            callbacks = self._load_download_callbacks_unlocked()
+            callback = dict(callbacks.get(key) or {})
+            if not callback:
+                return
+            callback["delivery_state"] = "delivery_failed"
+            callback["delivery_failed_at"] = time.time()
+            callback["failure_summary"] = str(failure_summary or "").strip()
+            callbacks[key] = callback
+            self._write_download_callbacks_unlocked(callbacks)
+
+    def _discard_download_callback(self, job_id: str, run_id: str) -> None:
+        key = self._download_callback_key(job_id, run_id)
+        with self._download_callback_lock:
+            callbacks = self._load_download_callbacks_unlocked()
+            if key not in callbacks:
+                return
+            callbacks.pop(key, None)
+            self._write_download_callbacks_unlocked(callbacks)
+
+    def _load_download_callbacks_unlocked(self) -> dict[str, Any]:
+        if not self._download_callback_path.exists():
+            return {}
+        try:
+            with open(self._download_callback_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        callbacks = payload.get("callbacks", payload)
+        return callbacks if isinstance(callbacks, dict) else {}
+
+    def _write_download_callbacks_unlocked(self, callbacks: dict[str, Any]) -> None:
+        callbacks = self._prune_download_callbacks(callbacks)
+        self._write_json_file(
+            self._download_callback_path,
+            {
+                "schema_version": 3,
+                "updated_at": time.time(),
+                "callbacks": callbacks,
+            },
+        )
+
+    @staticmethod
+    def _prune_download_callbacks(callbacks: dict[str, Any]) -> dict[str, Any]:
+        cutoff = time.time() - 30 * 24 * 60 * 60
+        retained: list[tuple[str, dict[str, Any]]] = []
+        for key, raw_callback in callbacks.items():
+            callback = dict(raw_callback or {})
+            state = str(callback.get("delivery_state") or "pending")
+            created_at = float(callback.get("created_at", 0.0) or 0.0)
+            if state == "delivery_failed" and created_at and created_at < cutoff:
+                continue
+            retained.append((str(key), callback))
+        retained.sort(key=lambda item: float(item[1].get("created_at", 0.0) or 0.0))
+        return dict(retained[-500:])
+
+    def _attach_notification_status(self, status: dict[str, Any]) -> dict[str, Any]:
+        result = dict(status)
+        job_id = str(result.get("job_id") or "").strip()
+        notification = self._notification_statuses_for_jobs({job_id}).get(job_id)
+        if notification:
+            result["notification"] = notification
+        return result
+
+    def _attach_notification_statuses(
+        self, jobs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        job_ids = {
+            str(item.get("job_id") or "").strip()
+            for item in jobs
+            if str(item.get("job_id") or "").strip()
+        }
+        notifications = self._notification_statuses_for_jobs(job_ids)
+        results: list[dict[str, Any]] = []
+        for item in jobs:
+            result = dict(item)
+            notification = notifications.get(str(result.get("job_id") or "").strip())
+            if notification:
+                result["notification"] = notification
+            results.append(result)
+        return results
+
+    def _notification_statuses_for_jobs(
+        self, job_ids: set[str]
+    ) -> dict[str, dict[str, Any]]:
+        if not job_ids:
+            return {}
+        with self._download_callback_lock:
+            callbacks = self._load_download_callbacks_unlocked()
+        latest: dict[str, dict[str, Any]] = {}
+        for raw_callback in callbacks.values():
+            callback = dict(raw_callback or {})
+            job_id = str(callback.get("job_id") or "").strip()
+            if job_id not in job_ids:
+                continue
+            existing = latest.get(job_id)
+            if existing and float(existing.get("created_at", 0.0) or 0.0) >= float(
+                callback.get("created_at", 0.0) or 0.0
+            ):
+                continue
+            latest[job_id] = callback
+        return {
+            job_id: {
+                "run_id": str(callback.get("run_id") or ""),
+                "state": str(callback.get("delivery_state") or "pending"),
+                "mode": str(callback.get("notify_mode") or self.notify_mode),
+                "failure_summary": str(callback.get("failure_summary") or ""),
+                "created_at": float(callback.get("created_at", 0.0) or 0.0),
+            }
+            for job_id, callback in latest.items()
+        }
+
+    def _render_download_finished_message(
+        self,
+        callback: dict[str, Any],
+        status: dict[str, Any],
+    ) -> str:
+        book_name = str(
+            status.get("book_name") or callback.get("book_name") or "下载任务"
+        ).strip()
+        state = str(status.get("state") or "").strip()
+        completed = int(status.get("completed_chapters", 0) or 0)
+        total = int(status.get("total_chapters", 0) or 0)
+        output_filename = str(status.get("output_filename") or "").strip()
+        if state in {"assembled", "downloaded"}:
+            lines = [
+                "《{book}》下载完成".format(book=book_name),
+                "状态：{state}".format(state=state),
+                "进度：{completed}/{total}".format(completed=completed, total=total),
+            ]
+            if output_filename:
+                lines.append("文件：{filename}".format(filename=output_filename))
+            return "\n".join(lines)
+        state_details = dict(status.get("state_details") or {})
+        reason = str(
+            state_details.get("error")
+            or state_details.get("stop_reason")
+            or state_details.get("error_count")
+            or ""
+        ).strip()
+        if not reason:
+            latest_errors = list(status.get("latest_errors") or [])
+            if latest_errors:
+                reason = str(latest_errors[0].get("error") or "").strip()
+        lines = [
+            "《{book}》下载失败".format(book=book_name),
+            "状态：{state}".format(state=state or "failed"),
+            "进度：{completed}/{total}".format(completed=completed, total=total),
+        ]
+        if reason:
+            lines.append("原因：{reason}".format(reason=reason))
+        lines.append("建议：跳过当前问题书源后重试，或换候选组下载。")
+        return "\n".join(lines)
+
+    async def _wake_llm_for_download_result(
+        self,
+        callback: dict[str, Any],
+        status: dict[str, Any],
+        result_text: str,
+    ) -> bool:
+        try:
+            from astrbot.core.agent.tool import ToolSet
+            from astrbot.core.astr_main_agent import (
+                MainAgentBuildConfig,
+                _get_session_conv,
+                build_main_agent,
+            )
+            from astrbot.core.astr_main_agent_resources import (
+                BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT,
+            )
+            from astrbot.core.cron.events import CronMessageEvent
+            from astrbot.core.platform.message_session import MessageSession
+            from astrbot.core.provider.entities import ProviderRequest
+            from astrbot.core.tools.message_tools import SendMessageToUserTool
+            from astrbot.core.utils.history_saver import persist_agent_history
+        except Exception as exc:
+            logger.warning("AstrBot LLM 唤醒依赖不可用，改用直接通知: %s", exc)
+            return False
+
+        context = self.context
+        try:
+            session = MessageSession.from_str(str(callback.get("unified_msg_origin")))
+            task_result = {
+                "task_id": self._download_callback_key(
+                    str(callback.get("job_id") or status.get("job_id") or ""),
+                    str(callback.get("run_id") or ""),
+                ),
+                "tool_name": str(callback.get("tool_name") or "webnovel_download_book"),
+                "result": result_text,
+                "status": str(status.get("state") or ""),
+                "job_id": status.get("job_id", ""),
+                "run_id": callback.get("run_id", ""),
+                "book_name": status.get("book_name") or callback.get("book_name") or "",
+                "source_id": callback.get("source_id", ""),
+                "source_name": callback.get("source_name", ""),
+                "completed_chapters": int(status.get("completed_chapters", 0) or 0),
+                "total_chapters": int(status.get("total_chapters", 0) or 0),
+                "output_filename": status.get("output_filename", ""),
+                "failure_reason": result_text
+                if status.get("state") == "failed"
+                else "",
+            }
+            cron_event = CronMessageEvent(
+                context=context,
+                session=session,
+                message="webnovel download background task finished",
+                extras={"background_task_result": task_result},
+                message_type=session.message_type,
+            )
+            cron_event.role = str(callback.get("role") or "member")
+            cfg = context.get_config(str(callback.get("unified_msg_origin") or ""))
+            provider_settings = dict(cfg.get("provider_settings", {}) or {})
+            config = MainAgentBuildConfig(
+                tool_call_timeout=int(provider_settings.get("tool_call_timeout", 120)),
+                streaming_response=False,
+                llm_safety_mode=False,
+            )
+            req = ProviderRequest()
+            conv = await _get_session_conv(event=cron_event, plugin_context=context)
+            req.conversation = conv
+            conversation_context = json.loads(conv.history)
+            if conversation_context:
+                req.contexts = conversation_context
+                context_dump = req._print_friendly_context()
+                req.contexts = []
+                req.system_prompt += (
+                    "\n\nBellow is you and user previous conversation history:\n"
+                    f"{context_dump}"
+                )
+            background_result = json.dumps(task_result, ensure_ascii=False)
+            req.system_prompt += BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT.format(
+                background_task_result=background_result,
+            )
+            req.system_prompt += (
+                "\n\nYou are handling a webnovel downloader background result. "
+                "Only summarize this finished task. Do not start new searches, "
+                "downloads, source refreshes, or status polling unless the user asks."
+            )
+            req.prompt = (
+                "The webnovel download background task has finished. "
+                "Use the same language as the previous conversation. "
+                "You MUST use `send_message_to_user` to deliver the final result. "
+                "Do not send progress updates or start any new long task."
+            )
+            req.func_tool = ToolSet()
+            req.func_tool.add_tool(
+                context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
+            )
+            result = await build_main_agent(
+                event=cron_event,
+                plugin_context=context,
+                config=config,
+                req=req,
+            )
+            if not result:
+                return False
+            runner = result.agent_runner
+            async for _ in runner.step_until_done(30):
+                pass
+            llm_resp = runner.get_final_llm_resp()
+            summary_note = (
+                "[BackgroundTask] webnovel download "
+                "(task_id={task_id}) finished. Result: {result}".format(
+                    task_id=task_result["task_id"],
+                    result=result_text,
+                )
+            )
+            if llm_resp and getattr(llm_resp, "completion_text", ""):
+                summary_note += " I finished the task, here is the result: " + str(
+                    llm_resp.completion_text
+                )
+            await persist_agent_history(
+                context.conversation_manager,
+                event=cron_event,
+                req=req,
+                summary_note=summary_note,
+            )
+            sent_texts = cron_event.get_extra(
+                "_send_message_to_user_current_session_plain_texts",
+                [],
+            )
+            return bool(sent_texts)
+        except Exception as exc:
+            logger.exception("唤醒 LLM 发送下载完成通知失败: %s", exc)
+            return False
+
+    async def _send_direct_download_notification(
+        self,
+        callback: dict[str, Any],
+        text: str,
+    ) -> bool:
+        try:
+            from astrbot.core.message.message_event_result import MessageChain
+            from astrbot.core.platform.message_session import MessageSession
+        except Exception as exc:
+            logger.warning("AstrBot 直接通知依赖不可用: %s", exc)
+            return False
+        send_message = getattr(self.context, "send_message", None)
+        if not callable(send_message):
+            return False
+        try:
+            session = MessageSession.from_str(str(callback.get("unified_msg_origin")))
+            await send_message(session, MessageChain().message(text))
+            return True
+        except Exception as exc:
+            logger.exception("直接发送下载完成通知失败: %s", exc)
+            return False
 
     def _record_preflight_success(self, preflight: dict[str, Any]) -> None:
         source_id = str(preflight.get("source_id") or "").strip()
@@ -1182,6 +1921,7 @@ class JsonlNovelDownloaderPluginBase(Star):
             "preflight",
             error_code="preflight_failed",
             error_summary=str(error or "").strip(),
+            failure_scope="book",
             metadata=metadata,
         )
         self.source_health_store.mark_unknown(
@@ -1265,8 +2005,10 @@ class JsonlNovelDownloaderPluginBase(Star):
         except Exception:
             parsed = None
         if isinstance(parsed, list):
-            return [str(item).strip() for item in parsed if str(item).strip()]
-        return [item.strip() for item in text.split(",") if item.strip()]
+            candidates = [str(item).strip() for item in parsed]
+        else:
+            candidates = [item.strip() for item in re.split(r"[,，\r\n]+", text)]
+        return list(dict.fromkeys(item for item in candidates if item))
 
     def _parse_config_refs(self, value: Any) -> list[str]:
         if isinstance(value, list):

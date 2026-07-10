@@ -13,6 +13,7 @@ from astrbot_plugin_webnovel_downloader.core.url_security import (
     UnsafeUrlError,
     UrlSafetyPolicy,
 )
+from astrbot_plugin_webnovel_downloader.http_utils import ResponseTooLargeError
 
 
 # 测试服务器跑在 127.0.0.1 上，默认策略会拒绝内网地址；本地服务器测试显式放行。
@@ -207,6 +208,67 @@ class SessionScraperTest(unittest.TestCase):
         with self.assertRaises(UnsafeUrlError):
             http_utils.open_url(request, 2.0, redirect_validator=validator)
         self.assertTrue(blocked, "重定向目标未触发校验器")
+
+    def test_response_limit_rejects_oversized_initial_response_in_both_backends(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", "128")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                return
+
+        server = self._start_server(Handler)
+        url = "http://127.0.0.1:{port}/large".format(port=server.server_address[1])
+        self._assert_response_too_large_for_available_backends(url, 32)
+
+    def test_response_limit_rejects_oversized_redirect_target_in_both_backends(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "/large")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"x" * 128)
+
+            def log_message(self, format, *args):
+                return
+
+        server = self._start_server(Handler)
+        url = "http://127.0.0.1:{port}/start".format(port=server.server_address[1])
+        self._assert_response_too_large_for_available_backends(url, 32)
+
+    def _assert_response_too_large_for_available_backends(
+        self, url: str, limit: int
+    ) -> None:
+        from astrbot_plugin_webnovel_downloader import http_utils
+
+        original_httpx = http_utils.httpx
+        backends = ["urllib"]
+        if original_httpx is not None:
+            backends.insert(0, "httpx")
+        try:
+            for backend in backends:
+                with self.subTest(backend=backend):
+                    http_utils.httpx = original_httpx if backend == "httpx" else None
+                    scraper = SessionScraper(
+                        SessionScraperConfig(
+                            user_agent="ResponseLimitTest/1.0",
+                            max_retries=0,
+                            max_response_bytes=limit,
+                            url_safety_policy=_ALLOW_LOCAL,
+                        )
+                    )
+                    with self.assertRaises(ResponseTooLargeError):
+                        scraper.request(url, timeout=2.0)
+        finally:
+            http_utils.httpx = original_httpx
 
 
 if __name__ == "__main__":

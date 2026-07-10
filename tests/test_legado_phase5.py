@@ -474,6 +474,64 @@ class LegadoPhase5Test(unittest.TestCase):
             "\u3000\u3000第一段。\n\u3000\u3000第二段！\n\u3000\u3000第三段。",
         )
 
+    def test_rule_engine_text_selector_preserves_html_block_paragraphs(self):
+        engine = RuleEngine(_allow_local_engine_config())
+        chapter_path = self.base_dir / "block-paragraphs.html"
+        chapter_path.write_text(
+            "<html><body><h1>第一章</h1>"
+            "<div id='content'><p>第一段。</p><p>第二段！</p></div>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        source = {
+            "source_id": "block-paragraph-source",
+            "source_url": "https://example.com",
+            "rule_content": {
+                "title": "h1&&text",
+                "content": "#content&&text",
+            },
+        }
+
+        chapter = engine.fetch_chapter_content(
+            source,
+            chapter_path.resolve().as_uri(),
+            "第一章",
+        )
+
+        self.assertEqual(
+            chapter["content"],
+            "\u3000\u3000第一段。\n\u3000\u3000第二段！",
+        )
+
+    def test_rule_engine_html_content_unwraps_json_before_escaped_line_breaks(self):
+        engine = RuleEngine(_allow_local_engine_config())
+        chapter_path = self.base_dir / "html-json-content.html"
+        chapter_path.write_text(
+            "<html><body><h1>第一章</h1>"
+            "<section id='content'>[\"第一段。\\r\\n 第二段！\"]</section>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        source = {
+            "source_id": "html-json-source",
+            "source_url": "https://example.com",
+            "rule_content": {
+                "title": "h1&&text",
+                "content": "#content@html",
+            },
+        }
+
+        chapter = engine.fetch_chapter_content(
+            source,
+            chapter_path.resolve().as_uri(),
+            "第一章",
+        )
+
+        self.assertEqual(
+            chapter["content"],
+            "\u3000\u3000第一段。\n\u3000\u3000第二段！",
+        )
+
     @unittest.skipIf(
         quickjs is None,
         "quickjs dependency is required to exercise JS rule support",
@@ -601,12 +659,13 @@ class LegadoPhase5Test(unittest.TestCase):
         self,
     ):
         health_store = SourceHealthStore(self.base_dir / "source_health.json")
-        health_store.record_failure(
-            "broken-search",
-            "search",
-            error_code="timeout",
-            error_summary="最近搜索超时",
-        )
+        for _ in range(3):
+            health_store.record_failure(
+                "broken-search",
+                "search",
+                error_code="timeout",
+                error_summary="最近搜索超时",
+            )
         health_store.record_success("good-source", "search", summary="搜索探测成功")
         health_store.record_failure(
             "good-source",
@@ -660,7 +719,7 @@ class LegadoPhase5Test(unittest.TestCase):
         self.assertEqual(payload["skipped_sources"], [])
         self.assertEqual(payload["results"][0]["source_id"], "good-source")
         self.assertTrue(payload["results"][0]["supports_download"])
-        self.assertEqual(payload["results"][0]["preflight_health_state"], "broken")
+        self.assertEqual(payload["results"][0]["preflight_health_state"], "degraded")
         self.assertEqual(payload["results"][1]["source_id"], "broken-search")
         self.assertEqual(payload["results"][1]["search_health_state"], "broken")
 
@@ -668,12 +727,13 @@ class LegadoPhase5Test(unittest.TestCase):
         self,
     ):
         health_store = SourceHealthStore(self.base_dir / "source_health.json")
-        health_store.record_failure(
-            "runtime-broken",
-            "preflight",
-            error_code="preflight_failed",
-            error_summary="目录预检失败",
-        )
+        for _ in range(3):
+            health_store.record_failure(
+                "runtime-broken",
+                "preflight",
+                error_code="preflight_failed",
+                error_summary="目录预检失败",
+            )
         registry = _ResolutionRegistry(
             {
                 "runtime-broken": {

@@ -775,6 +775,7 @@ class ToolResultRenderer:
                     dict(orchestration.get("job") or {}),
                     job_status,
                 ),
+                "notification": dict(orchestration.get("notification") or {}),
                 "attempts": [
                     self._compact_auto_download_attempt(item)
                     for item in attempts[:attempt_preview_count]
@@ -828,7 +829,11 @@ class ToolResultRenderer:
             return text
 
     def render_jobs_summary(
-        self, jobs: list[dict[str, Any]], limit: int, offset: int
+        self,
+        jobs: list[dict[str, Any]],
+        limit: int,
+        offset: int,
+        include_host_paths: bool = True,
     ) -> str:
         total = len(jobs)
         sliced = jobs[offset : offset + limit]
@@ -847,15 +852,20 @@ class ToolResultRenderer:
                 "next_offset": offset + len(sliced)
                 if offset + len(sliced) < total
                 else None,
-                "jobs_dir": str(self.manager.jobs_dir),
                 "jobs": [self._compact_job(item) for item in sliced[:preview_count]],
                 "omitted_from_inline_count": max(0, len(sliced) - preview_count),
             }
+            if include_host_paths:
+                summary["jobs_dir"] = str(self.manager.jobs_dir)
             if report_path:
                 summary["report_path"] = report_path
             text = self.to_json_text(summary)
             if len(text) <= self.config.max_tool_response_chars:
-                if len(sliced) > preview_count and not report_path:
+                if (
+                    len(sliced) > preview_count
+                    and not report_path
+                    and include_host_paths
+                ):
                     report_path = self._write_json_report(
                         "list-jobs",
                         {
@@ -869,7 +879,7 @@ class ToolResultRenderer:
                     )
                     continue
                 return text
-            if not report_path:
+            if not report_path and include_host_paths:
                 report_path = self._write_json_report(
                     "list-jobs",
                     {
@@ -882,6 +892,8 @@ class ToolResultRenderer:
                     },
                 )
                 continue
+            if not include_host_paths:
+                return text
             if preview_count > 1:
                 preview_count -= 1
                 continue
@@ -908,6 +920,16 @@ class ToolResultRenderer:
             )
         if status.get("corrupt_lines"):
             lines.append(f"警告: journal 中检测到 {status['corrupt_lines']} 行损坏记录")
+        notification = dict(status.get("notification") or {})
+        if notification:
+            lines.append(
+                "通知: {state}".format(
+                    state=str(notification.get("state") or "pending")
+                )
+            )
+            failure_summary = str(notification.get("failure_summary") or "").strip()
+            if failure_summary:
+                lines.append(f"通知失败原因: {failure_summary}")
         return "\n".join(lines)
 
     def _write_json_report(self, prefix: str, payload: Any) -> str:
@@ -1212,6 +1234,7 @@ class ToolResultRenderer:
             "total_chapters": item.get("total_chapters", 0),
             "output_path": item.get("output_path", ""),
             "journal_path": item.get("journal_path", ""),
+            "notification": dict(item.get("notification") or {}),
         }
 
     def _compact_clean_rule_repo(self, item: dict[str, Any]) -> dict[str, Any]:

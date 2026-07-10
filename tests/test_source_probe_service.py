@@ -275,7 +275,7 @@ class SourceProbeServiceTest(unittest.TestCase):
         self.assertTrue(service.wait_for_idle(2.0))
 
         entry = self.store.get_source_health("broken")
-        self.assertEqual(entry["search"]["state"], "broken")
+        self.assertEqual(entry["search"]["state"], "degraded")
         self.assertEqual(entry["preflight"]["state"], "unknown")
         self.assertEqual(entry["download"]["state"], "unknown")
 

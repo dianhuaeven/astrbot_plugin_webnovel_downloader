@@ -60,6 +60,12 @@
     "hint": "是否使用当前进程中的 http_proxy/https_proxy/no_proxy。默认关闭，避免被 AstrBot 全局代理设置影响书源抓取。",
     "default": false
   },
+  "max_response_bytes": {
+    "type": "int",
+    "description": "[抓取配置] 单个 HTTP 响应解压后字节上限",
+    "hint": "搜索、目录和正文页面超过该大小会立即终止读取，防止异常站点消耗过多内存；默认 8 MiB。",
+    "default": 8388608
+  },
   "max_retries": {
     "type": "int",
     "description": "[下载配置] 单章最大重试次数",
@@ -72,6 +78,18 @@
     "hint": "失败重试的等待时间倍率，数值越大越保守。",
     "default": 1.6
   },
+  "download_sample_chapters": {
+    "type": "int",
+    "description": "[质量配置] 下载前抽样章节数",
+    "hint": "默认抽取开头、中间和末尾共 3 章，检查空壳、广告页和多个章节高度重复；调大将增加下载前请求数。",
+    "default": 3
+  },
+  "download_sample_min_chars": {
+    "type": "int",
+    "description": "[质量配置] 抽样章节最少有效字符数",
+    "hint": "移除 URL 和空白后低于该值的章节视为无效样本；默认 80。",
+    "default": 80
+  },
   "journal_fsync": {
     "type": "bool",
     "description": "[稳定性] 每次写入后强制落盘",
@@ -83,6 +101,30 @@
     "description": "[流程配置] 下载完成后自动组装 TXT",
     "hint": "开启后，后台任务抓完所有章节会自动生成最终 TXT。",
     "default": true
+  },
+  "notify_on_download_complete": {
+    "type": "bool",
+    "description": "[通知配置] 下载结束后通知请求者",
+    "hint": "开启后，后台下载进入成功或失败终态时通知发起该轮下载的会话。回调保存失败不会影响下载任务启动。",
+    "default": true
+  },
+  "notify_on_success": {
+    "type": "bool",
+    "description": "[通知配置] 通知下载成功结果",
+    "hint": "仅控制 assembled/downloaded 终态；总通知开关关闭时此项不生效。",
+    "default": true
+  },
+  "notify_on_failure": {
+    "type": "bool",
+    "description": "[通知配置] 通知下载失败结果",
+    "hint": "仅控制 failed 终态；总通知开关关闭时此项不生效。",
+    "default": true
+  },
+  "notify_mode": {
+    "type": "string",
+    "description": "[通知配置] 下载结束通知模式",
+    "hint": "支持 llm、direct、off。默认 llm：下载终态主动唤醒模型并要求其使用 send_message_to_user 交付；失败时只回退一次直接通知，会产生额外模型调用成本。",
+    "default": "llm"
   },
   "cleanup_journal_after_assemble": {
     "type": "bool",

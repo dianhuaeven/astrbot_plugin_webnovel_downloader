@@ -108,6 +108,9 @@ def build_plugin_runtime(
         cleanup_journal_after_assemble=bool(
             settings.get("cleanup_journal_after_assemble", False)
         ),
+        max_response_bytes=_parse_positive_int(
+            settings, "max_response_bytes", 8 * 1024 * 1024
+        ),
         user_agent=str(settings.get("user_agent", "")).strip()
         or RuntimeConfig().user_agent,
     )
@@ -121,6 +124,7 @@ def build_plugin_runtime(
             use_env_proxy=runtime_config.use_env_proxy,
             max_retries=runtime_config.max_retries,
             retry_backoff=runtime_config.retry_backoff,
+            max_response_bytes=runtime_config.max_response_bytes,
             url_safety_policy=url_safety_policy,
         )
     )
@@ -190,8 +194,8 @@ def build_plugin_runtime(
         manager,
         SourceDownloadConfig(
             max_workers=runtime_config.max_workers,
-            sample_chapters=max(1, int(settings.get("download_sample_chapters", 1))),
-            sample_min_chars=max(1, int(settings.get("download_sample_min_chars", 1))),
+            sample_chapters=max(1, int(settings.get("download_sample_chapters", 3))),
+            sample_min_chars=max(1, int(settings.get("download_sample_min_chars", 80))),
         ),
         source_health_store=source_health_store,
         source_profile_service=source_profile_service,

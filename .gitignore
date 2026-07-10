@@ -1,17 +1,60 @@
+# Python bytecode and native extensions
 __pycache__/
-.venv/
 *.py[cod]
 *.so
-.DS_Store
-.codex
-.qodo
+
+# Virtual environments and local environment variables
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Test, coverage, type-checker, and linter caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.whl
+
+# IDE and local assistant state
+.idea/
 .vscode/
+.codex/
+.qodo/
+.claude/settings.local.json
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# Local documentation workspaces
 docs/local/
 docs/tmp/
+docs/.tmp/
 
-.pytest_cache/
-.mypy_cache/
-
+# Plugin/TUI runtime data and generated output
+.webnovel-tui/
 downloads/
 jobs/
+
+# Generated skill archives
 skills/*.zip

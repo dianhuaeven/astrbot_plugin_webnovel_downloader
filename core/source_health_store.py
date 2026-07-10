@@ -10,7 +10,9 @@ from .sqlite_support import connect_sqlite, derive_sqlite_path
 
 
 HEALTH_STAGES = ("search", "preflight", "download")
-HEALTH_SCHEMA_VERSION = 1
+HEALTH_SCHEMA_VERSION = 2
+DEFAULT_FAILURE_THRESHOLD = 3
+DEFAULT_COOLDOWN_SECONDS = 15 * 60.0
 
 
 def _make_stage_entry() -> dict[str, Any]:
@@ -20,6 +22,9 @@ def _make_stage_entry() -> dict[str, Any]:
         "successes": 0,
         "failures": 0,
         "timeouts": 0,
+        "consecutive_failures": 0,
+        "cooldown_until": 0.0,
+        "last_failure_scope": "",
         "avg_ms": 0.0,
         "last_success_at": 0.0,
         "last_failure_at": 0.0,
@@ -35,9 +40,16 @@ def _make_source_entry() -> dict[str, dict[str, Any]]:
 
 
 class SourceHealthStore:
-    def __init__(self, path: str | Path):
+    def __init__(
+        self,
+        path: str | Path,
+        failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
+        cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS,
+    ):
         self.path = Path(path)
         self.sqlite_path = derive_sqlite_path(self.path)
+        self.failure_threshold = max(1, int(failure_threshold))
+        self.cooldown_seconds = max(0.0, float(cooldown_seconds))
         self._lock = threading.RLock()
         self._initialize()
         self._migrate_json_if_needed()
@@ -69,6 +81,9 @@ class SourceHealthStore:
                             successes,
                             failures,
                             timeouts,
+                            consecutive_failures,
+                            cooldown_until,
+                            last_failure_scope,
                             avg_ms,
                             last_success_at,
                             last_failure_at,
@@ -95,6 +110,9 @@ class SourceHealthStore:
                             successes,
                             failures,
                             timeouts,
+                            consecutive_failures,
+                            cooldown_until,
+                            last_failure_scope,
                             avg_ms,
                             last_success_at,
                             last_failure_at,
@@ -145,6 +163,9 @@ class SourceHealthStore:
                 int(stage_entry["attempts"]),
             )
             stage_entry["state"] = "healthy"
+            stage_entry["consecutive_failures"] = 0
+            stage_entry["cooldown_until"] = 0.0
+            stage_entry["last_failure_scope"] = ""
             stage_entry["last_success_at"] = now
             stage_entry["last_error_code"] = ""
             stage_entry["last_error_summary"] = ""
@@ -165,6 +186,7 @@ class SourceHealthStore:
         error_code: str = "",
         error_summary: str = "",
         timeout: bool = False,
+        failure_scope: str = "source",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_stage = self._normalize_stage(stage)
@@ -184,11 +206,27 @@ class SourceHealthStore:
                 max(0.0, float(elapsed_ms or 0.0)),
                 int(stage_entry["attempts"]),
             )
-            successes = int(stage_entry.get("successes", 0) or 0)
-            failures = int(stage_entry.get("failures", 0) or 0)
-            stage_entry["state"] = (
-                "degraded" if successes > 0 and failures <= successes else "broken"
-            )
+            normalized_scope = str(failure_scope or "source").strip().lower()
+            if normalized_scope not in {"source", "book", "chapter"}:
+                raise ValueError("failure_scope 仅支持 source/book/chapter")
+            if normalized_scope == "source":
+                consecutive_failures = (
+                    int(stage_entry.get("consecutive_failures", 0) or 0) + 1
+                )
+                stage_entry["consecutive_failures"] = consecutive_failures
+                if consecutive_failures >= self.failure_threshold:
+                    stage_entry["state"] = "broken"
+                    stage_entry["cooldown_until"] = now + self.cooldown_seconds
+                else:
+                    stage_entry["state"] = "degraded"
+                    stage_entry["cooldown_until"] = 0.0
+            else:
+                if str(stage_entry.get("state") or "unknown") not in {
+                    "broken",
+                    "unsupported",
+                }:
+                    stage_entry["state"] = "degraded"
+            stage_entry["last_failure_scope"] = normalized_scope
             stage_entry["last_failure_at"] = now
             stage_entry["last_error_code"] = str(error_code or "").strip()
             stage_entry["last_error_summary"] = str(error_summary or "").strip()
@@ -200,6 +238,36 @@ class SourceHealthStore:
                 source_id=normalized_source_id, source_entry=source_entry
             )
             return dict(stage_entry)
+
+    def get_active_cooldown(
+        self,
+        source_id: str,
+        stages: Iterable[str] = ("preflight", "download"),
+        at: float | None = None,
+    ) -> dict[str, Any]:
+        now = time.time() if at is None else float(at)
+        health = self.get_source_health(source_id)
+        active: dict[str, Any] = {}
+        for stage in stages:
+            normalized_stage = self._normalize_stage(stage)
+            entry = dict(health.get(normalized_stage) or {})
+            cooldown_until = float(entry.get("cooldown_until", 0.0) or 0.0)
+            if cooldown_until <= now:
+                continue
+            if not active or cooldown_until > float(
+                active.get("cooldown_until", 0.0) or 0.0
+            ):
+                active = {
+                    "source_id": self._normalize_source_id(source_id),
+                    "stage": normalized_stage,
+                    "cooldown_until": cooldown_until,
+                    "remaining_seconds": max(0.0, cooldown_until - now),
+                    "consecutive_failures": int(
+                        entry.get("consecutive_failures", 0) or 0
+                    ),
+                    "error": str(entry.get("last_error_summary") or "").strip(),
+                }
+        return active
 
     def mark_unsupported(
         self,
@@ -246,6 +314,12 @@ class SourceHealthStore:
             enriched["{stage}_health_updated_at".format(stage=stage)] = float(
                 stage_entry.get("updated_at", 0.0) or 0.0
             )
+            enriched["{stage}_health_consecutive_failures".format(stage=stage)] = int(
+                stage_entry.get("consecutive_failures", 0) or 0
+            )
+            enriched["{stage}_health_cooldown_until".format(stage=stage)] = float(
+                stage_entry.get("cooldown_until", 0.0) or 0.0
+            )
         return enriched
 
     def enrich_sources(self, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -268,6 +342,12 @@ class SourceHealthStore:
                 )
                 enriched["{stage}_health_updated_at".format(stage=stage)] = float(
                     stage_entry.get("updated_at", 0.0) or 0.0
+                )
+                enriched["{stage}_health_consecutive_failures".format(stage=stage)] = (
+                    int(stage_entry.get("consecutive_failures", 0) or 0)
+                )
+                enriched["{stage}_health_cooldown_until".format(stage=stage)] = float(
+                    stage_entry.get("cooldown_until", 0.0) or 0.0
                 )
             enriched_sources.append(enriched)
         return enriched_sources
@@ -293,6 +373,9 @@ class SourceHealthStore:
             if state != "broken":
                 stage_entry["last_error_code"] = ""
                 stage_entry["last_error_summary"] = ""
+                stage_entry["consecutive_failures"] = 0
+                stage_entry["cooldown_until"] = 0.0
+                stage_entry["last_failure_scope"] = ""
             stage_entry["updated_at"] = now
             self._merge_metadata(stage_entry, metadata)
             source_entry[normalized_stage] = stage_entry
@@ -352,6 +435,9 @@ class SourceHealthStore:
                         int(merged.get("successes", 0) or 0),
                         int(merged.get("failures", 0) or 0),
                         int(merged.get("timeouts", 0) or 0),
+                        int(merged.get("consecutive_failures", 0) or 0),
+                        float(merged.get("cooldown_until", 0.0) or 0.0),
+                        str(merged.get("last_failure_scope", "") or ""),
                         float(merged.get("avg_ms", 0.0) or 0.0),
                         float(merged.get("last_success_at", 0.0) or 0.0),
                         float(merged.get("last_failure_at", 0.0) or 0.0),
@@ -376,6 +462,9 @@ class SourceHealthStore:
                         successes,
                         failures,
                         timeouts,
+                        consecutive_failures,
+                        cooldown_until,
+                        last_failure_scope,
                         avg_ms,
                         last_success_at,
                         last_failure_at,
@@ -384,7 +473,7 @@ class SourceHealthStore:
                         note,
                         updated_at,
                         metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source_id, stage) DO NOTHING
                     """,
                     rows,
@@ -412,6 +501,9 @@ class SourceHealthStore:
                     int(stage_entry.get("successes", 0) or 0),
                     int(stage_entry.get("failures", 0) or 0),
                     int(stage_entry.get("timeouts", 0) or 0),
+                    int(stage_entry.get("consecutive_failures", 0) or 0),
+                    float(stage_entry.get("cooldown_until", 0.0) or 0.0),
+                    str(stage_entry.get("last_failure_scope", "") or ""),
                     float(stage_entry.get("avg_ms", 0.0) or 0.0),
                     float(stage_entry.get("last_success_at", 0.0) or 0.0),
                     float(stage_entry.get("last_failure_at", 0.0) or 0.0),
@@ -435,6 +527,9 @@ class SourceHealthStore:
                     successes,
                     failures,
                     timeouts,
+                    consecutive_failures,
+                    cooldown_until,
+                    last_failure_scope,
                     avg_ms,
                     last_success_at,
                     last_failure_at,
@@ -443,13 +538,16 @@ class SourceHealthStore:
                     note,
                     updated_at,
                     metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id, stage) DO UPDATE SET
                     state=excluded.state,
                     attempts=excluded.attempts,
                     successes=excluded.successes,
                     failures=excluded.failures,
                     timeouts=excluded.timeouts,
+                    consecutive_failures=excluded.consecutive_failures,
+                    cooldown_until=excluded.cooldown_until,
+                    last_failure_scope=excluded.last_failure_scope,
                     avg_ms=excluded.avg_ms,
                     last_success_at=excluded.last_success_at,
                     last_failure_at=excluded.last_failure_at,
@@ -475,6 +573,9 @@ class SourceHealthStore:
                 successes INTEGER NOT NULL DEFAULT 0,
                 failures INTEGER NOT NULL DEFAULT 0,
                 timeouts INTEGER NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                cooldown_until REAL NOT NULL DEFAULT 0,
+                last_failure_scope TEXT NOT NULL DEFAULT '',
                 avg_ms REAL NOT NULL DEFAULT 0,
                 last_success_at REAL NOT NULL DEFAULT 0,
                 last_failure_at REAL NOT NULL DEFAULT 0,
@@ -487,6 +588,26 @@ class SourceHealthStore:
             )
             """
         )
+        existing_columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(source_stage_health)"
+            ).fetchall()
+        }
+        required_columns = {
+            "consecutive_failures": "INTEGER NOT NULL DEFAULT 0",
+            "cooldown_until": "REAL NOT NULL DEFAULT 0",
+            "last_failure_scope": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column_name, definition in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(
+                "ALTER TABLE source_stage_health ADD COLUMN {name} {definition}".format(
+                    name=column_name,
+                    definition=definition,
+                )
+            )
         connection.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_source_stage_health_state
@@ -506,6 +627,9 @@ class SourceHealthStore:
                 "successes": int(row["successes"] or 0),
                 "failures": int(row["failures"] or 0),
                 "timeouts": int(row["timeouts"] or 0),
+                "consecutive_failures": int(row["consecutive_failures"] or 0),
+                "cooldown_until": float(row["cooldown_until"] or 0.0),
+                "last_failure_scope": str(row["last_failure_scope"] or ""),
                 "avg_ms": float(row["avg_ms"] or 0.0),
                 "last_success_at": float(row["last_success_at"] or 0.0),
                 "last_failure_at": float(row["last_failure_at"] or 0.0),

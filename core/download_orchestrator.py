@@ -22,16 +22,21 @@ class DownloadOrchestrator:
         source_download_service: SourceDownloadService,
         config: Optional[DownloadOrchestratorConfig] = None,
         source_profile_service: Any = None,
+        source_health_store: Any = None,
     ):
         self.resolver = resolver
         self.source_download_service = source_download_service
         self.config = config or DownloadOrchestratorConfig()
         self.source_profile_service = source_profile_service
+        self.source_health_store = source_health_store or getattr(
+            source_download_service, "source_health_store", None
+        )
 
     def download_candidate(
         self,
         candidate: Dict[str, Any],
         output_filename: str = "",
+        force_retry: bool = False,
     ) -> Dict[str, Any]:
         """精确下载某一个已知候选（带 book_url），不再按书名重新搜索。
 
@@ -50,6 +55,16 @@ class DownloadOrchestrator:
                 "error": "候选缺少 source_id 或 book_url，无法精确下载",
                 "source_id": source_id,
                 "book_url": book_url,
+            }
+        cooldown = self._get_active_cooldown(source_id)
+        if cooldown and not force_retry:
+            return {
+                "outcome": "cooldown",
+                "job": {},
+                "error": self._format_cooldown_reason(cooldown),
+                "source_id": source_id,
+                "book_url": book_url,
+                "cooldown": cooldown,
             }
 
         try:
@@ -128,6 +143,8 @@ class DownloadOrchestrator:
         candidate_group: Dict[str, Any],
         attempt_limit: int = 0,
         output_filename: str = "",
+        force_retry_source_ids: Optional[Iterable[str]] = None,
+        ownership: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """从同一本书的多个书源候选中择一下载，只创建一个正式任务。"""
         group = dict(candidate_group or {})
@@ -137,6 +154,11 @@ class DownloadOrchestrator:
         skipped_candidates = [
             dict(item) for item in list(group.get("skipped_candidates") or [])
         ]
+        candidates, cooldown_skipped = self._filter_active_cooldowns(
+            candidates,
+            force_retry_source_ids,
+        )
+        skipped_candidates.extend(cooldown_skipped)
         effective_attempt_limit = max(
             1,
             int(attempt_limit or 0) or int(self.config.default_attempt_limit),
@@ -163,6 +185,7 @@ class DownloadOrchestrator:
             selected_candidates,
             effective_attempt_limit,
             output_filename,
+            ownership,
         )
 
     def auto_download(
@@ -174,6 +197,7 @@ class DownloadOrchestrator:
         include_disabled: bool = False,
         attempt_limit: int = 0,
         output_filename: str = "",
+        force_retry_source_ids: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
         resolution = self.resolver.resolve(
             keyword,
@@ -182,7 +206,20 @@ class DownloadOrchestrator:
             search_limit,
             include_disabled,
         )
-        candidates = list(resolution.get("candidates") or [])
+        candidates, cooldown_skipped = self._filter_active_cooldowns(
+            list(resolution.get("candidates") or []),
+            force_retry_source_ids,
+        )
+        if cooldown_skipped:
+            resolution = dict(resolution)
+            resolution["candidates"] = candidates
+            resolution["candidate_count"] = len(candidates)
+            resolution["skipped_candidates"] = (
+                list(resolution.get("skipped_candidates") or []) + cooldown_skipped
+            )
+            resolution["skipped_candidate_count"] = len(
+                resolution["skipped_candidates"]
+            )
         effective_attempt_limit = max(
             1,
             int(attempt_limit or 0) or int(self.config.default_attempt_limit),
@@ -358,6 +395,7 @@ class DownloadOrchestrator:
         candidates: list[dict[str, Any]],
         attempt_limit: int,
         output_filename: str,
+        ownership: Optional[Dict[str, str]] = None,
     ) -> dict[str, Any]:
         attempts: list[dict[str, Any]] = []
         worker_count = min(
@@ -411,9 +449,14 @@ class DownloadOrchestrator:
                 validated_plan = dict(preflight)
                 validated_plan.update(sample)
                 try:
-                    job = self.source_download_service.create_job_from_plan(
-                        validated_plan, output_filename
-                    )
+                    if ownership:
+                        job = self.source_download_service.create_job_from_plan(
+                            validated_plan, output_filename, ownership
+                        )
+                    else:
+                        job = self.source_download_service.create_job_from_plan(
+                            validated_plan, output_filename
+                        )
                 except Exception as exc:
                     attempt.update(
                         {
@@ -555,6 +598,57 @@ class DownloadOrchestrator:
             "skipped_candidates": skipped_candidates,
         }
 
+    def _filter_active_cooldowns(
+        self,
+        candidates: Iterable[dict[str, Any]],
+        force_retry_source_ids: Optional[Iterable[str]] = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        forced_ids = {
+            str(source_id or "").strip()
+            for source_id in list(force_retry_source_ids or [])
+            if str(source_id or "").strip()
+        }
+        attemptable: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for raw_candidate in candidates:
+            candidate = dict(raw_candidate)
+            source_id = str(candidate.get("source_id") or "").strip()
+            cooldown = (
+                {} if source_id in forced_ids else self._get_active_cooldown(source_id)
+            )
+            if not cooldown:
+                attemptable.append(candidate)
+                continue
+            candidate["skip_reason"] = self._format_cooldown_reason(cooldown)
+            candidate["cooldown"] = cooldown
+            skipped.append(candidate)
+        return attemptable, skipped
+
+    def _get_active_cooldown(self, source_id: str) -> dict[str, Any]:
+        if self.source_health_store is None or not source_id:
+            return {}
+        get_active_cooldown = getattr(
+            self.source_health_store, "get_active_cooldown", None
+        )
+        if not callable(get_active_cooldown):
+            return {}
+        try:
+            return dict(get_active_cooldown(source_id) or {})
+        except Exception:
+            return {}
+
+    def _format_cooldown_reason(self, cooldown: dict[str, Any]) -> str:
+        remaining = max(0, int(float(cooldown.get("remaining_seconds", 0.0) or 0.0)))
+        stage = str(cooldown.get("stage") or "download")
+        error = str(cooldown.get("error") or "").strip()
+        reason = "书源 {stage} 连续失败，冷却中（剩余约 {seconds} 秒）".format(
+            stage=stage,
+            seconds=remaining,
+        )
+        return (
+            "{reason}: {error}".format(reason=reason, error=error) if error else reason
+        )
+
     def _build_result(
         self,
         status: str,
@@ -598,10 +692,27 @@ class DownloadOrchestrator:
         sample: dict[str, Any] | None = None,
         error: str = "",
     ) -> None:
-        if self.source_profile_service is None:
-            return
         normalized_source_id = str(source_id or "").strip()
         if not normalized_source_id:
+            return
+        if error and self.source_health_store is not None:
+            try:
+                self.source_health_store.record_failure(
+                    normalized_source_id,
+                    "download",
+                    error_code="sample_failed",
+                    error_summary=str(error).strip(),
+                    failure_scope="book",
+                    metadata={
+                        "sample_book_name": str(
+                            preflight.get("book_name") or ""
+                        ).strip(),
+                        "sample_book_url": str(preflight.get("book_url") or "").strip(),
+                    },
+                )
+            except Exception:
+                pass
+        if self.source_profile_service is None:
             return
         patch = {
             "download_strategy": {

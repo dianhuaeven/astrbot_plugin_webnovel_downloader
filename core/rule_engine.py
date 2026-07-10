@@ -1177,7 +1177,7 @@ class RuleEngine:
                 )
                 if not values:
                     continue
-                joined = "\n".join([self._stringify(value) for value in values])
+                joined = "\n".join([self._stringify_content(value) for value in values])
                 if cleaners:
                     joined = self._apply_cleaners(joined, cleaners)
                 if joined.strip():
@@ -1255,7 +1255,7 @@ class RuleEngine:
             self._apply_put_mapping(payload_kind, payload, put_mapping, rule_context)
             if not values:
                 continue
-            parts = [self._stringify(value) for value in values]
+            parts = [self._stringify_content(value) for value in values]
             joined = "\n".join([part for part in parts if part]).strip()
             if cleaners:
                 joined = self._apply_cleaners(joined, cleaners)
@@ -1487,7 +1487,9 @@ class RuleEngine:
     def _looks_like_html_fragment(self, value: str) -> bool:
         return bool(re.search(r"<[a-zA-Z][^>]*>", str(value or "")))
 
-    def _html_fragment_to_text(self, value: str) -> str:
+    def _html_fragment_to_text(
+        self, value: str, *, normalize_escaped_line_breaks: bool = True
+    ) -> str:
         text = str(value or "")
         if not text:
             return ""
@@ -1499,7 +1501,8 @@ class RuleEngine:
         text = re.sub(r"(?is)<[^>]+>", "", text)
         text = unescape(text)
         text = text.replace("\r\n", "\n").replace("\r", "\n")
-        text = self._normalize_escaped_line_breaks(text)
+        if normalize_escaped_line_breaks:
+            text = self._normalize_escaped_line_breaks(text)
         text = re.sub(r"[ \t]+\n", "\n", text)
         text = re.sub(r"\n[ \t]+", "\n", text)
         text = re.sub(r"[ \t]{2,}", " ", text)
@@ -2007,12 +2010,43 @@ class RuleEngine:
 
     def _node_text(self, node: Any) -> str:
         if isinstance(node, str):
-            return node.strip()
+            return self._normalize_content_text_payload(node).strip()
         try:
-            text = node.xpath("string(.)").get(default="")
+            html = node.get() or ""
         except Exception:
-            text = node.get() or ""
-        return self._normalize_text(text)
+            html = ""
+        if html and self._looks_like_html_fragment(html):
+            text = self._html_fragment_to_text(
+                html,
+                normalize_escaped_line_breaks=False,
+            )
+        else:
+            try:
+                text = node.xpath("string(.)").get(default="")
+            except Exception:
+                text = html
+        return self._normalize_content_text_payload(text).strip()
+
+    def _stringify_content(self, value: Any) -> str:
+        if isinstance(value, str):
+            text = value
+        elif isinstance(value, (dict, list)):
+            return self._flatten_text_payload(value).strip() or json.dumps(
+                value, ensure_ascii=False
+            )
+        elif hasattr(value, "get"):
+            try:
+                text = value.get() or ""
+            except Exception:
+                text = str(value)
+        else:
+            text = str(value)
+        if self._looks_like_html_fragment(text):
+            text = self._html_fragment_to_text(
+                text,
+                normalize_escaped_line_breaks=False,
+            )
+        return self._normalize_content_text_payload(text).strip()
 
     def _stringify(self, value: Any) -> str:
         if isinstance(value, str):
