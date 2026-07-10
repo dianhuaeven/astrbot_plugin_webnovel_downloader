@@ -5,7 +5,7 @@ from astrbot.api.star import register
 
 from .base import JsonlNovelDownloaderPluginBase
 from .core.download_manager import ExtractionRules
-from .support import compat_admin_only, compat_hidden_tool, compat_llm_tool
+from .support import compat_admin_only, compat_llm_tool
 
 
 @register(
@@ -204,17 +204,6 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             offset(string): 可选，从第几条仓库记录开始返回。
         """
         return await self.handle_webnovel_list_clean_rules(limit, offset)
-
-    @compat_admin_only()
-    @compat_hidden_tool()
-    async def webnovel_fetch_preview(
-        self,
-        event: AstrMessageEvent,
-        url: str,
-        encoding: str = "",
-        max_chars: str = "",
-    ) -> str:
-        return await self.handle_novel_fetch_preview(url, encoding, max_chars)
 
     @filter.command("novel_jobs")
     async def novel_jobs_command(self, event):
