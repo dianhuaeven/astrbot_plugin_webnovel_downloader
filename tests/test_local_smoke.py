@@ -426,6 +426,12 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             ["keyword", "author", "limit", "include_disabled"],
         )
 
+    def test_search_tool_doc_requires_confirmed_download_target(self):
+        doc = inspect.getdoc(self.plugin.webnovel_search_books) or ""
+        self.assertIn("不是通用搜索、推荐、探索", doc)
+        self.assertIn("明确要求下载完整小说", doc)
+        self.assertIn("必须先向用户确认作者", doc)
+
     async def test_llm_tool_accepts_runtime_call_without_event_argument(self):
         recorded = {}
 
@@ -768,6 +774,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         class Runner(object):
             async def step_until_done(self, _limit):
+                await recorded["tool"].call(None)
                 yield None
 
             def get_final_llm_resp(self):
@@ -783,15 +790,22 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 self.role = ""
 
             def get_extra(self, key, default=None):
-                if key == "_send_message_to_user_current_session_plain_texts":
-                    return ["sent"]
                 return default
 
         class MessageSession(object):
             @staticmethod
             def from_str(value):
                 recorded["session"] = value
-                return types.SimpleNamespace(message_type="FriendMessage")
+                return ParsedSession(value)
+
+        class ParsedSession(object):
+            message_type = "FriendMessage"
+
+            def __init__(self, value):
+                self.value = value
+
+            def __str__(self):
+                return self.value
 
         class ProviderRequest(object):
             def __init__(self):
@@ -805,7 +819,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 return ""
 
         class SendMessageToUserTool(object):
-            pass
+            async def call(self, _context, **_kwargs):
+                return "Message sent to session aiocqhttp:FriendMessage:42"
 
         async def persist_agent_history(*_args, **kwargs):
             recorded["history_event"] = kwargs["event"]
@@ -839,9 +854,6 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         sys.modules.update(fake_modules)
         self.plugin.context = types.SimpleNamespace(
             get_config=lambda _origin: {"provider_settings": {}},
-            get_llm_tool_manager=lambda: types.SimpleNamespace(
-                get_builtin_tool=lambda _tool: "send-message-tool"
-            ),
             conversation_manager=object(),
         )
 
@@ -863,8 +875,9 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(delivered)
-        self.assertEqual(recorded["tool"], "send-message-tool")
+        self.assertIsInstance(recorded["tool"], SendMessageToUserTool)
         self.assertIn("send_message_to_user", recorded["request"].prompt)
+        self.assertIn("session` argument empty", recorded["request"].prompt)
         self.assertIs(recorded["conversation_event"], recorded["history_event"])
 
     async def test_download_notification_retries_same_job_with_new_run_id(self):
@@ -2326,12 +2339,58 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             astrbot_core_computer_client
         )
 
-        result = self.plugin._install_bundled_skill(skill_dir)
+        result = self.plugin._install_bundled_skill(skill_dir, overwrite=True)
         self.assertEqual(recorded["skill_name_hint"], "webnovel-downloader-workflow")
-        self.assertFalse(recorded["overwrite"])
+        self.assertTrue(recorded["overwrite"])
+        self.assertTrue(result["overwrite"])
         self.assertEqual(result["installed_name"], "webnovel-downloader-workflow")
         self.assertTrue(result["synced_sandboxes"])
         self.assertEqual(synced_calls, [True])
+
+    def test_bundled_skill_update_overwrites_managed_and_migrates_legacy_state(self):
+        managed_dir = self.base_dir / "managed-skill"
+        legacy_dir = self.base_dir / "legacy-skill"
+        external_dir = self.base_dir / "external-skill"
+        for skill_dir in (managed_dir, legacy_dir, external_dir):
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: {name}\nversion: 2.0.0\n---\n".format(name=skill_dir.name),
+                encoding="utf-8",
+            )
+
+        self.plugin._get_installed_skill_names = lambda: {
+            managed_dir.name,
+            legacy_dir.name,
+            external_dir.name,
+        }
+        for skill_dir, install_action in (
+            (managed_dir, "installed"),
+            (legacy_dir, "already_exists"),
+        ):
+            ref = str(skill_dir)
+            self.plugin._save_bootstrap_result(
+                "bundled_skills",
+                self.plugin._build_bootstrap_entry_id(ref),
+                ref,
+                "old-signature",
+                "success",
+                time.time(),
+                skill_name=skill_dir.name,
+                skill_version="1.0.0",
+                install_action=install_action,
+            )
+
+        pending = self.plugin._filter_bootstrap_skill_dirs(
+            [managed_dir, legacy_dir, external_dir]
+        )
+
+        self.assertEqual(pending, [managed_dir, legacy_dir])
+        state = json.loads(self.plugin._bootstrap_state_path.read_text("utf-8"))
+        external_entry = state["bundled_skills"][
+            self.plugin._build_bootstrap_entry_id(str(external_dir))
+        ]
+        self.assertEqual(external_entry["install_action"], "already_exists")
+        self.assertFalse(external_entry["managed_by_plugin"])
 
     def test_plugin_bootstrap_auto_installs_bundled_skills_in_background(self):
         plugin_base = importlib.import_module("astrbot_plugin_webnovel_downloader.base")
@@ -2353,7 +2412,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         started = threading.Event()
         unblock = threading.Event()
-        installed: list[str] = []
+        installed: list[tuple[str, bool]] = []
 
         def fake_list(self):
             return [demo_skill_dir]
@@ -2361,10 +2420,10 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         def fake_get_names(self):
             return set()
 
-        def slow_install(self, skill_dir):
+        def slow_install(self, skill_dir, *, overwrite=False):
             started.set()
             unblock.wait(1.0)
-            installed.append(skill_dir.name)
+            installed.append((skill_dir.name, overwrite))
             return {
                 "installed_name": skill_dir.name,
                 "synced_sandboxes": False,
@@ -2386,7 +2445,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
             unblock.set()
             self.assertTrue(plugin.wait_for_bootstrap(2.0))
-            self.assertEqual(installed, ["demo-skill"])
+            self.assertEqual(installed, [("demo-skill", False)])
         finally:
             unblock.set()
             plugin_base.JsonlNovelDownloaderPluginBase._list_bundled_skill_dirs = (
@@ -2421,7 +2480,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         def fake_list(self):
             return [demo_skill_dir]
 
-        def fail_if_called(self, skill_dir):
+        def fail_if_called(self, skill_dir, *, overwrite=False):
+            del overwrite
             installed.append(skill_dir.name)
             raise AssertionError("disabled bundled skill install was called")
 

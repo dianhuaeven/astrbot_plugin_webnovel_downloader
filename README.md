@@ -21,9 +21,10 @@
 
 1. 在 AstrBot 中安装并启用插件。
 2. 管理员导入 Legado/阅读书源。
-3. 使用搜索工具查找小说，查看返回的 `search_id` 和 `candidate_groups`。
-4. 选择目标书籍的 `group_index` 发起下载。
-5. 使用状态工具查看下载进度和 TXT 文件名。
+3. 用户先明确要下载的准确书名；同名作品可能混淆时同时确认作者。
+4. 为这个已确认目标调用一次搜索工具，取得 `search_id` 和 `candidate_groups`。
+5. 唯一匹配时直接使用对应 `group_index` 下载；存在不同作品时从当前候选中确认，不重复搜索。
+6. 使用状态工具查看下载进度和 TXT 文件名。
 
 下载数据保存在 AstrBot 的插件数据目录中，包括书源注册表、搜索缓存、下载任务 journal、正文净化规则和最终 TXT。
 
@@ -33,7 +34,7 @@
 
 | 函数 | 权限 | 用途 |
 | --- | --- | --- |
-| `webnovel_search_books` | 普通用户 | 搜索小说，并按同名同作者聚合不同书源。 |
+| `webnovel_search_books` | 普通用户 | 为已确认目标的当前下载查找候选书源；不是推荐或探索工具。 |
 | `webnovel_download_book` | 普通用户 | 根据 `search_id` 和 `group_index` 下载一本书。 |
 | `webnovel_download_status` | 普通用户 | 查询自己的单个下载任务，或列出自己的任务；管理员可查看全部任务。 |
 | `webnovel_import_sources` | 管理员 | 导入 Legado/阅读书源 JSON。 |

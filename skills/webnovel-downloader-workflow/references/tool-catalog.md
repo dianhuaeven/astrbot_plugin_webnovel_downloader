@@ -4,7 +4,7 @@
 
 | Tool | Main use | Key inputs | Notes |
 | --- | --- | --- | --- |
-| `webnovel_search_books` | 搜索并聚合同名同作者书籍 | `keyword`, `author`, `limit`, `include_disabled` | 返回 `search_id` 和 `candidate_groups`；后续下载必须使用这个缓存 |
+| `webnovel_search_books` | 为已确认目标的当前下载查找并聚合候选书源 | `keyword`, `author`, `limit`, `include_disabled` | 耗时的下载准备步骤；禁止用于推荐、探索或随意查询；返回缓存供紧接着下载 |
 | `webnovel_download_book` | 下载缓存候选组中的一本书 | `search_id`, `group_index`, `attempt_limit`, `output_filename`, `auto_assemble`, `skip_source_ids` | 不接受外部 `book_url`；可临时排除多个坏源，组内多源预检后只创建一个正式任务 |
 | `webnovel_download_status` | 查询进度或任务列表 | `job_id`, `limit`, `offset` | 未传 `job_id` 时返回任务列表摘要 |
 | `webnovel_import_sources` | 导入 Legado/阅读书源 | `source_json` | 管理员工具；支持 URL、文件路径或原始 JSON |
@@ -28,6 +28,14 @@
 | `novel_download_cached_result` | 不应暴露 | `webnovel_download_book` |
 | `novel_start_download` | 手工 regex 诊断路径，不给 LLM | 无 |
 | `novel_fetch_preview` | 管理员/隐藏诊断路径 | 无 |
+
+## Search Invocation Contract
+
+- 只有用户在当前请求中明确要求下载完整小说，并已确认准确书名时，才调用 `webnovel_search_books`。
+- 同名作品可能混淆且作者未知时，必须先追问作者；不要用一次昂贵搜索代替澄清。
+- 不得用于推荐、题材探索、作品介绍、闲聊、可用性检查、工具测试或“先搜搜看”。
+- 每个已确认下载目标原则上只搜索一次。搜索结果唯一匹配时直接下载；存在作品歧义时从现有 `candidate_groups` 让用户选择，不重复搜索。
+- 查看书源是否可用应调用 `webnovel_list_sources` 或 `webnovel_probe_status`，不能用小说搜索充当健康检查。
 
 ## Safe Download Contract
 

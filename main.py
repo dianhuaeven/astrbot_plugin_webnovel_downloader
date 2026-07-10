@@ -26,11 +26,15 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         include_disabled: str = "",
     ) -> str:
         """
-        搜索小说并按“同名同作者”聚合不同书源，返回可下载候选组。
+        为一次已经确认目标的小说下载查找候选书源，并按“同名同作者”聚合结果。
+
+        这是耗时较长的下载准备步骤，不是通用搜索、推荐、探索或可用性检查工具。
+        仅当用户在当前请求中明确要求下载完整小说，并已确认准确书名后调用；
+        同名作品可能混淆时，必须先向用户确认作者。搜索结果应紧接着用于当前下载。
 
         Args:
-            keyword(string): 搜索关键词，通常填写书名。
-            author(string): 可选，作者名；填写后优先展示作者匹配的候选组。
+            keyword(string): 已确认下载目标的准确书名；不得填写题材、剧情描述或推荐关键词。
+            author(string): 可选，已确认的作者名；同名作品有歧义时应在调用搜索前向用户确认。
             limit(string): 可选，本次最多返回多少个聚合候选组。
             include_disabled(string): 是否包含禁用书源，支持 true/false/1/0/yes/no。
         """

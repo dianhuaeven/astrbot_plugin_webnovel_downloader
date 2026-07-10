@@ -1,18 +1,18 @@
 ---
 name: webnovel-downloader-workflow
-version: 1.0.0
-description: 使用 AstrBot 网文下载插件处理 Legado/阅读书源导入、书源健康查看、小说搜索聚合、缓存候选下载、下载状态查询和 1.0 发布前安全约束。Use when users want to download web novels through the plugin, manage Legado sources, use the current webnovel_* LLM tools, or review safety constraints for future changes.
+version: 1.0.1
+description: 使用 AstrBot 网文下载插件处理明确目标的小说下载、Legado/阅读书源导入、书源健康查看、缓存候选下载和安全约束。仅在用户已经明确要下载并确定目标作品时使用搜索下载流程；不要将搜索工具用于推荐、探索或随意查询。Use for explicit webnovel download requests with a confirmed target, source management, or plugin safety review. Never use the search tool for discovery or recommendations.
 ---
 
 # Webnovel Downloader Workflow
 
-在用户想通过本插件导入 Legado/阅读书源、搜索并下载小说、查看任务进度，或讨论插件后续开发约束时使用本技能。
+在用户已经明确要下载某部小说并确定目标作品，想通过本插件导入 Legado/阅读书源、查看任务进度，或讨论插件后续开发约束时使用本技能。不要因为用户随口提到小说、询问推荐或想了解作品，就调用搜索工具。
 
 ## Current Public LLM Surface
 
 1.0.0 对 LLM 只暴露 `webnovel_*` 工具。不要再引用旧的 `novel_*` LLM 函数作为可用工具。
 
-- `webnovel_search_books`: 搜索小说，并按同名同作者聚合不同书源。
+- `webnovel_search_books`: 为一次已确认目标的下载查找候选书源；这是耗时的下载准备步骤，不是通用搜索或推荐工具。
 - `webnovel_download_book`: 根据 `search_id + group_index` 下载一本书；下载源必须来自搜索缓存候选组。
 - `webnovel_download_status`: 查询单个下载任务，或列出下载任务。
 - `webnovel_import_sources`: 管理员导入 Legado/阅读书源 JSON。
@@ -22,6 +22,25 @@ description: 使用 AstrBot 网文下载插件处理 Legado/阅读书源导入�
 - `webnovel_import_clean_rules`: 管理员导入正文净化规则仓库。
 - `webnovel_list_clean_rules`: 查看已导入净化规则仓库。
 
+## Search Invocation Gate
+
+`webnovel_search_books` 与下载强绑定。搜索会并发访问多个书源，可能耗时很长；不能把它当作低成本、可随意尝试的查询工具。
+
+只有同时满足以下条件时才允许调用：
+
+- 用户在当前请求中明确要求下载、保存或获取完整小说，而不只是询问、讨论或求推荐。
+- 已经确认准确书名；不能使用题材、角色、剧情描述或模糊关键词代替书名。
+- 同名作品可能混淆时，已经确认作者。用户未提供必要信息时，先追问，不要先搜索。
+
+以下场景禁止调用：
+
+- 推荐小说、寻找“类似某书”的作品、按题材探索或列书单。
+- 用户随口提到书名、询问简介、作者、评价、是否好看或是否存在。
+- 为了测试工具、检查网络、查看书源健康或“先搜搜看”。书源检查应使用 `webnovel_list_sources` 或 `webnovel_probe_status`。
+- 上一次搜索已经返回足够候选时重复搜索。应复用当前 `search_id`，或先让用户解决候选歧义。
+
+搜索完成后必须服务于当前这次下载：只有一个与已确认书名和作者一致的候选组时，直接调用 `webnovel_download_book`；存在不同作品或作者歧义时，只展示必要选项让用户确认，然后使用同一份搜索缓存下载，不要重新搜索。
+
 ## Default Download Flow
 
 1. 如果用户提供书源 URL、书源文件路径或书源 JSON，先用 `webnovel_import_sources` 导入。
@@ -30,14 +49,18 @@ description: 使用 AstrBot 网文下载插件处理 Legado/阅读书源导入�
 4. 如果刚导入书源、怀疑健康度过期或想重新探测，用 `webnovel_refresh_sources`。
    - 这是后台异步探测，只表示“已经入队”。
    - 需要确认探测进度时再用 `webnovel_probe_status`。
-5. 下载前先走 `webnovel_search_books`。
+5. 在任何搜索之前，确认用户明确要求下载，并确认准确书名；同名有歧义时先确认作者。
+   - 信息不足时先追问，不调用任何搜索工具。
+   - 如果用户只是想搜索、推荐或了解作品，说明该工具只用于下载准备，不执行搜索。
+6. 对已确认的目标只调用一次 `webnovel_search_books`。
    - 返回的 `search_id` 是后续下载唯一入口。
    - 返回的 `candidate_groups` 是按同名同作者聚合后的书籍组。
-6. 用户确认目标书籍后，用 `webnovel_download_book(search_id, group_index)`。
+7. 搜索结果与已确认目标唯一匹配时，紧接着用 `webnovel_download_book(search_id, group_index)`；有实质歧义时先让用户选择候选组。
    - 不要传外部 `book_url`。
    - 不要自行拼 URL。
+   - 不要为了下载同一目标再次搜索；复用当前 `search_id`。
    - 不要恢复旧的“指定任意 URL 下载”流程。
-7. 任务创建后等待最终通知，不主动轮询或发送中间进度；只有用户主动询问时才调用 `webnovel_download_status`。
+8. 任务创建后等待最终通知，不主动轮询或发送中间进度；只有用户主动询问时才调用 `webnovel_download_status`。
    - 轮询要克制，不要高频重复查询。
 
 ## Long Task Notification Discipline
@@ -72,7 +95,8 @@ description: 使用 AstrBot 网文下载插件处理 Legado/阅读书源导入�
 
 ## Response Style
 
-- 下载前：说明使用的书名、作者和候选组，确认来自 `webnovel_search_books` 的缓存结果。
+- 搜索前：确认用户当前明确要下载，并复述准确书名和作者；信息不全或有歧义时先追问。
+- 搜索后：不要把结果当作推荐列表展开；仅在候选有实质歧义时提供最少必要选项，否则直接进入下载。
 - 下载中：不主动汇报百分比、章节批次或定时进度；只在用户主动询问时查询一次。
 - 下载失败：给出失败摘要和下一步建议，例如补作者、刷新书源、查看探测状态、换静态源或换候选组。
 - 下载成功：最终通知一次，明确任务完成并引用逻辑文件名或任务信息，不暴露宿主机绝对路径。

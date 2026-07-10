@@ -1797,12 +1797,26 @@ class JsonlNovelDownloaderPluginBase(Star):
                 "The webnovel download background task has finished. "
                 "Use the same language as the previous conversation. "
                 "You MUST use `send_message_to_user` to deliver the final result. "
+                "Leave its `session` argument empty so it targets the current session. "
                 "Do not send progress updates or start any new long task."
             )
             req.func_tool = ToolSet()
-            req.func_tool.add_tool(
-                context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
-            )
+            delivery_receipts: list[str] = []
+            current_session = str(session)
+
+            class DeliveryTrackingSendMessageToUserTool(SendMessageToUserTool):
+                async def call(self, run_context, **kwargs):
+                    response = await super().call(run_context, **kwargs)
+                    response_text = str(response)
+                    sent_prefix = "Message sent to session "
+                    if (
+                        response_text.startswith(sent_prefix)
+                        and response_text[len(sent_prefix) :] == current_session
+                    ):
+                        delivery_receipts.append(response_text)
+                    return response
+
+            req.func_tool.add_tool(DeliveryTrackingSendMessageToUserTool())
             result = await build_main_agent(
                 event=cron_event,
                 plugin_context=context,
@@ -1836,7 +1850,7 @@ class JsonlNovelDownloaderPluginBase(Star):
                 "_send_message_to_user_current_session_plain_texts",
                 [],
             )
-            return bool(sent_texts)
+            return bool(sent_texts or delivery_receipts)
         except Exception as exc:
             logger.exception("唤醒 LLM 发送下载完成通知失败: %s", exc)
             return False
@@ -2189,6 +2203,10 @@ class JsonlNovelDownloaderPluginBase(Star):
         skill_metadata = self._load_bundled_skill_metadata(skill_dir)
         skill_version = str(skill_metadata.get("version") or "").strip()
         declared_skill_name = str(skill_metadata.get("name") or skill_name).strip()
+        installed_skill_names = self._get_installed_skill_names()
+        overwrite = bool(
+            installed_skill_names is not None and skill_name in installed_skill_names
+        )
         signature = self._build_bootstrap_signature(skill_ref)
         entry_id = self._build_bootstrap_entry_id(skill_ref)
         started_at = time.time()
@@ -2202,10 +2220,11 @@ class JsonlNovelDownloaderPluginBase(Star):
             skill_name=skill_name,
             declared_skill_name=declared_skill_name,
             skill_version=skill_version,
-            install_action="installing",
+            install_action="updating" if overwrite else "installing",
+            managed_by_plugin=True,
         )
         try:
-            result = self._install_bundled_skill(skill_dir)
+            result = self._install_bundled_skill(skill_dir, overwrite=overwrite)
             logger.info(
                 "自动安装插件自带 skill 成功 skill_name=%s version=%s synced_sandboxes=%s",
                 skill_name,
@@ -2223,8 +2242,9 @@ class JsonlNovelDownloaderPluginBase(Star):
                 declared_skill_name=declared_skill_name,
                 skill_version=skill_version,
                 installed_name=str(result.get("installed_name") or skill_name),
-                install_action="installed",
+                install_action="updated" if overwrite else "installed",
                 synced_sandboxes=bool(result.get("synced_sandboxes", False)),
+                managed_by_plugin=True,
             )
         except Exception as exc:
             logger.warning(
@@ -2243,8 +2263,9 @@ class JsonlNovelDownloaderPluginBase(Star):
                 skill_name=skill_name,
                 declared_skill_name=declared_skill_name,
                 skill_version=skill_version,
-                install_action="failed",
+                install_action="update_failed" if overwrite else "failed",
                 error=str(exc),
+                managed_by_plugin=True,
             )
 
     def _record_bootstrap_bundled_skill_disabled(self, skill_dir: Path) -> None:
@@ -2316,6 +2337,45 @@ class JsonlNovelDownloaderPluginBase(Star):
             signature = self._build_bootstrap_signature(ref)
             if skill_name in existing_skill_names:
                 skill_metadata = self._load_bundled_skill_metadata(skill_dir)
+                bundled_version = str(skill_metadata.get("version") or "").strip()
+                recorded_version = str(entry.get("skill_version") or "").strip()
+                install_action = str(entry.get("install_action") or "")
+                managed_by_plugin = install_action in {
+                    "installed",
+                    "installing",
+                    "updated",
+                    "updating",
+                    "update_failed",
+                }
+                legacy_version_update = (
+                    "managed_by_plugin" not in entry
+                    and bool(entry)
+                    and bool(recorded_version)
+                    and bool(bundled_version)
+                    and recorded_version != bundled_version
+                )
+                update_allowed = managed_by_plugin or legacy_version_update
+                if (
+                    update_allowed
+                    and entry.get("status") == "running"
+                    and (time.time() - float(entry.get("updated_at", 0.0))) < 1800
+                ):
+                    skipped_count += 1
+                    logger.info(
+                        "检测到 bundled skill 更新正在进行，跳过重复启动 skill_name=%s",
+                        skill_name,
+                    )
+                    continue
+                if update_allowed and (
+                    entry.get("signature") != signature
+                    or entry.get("status") != "success"
+                ):
+                    pending.append(skill_dir)
+                    logger.info(
+                        "检测到插件管理的 bundled skill 已更新，准备覆盖安装 skill_name=%s",
+                        skill_name,
+                    )
+                    continue
                 if (
                     entry.get("signature") != signature
                     or entry.get("status") != "success"
@@ -2335,6 +2395,7 @@ class JsonlNovelDownloaderPluginBase(Star):
                         installed_name=skill_name,
                         install_action="already_exists",
                         synced_sandboxes=False,
+                        managed_by_plugin=False,
                     )
                 skipped_count += 1
                 logger.info(
@@ -2418,7 +2479,12 @@ class JsonlNovelDownloaderPluginBase(Star):
             metadata[key] = value.strip().strip("\"'")
         return metadata
 
-    def _install_bundled_skill(self, skill_dir: Path) -> dict[str, Any]:
+    def _install_bundled_skill(
+        self,
+        skill_dir: Path,
+        *,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
         if not skill_dir.is_dir():
             raise FileNotFoundError(
                 "找不到插件自带 skill 目录: {path}".format(path=skill_dir)
@@ -2439,7 +2505,7 @@ class JsonlNovelDownloaderPluginBase(Star):
             manager = SkillManager()
             installed_name = manager.install_skill_from_zip(
                 str(zip_path),
-                overwrite=False,
+                overwrite=overwrite,
                 skill_name_hint=skill_name,
             )
 
@@ -2465,6 +2531,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         return {
             "installed_name": str(installed_name or skill_name),
             "synced_sandboxes": synced_sandboxes,
+            "overwrite": overwrite,
         }
 
     def _build_skill_zip(self, skill_dir: Path, zip_path: Path) -> None:
