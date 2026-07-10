@@ -1,7 +1,7 @@
 ---
 name: webnovel-downloader-workflow
-version: 1.0.1
-description: 使用 AstrBot 网文下载插件处理明确目标的小说下载、Legado/阅读书源导入、书源健康查看、缓存候选下载和安全约束。仅在用户已经明确要下载并确定目标作品时使用搜索下载流程；不要将搜索工具用于推荐、探索或随意查询。Use for explicit webnovel download requests with a confirmed target, source management, or plugin safety review. Never use the search tool for discovery or recommendations.
+version: 1.0.2
+description: 使用 AstrBot 网文下载插件处理明确目标的小说缓存发送、下载、Legado/阅读书源导入、书源健康查看和安全约束。下载前必须先尝试发送已有缓存；只有无缓存时才搜索下载。工具调用默认静默，不发送过程旁白或主动轮询。Use for explicit webnovel download requests with a confirmed target, cache-first delivery, source management, or plugin safety review. Never use search for discovery and never narrate routine tool calls.
 ---
 
 # Webnovel Downloader Workflow
@@ -15,6 +15,7 @@ description: 使用 AstrBot 网文下载插件处理明确目标的小说下载�
 - `webnovel_search_books`: 为一次已确认目标的下载查找候选书源；这是耗时的下载准备步骤，不是通用搜索或推荐工具。
 - `webnovel_download_book`: 根据 `search_id + group_index` 下载一本书；下载源必须来自搜索缓存候选组。
 - `webnovel_download_status`: 查询单个下载任务，或列出下载任务。
+- `webnovel_send_book`: 将插件缓存中已完成的小说发送到当前会话；不依赖电脑工具或管理员权限。
 - `webnovel_import_sources`: 管理员导入 Legado/阅读书源 JSON。
 - `webnovel_list_sources`: 查看已导入书源、能力摘要和健康状态。
 - `webnovel_refresh_sources`: 管理员将书源加入后台健康探测队列。
@@ -41,6 +42,14 @@ description: 使用 AstrBot 网文下载插件处理明确目标的小说下载�
 
 搜索完成后必须服务于当前这次下载：只有一个与已确认书名和作者一致的候选组时，直接调用 `webnovel_download_book`；存在不同作品或作者歧义时，只展示必要选项让用户确认，然后使用同一份搜索缓存下载，不要重新搜索。
 
+## Silent Tool Discipline
+
+- 调用任何 `webnovel_*` 工具前不要发送“我先查一下”“马上下载”“让我读取技能”等过程旁白，直接调用工具。
+- 只有缺少准确书名、同名作者有歧义或必须由用户选择时，才在工具调用前向用户提问。
+- 工具之间连续执行时保持静默；不要把 ReAct 计划、下一步动作、函数名、轮询意图或内部判断逐条发给用户。
+- 最终动作完成后最多发送一条简短结果。文件发送工具已经发送文件时，只需一句确认，不要复述整个过程。
+- 不得为了展示进度而主动调用 `webnovel_download_status`。只有用户明确询问进度时才查询一次。
+
 ## Default Download Flow
 
 1. 如果用户提供书源 URL、书源文件路径或书源 JSON，先用 `webnovel_import_sources` 导入。
@@ -52,21 +61,27 @@ description: 使用 AstrBot 网文下载插件处理明确目标的小说下载�
 5. 在任何搜索之前，确认用户明确要求下载，并确认准确书名；同名有歧义时先确认作者。
    - 信息不足时先追问，不调用任何搜索工具。
    - 如果用户只是想搜索、推荐或了解作品，说明该工具只用于下载准备，不执行搜索。
-6. 对已确认的目标只调用一次 `webnovel_search_books`。
+6. 对已确认目标先静默调用 `webnovel_send_book(book_name, author)`。
+   - 返回 `sent`：缓存文件已经发出，流程结束，不搜索、不下载。
+   - 返回 `cache_ambiguous`：只让用户确认作者，然后再次调用同一工具，不搜索。
+   - 返回 `no_cache`：才允许进入搜索。
+7. 无缓存时，对已确认的目标只调用一次 `webnovel_search_books`。
+   - 搜索工具自身也会先检查已完成缓存；若返回 `cache_hit`，立即调用 `webnovel_send_book`，不得继续搜索或下载。
    - 返回的 `search_id` 是后续下载唯一入口。
    - 返回的 `candidate_groups` 是按同名同作者聚合后的书籍组。
-7. 搜索结果与已确认目标唯一匹配时，紧接着用 `webnovel_download_book(search_id, group_index)`；有实质歧义时先让用户选择候选组。
+8. 搜索结果与已确认目标唯一匹配时，紧接着用 `webnovel_download_book(search_id, group_index)`；有实质歧义时先让用户选择候选组。
+   - 下载工具会再次检查最终 TXT 缓存；返回 `cache_hit_sent` 表示已发送缓存，不会创建新任务。
    - 不要传外部 `book_url`。
    - 不要自行拼 URL。
    - 不要为了下载同一目标再次搜索；复用当前 `search_id`。
    - 不要恢复旧的“指定任意 URL 下载”流程。
-8. 任务创建后等待最终通知，不主动轮询或发送中间进度；只有用户主动询问时才调用 `webnovel_download_status`。
+9. 任务创建后等待最终通知，不主动轮询或发送中间进度；只有用户主动询问时才调用 `webnovel_download_status`。
    - 轮询要克制，不要高频重复查询。
 
 ## Long Task Notification Discipline
 
 - 搜索、导入、刷新源、预检、下载、装订和后台质量探测都可能是长任务；除非遇到必须用户决策的阻塞问题，不要在执行过程中主动给用户发送中间进度消息。
-- 后台任务只应在最终成功或失败时通知一次；不要按百分比、章节批次、轮询状态或内部阶段连续刷屏。
+- 后台任务只应在最终成功或失败时通知一次；LLM 只生成通知文本，由插件统一发送，不得再自行调用 `send_message_to_user` 造成重复。
 - 群聊场景默认按最克制路径处理：不发过程消息，不要求用户手动轮询，最终结果由插件完成回调或用户主动查询返回。
 - 如果用户明确要求查看进度，可以使用 `webnovel_download_status` 或 `webnovel_probe_status` 做一次性查询；不要自行安排高频重复查询。
 

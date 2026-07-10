@@ -123,7 +123,7 @@
   "notify_mode": {
     "type": "string",
     "description": "[通知配置] 下载结束通知模式",
-    "hint": "支持 llm、direct、off。默认 llm：下载终态主动唤醒模型并要求其使用 send_message_to_user 交付；失败时只回退一次直接通知，会产生额外模型调用成本。",
+    "hint": "支持 llm、direct、off。默认 llm：下载终态主动唤醒模型生成通知文本，再由插件统一发送一次，避免模型工具发送与直接兜底重复；会产生额外模型调用成本。",
     "default": "llm"
   },
   "cleanup_journal_after_assemble": {

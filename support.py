@@ -104,6 +104,16 @@ def compat_llm_tool(name: str) -> Callable:
     return decorator
 
 
+def compat_on_llm_request() -> Callable:
+    def decorator(func: Callable) -> Callable:
+        factory = getattr(filter, "on_llm_request", None)
+        if callable(factory):
+            return factory()(func)
+        return func
+
+    return decorator
+
+
 def compat_hidden_tool() -> Callable:
     def decorator(func: Callable) -> Callable:
         return _hide_system_parameters(func)

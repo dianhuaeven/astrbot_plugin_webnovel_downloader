@@ -12,6 +12,8 @@
 - 支持正文净化规则，清理广告、页脚和杂质文本。
 - 使用 `job.jsonl` 保存任务进度，支持失败后继续补抓和重新装订。
 - 输出单本 TXT 文件，章节顺序稳定。
+- 已完成 TXT 作为小说缓存复用；再次请求同一作品时直接发送，不重复搜索和下载。
+- 普通用户可通过专用工具接收缓存小说，无需管理员权限或电脑使用能力。
 - 后台探测书源的搜索、目录预检和正文下载可用性。
 - 下载结束后按每轮运行通知发起会话；同一轮最多通知一次，重试会产生新的结果通知。
 - 下载前支持一次排除多个已知坏源，并动态剔除已禁用、已删除或不支持下载的缓存候选。
@@ -22,13 +24,14 @@
 1. 在 AstrBot 中安装并启用插件。
 2. 管理员导入 Legado/阅读书源。
 3. 用户先明确要下载的准确书名；同名作品可能混淆时同时确认作者。
-4. 为这个已确认目标调用一次搜索工具，取得 `search_id` 和 `candidate_groups`。
-5. 唯一匹配时直接使用对应 `group_index` 下载；存在不同作品时从当前候选中确认，不重复搜索。
-6. 使用状态工具查看下载进度和 TXT 文件名。
+4. 先调用发送工具检查并发送已完成缓存。
+5. 确认无缓存后只搜索一次，取得 `search_id` 和 `candidate_groups`。
+6. 唯一匹配时直接使用对应 `group_index` 下载；存在不同作品时从当前候选中确认，不重复搜索。
+7. 仅在用户主动询问时使用状态工具查看进度。
 
 下载数据保存在 AstrBot 的插件数据目录中，包括书源注册表、搜索缓存、下载任务 journal、正文净化规则和最终 TXT。
 
-搜索结果会落入短期搜索缓存，下载章节和进度会落入任务 journal，装订后的 TXT 也会保留。相同用户再次命中同一个确定性任务时可以复用已有进度；当前版本不会把最终 TXT 作为跨用户共享缓存，也不会在函数返回中暴露宿主机绝对路径或自动发送文件。
+搜索结果会落入短期搜索缓存，下载章节和进度会落入任务 journal，装订后的 TXT 会作为共享小说缓存保留。缓存只索引插件下载目录内状态完整的小说文件，不允许读取任意宿主机路径；命中后可直接发送到当前会话。
 
 ## LLM 函数
 
@@ -37,6 +40,7 @@
 | `webnovel_search_books` | 普通用户 | 为已确认目标的当前下载查找候选书源；不是推荐或探索工具。 |
 | `webnovel_download_book` | 普通用户 | 根据 `search_id` 和 `group_index` 下载一本书。 |
 | `webnovel_download_status` | 普通用户 | 查询自己的单个下载任务，或列出自己的任务；管理员可查看全部任务。 |
+| `webnovel_send_book` | 普通用户 | 发送插件缓存中已完成的小说；不依赖电脑能力。 |
 | `webnovel_import_sources` | 管理员 | 导入 Legado/阅读书源 JSON。 |
 | `webnovel_list_sources` | 普通用户 | 查看已导入书源、能力摘要和健康状态。 |
 | `webnovel_refresh_sources` | 管理员 | 将书源加入后台健康探测队列。 |
@@ -47,7 +51,7 @@
 典型调用顺序：
 
 ```text
-webnovel_import_sources -> webnovel_search_books -> webnovel_download_book -> webnovel_download_status
+webnovel_send_book -> (no_cache) -> webnovel_search_books -> webnovel_download_book
 ```
 
 ## 适用书源
@@ -61,5 +65,5 @@ webnovel_import_sources -> webnovel_search_books -> webnovel_download_book -> we
 - 导入书源、刷新探测和导入净化规则会访问外部 URL 或修改本地插件数据，建议只给管理员使用。
 - 如果下载失败，优先查看书源健康状态和任务最近错误，再决定是否换源。
 - 单个 HTTP 响应默认最多读取解压后的 8 MiB，可通过 `max_response_bytes` 调整。
-- 下载通知默认使用 `llm` 主动唤醒模型，并在失败时回退一次 direct；该模式会产生额外模型调用成本，可将 `notify_mode` 改为 `direct` 或 `off`。
+- 下载通知默认使用 `llm` 主动唤醒模型生成最终文本，再由插件统一发送一次；该模式会产生额外模型调用成本，可将 `notify_mode` 改为 `direct` 或 `off`。
 - LLM wake 和 direct 都失败时不会自动重发，失败状态会保留在任务状态查询中，避免群聊重复刷屏。

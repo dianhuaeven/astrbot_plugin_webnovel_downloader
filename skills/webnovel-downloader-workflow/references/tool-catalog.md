@@ -7,6 +7,7 @@
 | `webnovel_search_books` | 为已确认目标的当前下载查找并聚合候选书源 | `keyword`, `author`, `limit`, `include_disabled` | 耗时的下载准备步骤；禁止用于推荐、探索或随意查询；返回缓存供紧接着下载 |
 | `webnovel_download_book` | 下载缓存候选组中的一本书 | `search_id`, `group_index`, `attempt_limit`, `output_filename`, `auto_assemble`, `skip_source_ids` | 不接受外部 `book_url`；可临时排除多个坏源，组内多源预检后只创建一个正式任务 |
 | `webnovel_download_status` | 查询进度或任务列表 | `job_id`, `limit`, `offset` | 未传 `job_id` 时返回任务列表摘要 |
+| `webnovel_send_book` | 发送已完成的小说缓存 | `job_id`, `book_name`, `author` | 普通用户可用；只发送插件下载目录内的完成文件，不依赖电脑工具 |
 | `webnovel_import_sources` | 导入 Legado/阅读书源 | `source_json` | 管理员工具；支持 URL、文件路径或原始 JSON |
 | `webnovel_list_sources` | 查看书源清单和健康摘要 | `enabled_only`, `limit`, `offset` | 适合确认哪些源可参与搜索或下载 |
 | `webnovel_refresh_sources` | 刷新书源健康度 | `source_ids_json`, `include_disabled` | 管理员工具；后台异步探测，不等待完成 |
@@ -36,6 +37,7 @@
 - 不得用于推荐、题材探索、作品介绍、闲聊、可用性检查、工具测试或“先搜搜看”。
 - 每个已确认下载目标原则上只搜索一次。搜索结果唯一匹配时直接下载；存在作品歧义时从现有 `candidate_groups` 让用户选择，不重复搜索。
 - 查看书源是否可用应调用 `webnovel_list_sources` 或 `webnovel_probe_status`，不能用小说搜索充当健康检查。
+- 已确认下载目标后必须先调用 `webnovel_send_book` 检查缓存；只有返回 `no_cache` 才允许搜索。
 
 ## Safe Download Contract
 
@@ -82,6 +84,6 @@
 
 ## File Transfer Notes
 
-- `astrbot_upload_file` 用于把宿主机文件上传到沙箱 `/workspace`，给后续工具或代码读取。
-- `send_message_to_user` 用于把文本、图片、语音、视频或文件直接发送给当前用户。
-- 当插件已经产出宿主机上的下载文件且用户想拿到文件时，优先把该路径交给 `send_message_to_user` 的 `file` 消息。
+- 小说文件只能通过 `webnovel_send_book` 发送。它自行校验文件必须来自插件下载目录。
+- 不要使用电脑工具、Shell、`astrbot_upload_file` 或 `send_message_to_user` 读取和发送小说缓存。
+- `webnovel_send_book` 返回 `sent` 后文件已经发出，只需给用户一句简短确认。

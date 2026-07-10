@@ -478,7 +478,25 @@ class JsonlNovelDownloaderPluginBase(Star):
         author: str = "",
         limit: str = "",
         include_disabled: str = "",
+        *,
+        event: Any | None = None,
     ) -> str:
+        normalized_keyword = str(keyword or "").strip()
+        if not normalized_keyword:
+            raise ValueError("keyword 不能为空")
+        cached_books = await run_blocking(
+            self._find_cached_downloads,
+            normalized_keyword,
+            author,
+        )
+        if cached_books:
+            cache_payload = self._build_cache_lookup_payload(
+                normalized_keyword,
+                author,
+                cached_books,
+            )
+            return await run_blocking(self.renderer.to_json_text, cache_payload)
+
         limit_value = self._parse_optional_int(limit) or self.max_tool_preview_items
         limit_value = max(1, min(limit_value, 50))
         include_disabled_value = self._parse_bool(include_disabled, False)
@@ -486,7 +504,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         resolution_limit = min(200, max(24, limit_value * 4))
         resolution = await run_blocking(
             self.book_resolution_service.resolve,
-            keyword,
+            normalized_keyword,
             author,
             None,
             resolution_limit,
@@ -494,7 +512,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         )
         cache_record = await run_blocking(
             self.search_cache.save_search,
-            str(resolution.get("keyword") or keyword).strip(),
+            str(resolution.get("keyword") or normalized_keyword).strip(),
             resolution,
             None,
             include_disabled_value,
@@ -551,6 +569,45 @@ class JsonlNovelDownloaderPluginBase(Star):
                     index=group_index_value,
                 )
             )
+        selected_title = str(selected_group.get("title") or "").strip()
+        cached_books = []
+        if selected_title:
+            cached_books = await run_blocking(
+                self._find_cached_downloads,
+                selected_title,
+                str(selected_group.get("author") or ""),
+            )
+        if cached_books:
+            cached = cached_books[0]
+            if event is None:
+                return await run_blocking(
+                    self.renderer.to_json_text,
+                    {
+                        "status": "cache_hit",
+                        "network_download_started": False,
+                        "cached_book": self._compact_cached_download(cached),
+                        "next_action": (
+                            "Use webnovel_send_book with this job_id; do not start "
+                            "another download."
+                        ),
+                    },
+                )
+            send_result_text = await self.handle_webnovel_send_book(
+                str(cached.get("job_id") or ""),
+                event=event,
+            )
+            send_result = json.loads(send_result_text)
+            return await run_blocking(
+                self.renderer.to_json_text,
+                {
+                    "status": "cache_hit_sent",
+                    "network_download_started": False,
+                    "search_id": normalized_search_id,
+                    "group_index": group_index_value,
+                    "cached_book": self._compact_cached_download(cached),
+                    "send_result": send_result,
+                },
+            )
         selected_group = await run_blocking(
             self._filter_safe_candidate_group,
             selected_group,
@@ -596,6 +653,93 @@ class JsonlNovelDownloaderPluginBase(Star):
             orchestration,
             dict(cached_payload.get("record") or {}),
             job_status,
+        )
+
+    async def handle_webnovel_send_book(
+        self,
+        job_id: str = "",
+        book_name: str = "",
+        author: str = "",
+        *,
+        event: Any | None = None,
+    ) -> str:
+        normalized_job_id = str(job_id or "").strip()
+        normalized_book_name = str(book_name or "").strip()
+        normalized_author = str(author or "").strip()
+        if not normalized_job_id and not normalized_book_name:
+            return await run_blocking(
+                self.renderer.to_json_text,
+                {
+                    "status": "invalid_request",
+                    "sent": False,
+                    "reason": "job_id 和 book_name 至少填写一个",
+                },
+            )
+
+        cached_books = await run_blocking(
+            self._find_cached_downloads,
+            normalized_book_name,
+            normalized_author,
+            normalized_job_id,
+        )
+        if not cached_books:
+            return await run_blocking(
+                self.renderer.to_json_text,
+                {
+                    "status": "no_cache",
+                    "sent": False,
+                    "job_id": normalized_job_id,
+                    "book_name": normalized_book_name,
+                    "author": normalized_author,
+                    "next_action": (
+                        "Only if the user explicitly requested a download, call "
+                        "webnovel_search_books once for this exact title."
+                    ),
+                },
+            )
+
+        distinct_works = {
+            (
+                self._normalize_match_text(item.get("book_name")),
+                self._normalize_match_text(item.get("author")),
+            )
+            for item in cached_books
+        }
+        if not normalized_job_id and len(distinct_works) > 1:
+            return await run_blocking(
+                self.renderer.to_json_text,
+                {
+                    "status": "cache_ambiguous",
+                    "sent": False,
+                    "book_name": normalized_book_name,
+                    "cached_books": [
+                        self._compact_cached_download(item)
+                        for item in cached_books[: self.max_tool_preview_items]
+                    ],
+                    "next_action": "Ask the user to confirm the author; do not search.",
+                },
+            )
+
+        if event is None:
+            return await run_blocking(
+                self.renderer.to_json_text,
+                {
+                    "status": "current_session_required",
+                    "sent": False,
+                    "cached_book": self._compact_cached_download(cached_books[0]),
+                },
+            )
+
+        cached = cached_books[0]
+        await self._send_cached_novel_file(event, cached)
+        return await run_blocking(
+            self.renderer.to_json_text,
+            {
+                "status": "sent",
+                "sent": True,
+                "cached_book": self._compact_cached_download(cached),
+                "message": "小说缓存文件已发送到当前会话。",
+            },
         )
 
     async def handle_webnovel_download_status(
@@ -1125,6 +1269,171 @@ class JsonlNovelDownloaderPluginBase(Star):
             event is None or access["is_admin"],
         )
 
+    def _find_cached_downloads(
+        self,
+        book_name: str = "",
+        author: str = "",
+        job_id: str = "",
+    ) -> list[dict[str, Any]]:
+        normalized_title = self._normalize_match_text(book_name)
+        normalized_author = self._normalize_match_text(author)
+        normalized_job_id = str(job_id or "").strip()
+        output_root = self.manager.output_dir.resolve()
+        matches: list[dict[str, Any]] = []
+
+        for status in self.manager.list_jobs():
+            try:
+                current_job_id = str(status.get("job_id") or "").strip()
+                if normalized_job_id and current_job_id != normalized_job_id:
+                    continue
+                if str(status.get("state") or "") not in {
+                    "assembled",
+                    "downloaded",
+                }:
+                    continue
+                manifest = self.manager.load_manifest(current_job_id)
+                output_path = Path(str(status.get("output_path") or "")).resolve()
+                if output_path.parent != output_root or not output_path.is_file():
+                    continue
+
+                cached_title = str(
+                    manifest.get("book_name") or status.get("book_name") or ""
+                ).strip()
+                raw_metadata = manifest.get("metadata") or {}
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                cached_author = str(metadata.get("author") or "").strip()
+                if (
+                    normalized_title
+                    and self._normalize_match_text(cached_title) != normalized_title
+                ):
+                    continue
+                if (
+                    normalized_author
+                    and self._normalize_match_text(cached_author) != normalized_author
+                ):
+                    continue
+
+                stat = output_path.stat()
+                matches.append(
+                    {
+                        "job_id": current_job_id,
+                        "book_name": cached_title,
+                        "author": cached_author,
+                        "state": str(status.get("state") or ""),
+                        "completed_chapters": int(
+                            status.get("completed_chapters", 0) or 0
+                        ),
+                        "total_chapters": int(status.get("total_chapters", 0) or 0),
+                        "output_filename": str(status.get("output_filename") or ""),
+                        "output_path": str(output_path),
+                        "file_size": int(stat.st_size),
+                        "created_at": float(manifest.get("created_at", 0.0) or 0.0),
+                        "modified_at": float(stat.st_mtime),
+                    }
+                )
+            except (OSError, TypeError, ValueError):
+                continue
+
+        matches.sort(
+            key=lambda item: (
+                int(item.get("total_chapters", 0) or 0),
+                float(item.get("modified_at", 0.0) or 0.0),
+                float(item.get("created_at", 0.0) or 0.0),
+            ),
+            reverse=True,
+        )
+        deduplicated: list[dict[str, Any]] = []
+        seen_works: set[tuple[str, str]] = set()
+        for item in matches:
+            work_key = (
+                self._normalize_match_text(item.get("book_name")),
+                self._normalize_match_text(item.get("author")),
+            )
+            if work_key in seen_works:
+                continue
+            seen_works.add(work_key)
+            deduplicated.append(item)
+        return deduplicated
+
+    def _build_cache_lookup_payload(
+        self,
+        book_name: str,
+        author: str,
+        cached_books: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        distinct_works = {
+            (
+                self._normalize_match_text(item.get("book_name")),
+                self._normalize_match_text(item.get("author")),
+            )
+            for item in cached_books
+        }
+        ambiguous = not str(author or "").strip() and len(distinct_works) > 1
+        return {
+            "status": "cache_ambiguous" if ambiguous else "cache_hit",
+            "keyword": str(book_name or "").strip(),
+            "author": str(author or "").strip(),
+            "network_search_performed": False,
+            "cache_hit_count": len(cached_books),
+            "cached_books": [
+                self._compact_cached_download(item)
+                for item in cached_books[: self.max_tool_preview_items]
+            ],
+            "next_action": (
+                "Ask the user to confirm the author, then call webnovel_send_book; "
+                "do not search."
+                if ambiguous
+                else "Call webnovel_send_book with the returned job_id; do not search or download."
+            ),
+        }
+
+    @staticmethod
+    def _compact_cached_download(cached: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "job_id": str(cached.get("job_id") or ""),
+            "book_name": str(cached.get("book_name") or ""),
+            "author": str(cached.get("author") or ""),
+            "state": str(cached.get("state") or ""),
+            "completed_chapters": int(cached.get("completed_chapters", 0) or 0),
+            "total_chapters": int(cached.get("total_chapters", 0) or 0),
+            "output_filename": str(cached.get("output_filename") or ""),
+            "file_size": int(cached.get("file_size", 0) or 0),
+        }
+
+    async def _send_cached_novel_file(
+        self,
+        event: Any,
+        cached: dict[str, Any],
+    ) -> None:
+        from astrbot.core.message.components import File
+        from astrbot.core.message.message_event_result import MessageChain
+
+        output_root = self.manager.output_dir.resolve()
+        output_path = Path(str(cached.get("output_path") or "")).resolve()
+        if output_path.parent != output_root or not output_path.is_file():
+            raise FileNotFoundError("小说缓存文件不存在或已离开插件下载目录")
+        chain = MessageChain(chain=[File(name=output_path.name, file=str(output_path))])
+        event_send = getattr(event, "send", None)
+        if callable(event_send):
+            await event_send(chain)
+        else:
+            session = str(
+                getattr(event, "unified_msg_origin", "")
+                or getattr(event, "session", "")
+                or ""
+            ).strip()
+            send_message = getattr(self.context, "send_message", None)
+            if not session or not callable(send_message):
+                raise RuntimeError("当前 AstrBot 事件不支持发送文件")
+            delivered = await send_message(session, chain)
+            if delivered is False:
+                raise RuntimeError("AstrBot 未找到当前会话对应的平台")
+        logger.info(
+            "已发送小说缓存 job_id=%s file=%s",
+            str(cached.get("job_id") or ""),
+            output_path.name,
+        )
+
     @staticmethod
     def _event_access_context(event: Any | None) -> dict[str, Any]:
         if event is None:
@@ -1477,11 +1786,14 @@ class JsonlNovelDownloaderPluginBase(Star):
         text = self._render_download_finished_message(callback, status)
         delivered = False
         llm_attempted = False
+        llm_generated = False
         if str(callback.get("notify_mode") or self.notify_mode) == "llm":
             llm_attempted = True
-            delivered = await self._wake_llm_for_download_result(callback, status, text)
-        if not delivered:
-            delivered = await self._send_direct_download_notification(callback, text)
+            llm_text = await self._wake_llm_for_download_result(callback, status, text)
+            if llm_text:
+                llm_generated = True
+                text = llm_text
+        delivered = await self._send_direct_download_notification(callback, text)
         if delivered:
             try:
                 await run_blocking(self._complete_download_callback, job_id, run_id)
@@ -1495,9 +1807,13 @@ class JsonlNovelDownloaderPluginBase(Star):
             return
 
         failure_summary = (
-            "LLM wake 和 direct fallback 均发送失败"
-            if llm_attempted
-            else "direct notification 发送失败"
+            "插件发送 LLM 生成的通知失败"
+            if llm_generated
+            else (
+                "LLM 通知文本生成失败，且插件直接发送失败"
+                if llm_attempted
+                else "direct notification 发送失败"
+            )
         )
         try:
             await run_blocking(
@@ -1714,7 +2030,7 @@ class JsonlNovelDownloaderPluginBase(Star):
         callback: dict[str, Any],
         status: dict[str, Any],
         result_text: str,
-    ) -> bool:
+    ) -> str:
         try:
             from astrbot.core.agent.tool import ToolSet
             from astrbot.core.astr_main_agent import (
@@ -1728,11 +2044,10 @@ class JsonlNovelDownloaderPluginBase(Star):
             from astrbot.core.cron.events import CronMessageEvent
             from astrbot.core.platform.message_session import MessageSession
             from astrbot.core.provider.entities import ProviderRequest
-            from astrbot.core.tools.message_tools import SendMessageToUserTool
             from astrbot.core.utils.history_saver import persist_agent_history
         except Exception as exc:
             logger.warning("AstrBot LLM 唤醒依赖不可用，改用直接通知: %s", exc)
-            return False
+            return ""
 
         context = self.context
         try:
@@ -1796,27 +2111,11 @@ class JsonlNovelDownloaderPluginBase(Star):
             req.prompt = (
                 "The webnovel download background task has finished. "
                 "Use the same language as the previous conversation. "
-                "You MUST use `send_message_to_user` to deliver the final result. "
-                "Leave its `session` argument empty so it targets the current session. "
-                "Do not send progress updates or start any new long task."
+                "Return only one concise final notification for the user. "
+                "Do not call any tool, do not claim the message was already sent, "
+                "and do not start searches, downloads, or status polling."
             )
             req.func_tool = ToolSet()
-            delivery_receipts: list[str] = []
-            current_session = str(session)
-
-            class DeliveryTrackingSendMessageToUserTool(SendMessageToUserTool):
-                async def call(self, run_context, **kwargs):
-                    response = await super().call(run_context, **kwargs)
-                    response_text = str(response)
-                    sent_prefix = "Message sent to session "
-                    if (
-                        response_text.startswith(sent_prefix)
-                        and response_text[len(sent_prefix) :] == current_session
-                    ):
-                        delivery_receipts.append(response_text)
-                    return response
-
-            req.func_tool.add_tool(DeliveryTrackingSendMessageToUserTool())
             result = await build_main_agent(
                 event=cron_event,
                 plugin_context=context,
@@ -1824,7 +2123,10 @@ class JsonlNovelDownloaderPluginBase(Star):
                 req=req,
             )
             if not result:
-                return False
+                return ""
+            # build_main_agent can merge persona tools back into an empty ToolSet.
+            # This wake is text generation only, so remove them after the build.
+            req.func_tool = ToolSet()
             runner = result.agent_runner
             async for _ in runner.step_until_done(30):
                 pass
@@ -1846,14 +2148,10 @@ class JsonlNovelDownloaderPluginBase(Star):
                 req=req,
                 summary_note=summary_note,
             )
-            sent_texts = cron_event.get_extra(
-                "_send_message_to_user_current_session_plain_texts",
-                [],
-            )
-            return bool(sent_texts or delivery_receipts)
+            return str(getattr(llm_resp, "completion_text", "") or "").strip()
         except Exception as exc:
-            logger.exception("唤醒 LLM 发送下载完成通知失败: %s", exc)
-            return False
+            logger.exception("唤醒 LLM 生成下载完成通知失败: %s", exc)
+            return ""
 
     async def _send_direct_download_notification(
         self,
@@ -1871,8 +2169,8 @@ class JsonlNovelDownloaderPluginBase(Star):
             return False
         try:
             session = MessageSession.from_str(str(callback.get("unified_msg_origin")))
-            await send_message(session, MessageChain().message(text))
-            return True
+            delivered = await send_message(session, MessageChain().message(text))
+            return delivered is not False
         except Exception as exc:
             logger.exception("直接发送下载完成通知失败: %s", exc)
             return False

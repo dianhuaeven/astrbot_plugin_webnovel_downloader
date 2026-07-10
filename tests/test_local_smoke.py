@@ -173,6 +173,14 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             def llm_tool(*_args, **_kwargs):
                 return llm_tool(*_args, **_kwargs)
 
+            @staticmethod
+            def on_llm_request():
+                def decorator(func):
+                    func.__on_llm_request__ = True
+                    return func
+
+                return decorator
+
         def register(*_args, **_kwargs):
             def decorator(cls):
                 return cls
@@ -342,6 +350,71 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         return result
 
+    def _create_cached_book(
+        self,
+        book_name="缓存命中小说",
+        author="缓存作者",
+        *,
+        owner="owner-1",
+        suffix="one",
+    ):
+        job = self.plugin.manager.create_job(
+            book_name,
+            [
+                {
+                    "index": 0,
+                    "title": "第一章",
+                    "url": "https://example.com/{suffix}/1".format(suffix=suffix),
+                }
+            ],
+            self.module.ExtractionRules(content_regex=r"(?s)(.*)"),
+            output_filename="{book}-{author}-{suffix}".format(
+                book=book_name,
+                author=author or "未知作者",
+                suffix=suffix,
+            ),
+            metadata={"author": author},
+            requester_id=owner,
+            session_id="aiocqhttp:FriendMessage:{owner}".format(owner=owner),
+        )
+        job_id = job["job_id"]
+        self.plugin.manager.append_downloaded_chapter(
+            job_id,
+            0,
+            "第一章",
+            "https://example.com/{suffix}/1".format(suffix=suffix),
+            "这是已经下载完成的缓存正文。",
+        )
+        status = self.plugin.manager.assemble(job_id)
+        return status
+
+    def _install_file_message_stubs(self):
+        class File(object):
+            def __init__(self, name, file="", url=""):
+                self.name = name
+                self.file = file
+                self.url = url
+
+        class MessageChain(object):
+            def __init__(self, chain=None):
+                self.chain = list(chain or [])
+
+        astrbot_core_message = types.ModuleType("astrbot.core.message")
+        astrbot_core_message_components = types.ModuleType(
+            "astrbot.core.message.components"
+        )
+        astrbot_core_message_result = types.ModuleType(
+            "astrbot.core.message.message_event_result"
+        )
+        astrbot_core_message_components.File = File
+        astrbot_core_message_result.MessageChain = MessageChain
+        sys.modules["astrbot.core.message"] = astrbot_core_message
+        sys.modules["astrbot.core.message.components"] = astrbot_core_message_components
+        sys.modules["astrbot.core.message.message_event_result"] = (
+            astrbot_core_message_result
+        )
+        return File, MessageChain
+
     async def _invoke_command(self, command_callable, *args):
         event = sys.modules["astrbot.api.event"].AstrMessageEvent()
         result = command_callable(event, *args)
@@ -370,6 +443,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "webnovel_search_books",
                 "webnovel_download_book",
                 "webnovel_download_status",
+                "webnovel_send_book",
                 "webnovel_import_sources",
                 "webnovel_list_sources",
                 "webnovel_refresh_sources",
@@ -432,14 +506,172 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("明确要求下载完整小说", doc)
         self.assertIn("必须先向用户确认作者", doc)
 
+    async def test_llm_request_policy_suppresses_webnovel_tool_preambles(self):
+        request = types.SimpleNamespace(system_prompt=None)
+
+        await self.plugin.webnovel_quiet_tool_policy(object(), request)
+        await self.plugin.webnovel_quiet_tool_policy(object(), request)
+
+        self.assertIn("without a pre-tool narration", request.system_prompt)
+        self.assertIn("Do not poll a download", request.system_prompt)
+        self.assertIn("at most one concise result message", request.system_prompt)
+        self.assertEqual(request.system_prompt.count("Webnovel tool-call exception"), 1)
+
+    async def test_search_returns_completed_cache_without_network_search(self):
+        cached = self._create_cached_book()
+
+        def fail_resolve(*_args, **_kwargs):
+            raise AssertionError(
+                "network search should not run for a completed cache hit"
+            )
+
+        self.plugin.book_resolution_service.resolve = fail_resolve
+        result = json.loads(
+            await self.plugin.handle_webnovel_search_books(
+                "缓存命中小说",
+                "缓存作者",
+            )
+        )
+
+        self.assertEqual(result["status"], "cache_hit")
+        self.assertFalse(result["network_search_performed"])
+        self.assertEqual(result["cached_books"][0]["job_id"], cached["job_id"])
+        self.assertNotIn(str(self.plugin.manager.output_dir), json.dumps(result))
+
+    async def test_search_rejects_empty_keyword_before_cache_lookup(self):
+        self._create_cached_book()
+
+        with self.assertRaisesRegex(ValueError, "keyword 不能为空"):
+            await self.plugin.handle_webnovel_search_books("")
+
+    async def test_send_book_sends_plugin_cache_without_admin_or_computer_tool(self):
+        cached = self._create_cached_book(owner="different-owner")
+        File, MessageChain = self._install_file_message_stubs()
+        sent = []
+
+        class Event(object):
+            unified_msg_origin = "aiocqhttp:FriendMessage:reader"
+            role = "member"
+
+            @staticmethod
+            def get_sender_id():
+                return "reader"
+
+            async def send(self, chain):
+                sent.append(chain)
+
+        result = json.loads(
+            await self.plugin.handle_webnovel_send_book(
+                cached["job_id"],
+                event=Event(),
+            )
+        )
+
+        self.assertEqual(result["status"], "sent")
+        self.assertTrue(result["sent"])
+        self.assertEqual(len(sent), 1)
+        self.assertIsInstance(sent[0], MessageChain)
+        self.assertIsInstance(sent[0].chain[0], File)
+        self.assertEqual(sent[0].chain[0].name, cached["output_filename"])
+        self.assertTrue(Path(sent[0].chain[0].file).is_file())
+
+    async def test_send_book_requires_author_for_ambiguous_cached_title(self):
+        first = self._create_cached_book(author="作者甲", suffix="author-a")
+        second = self._create_cached_book(author="作者乙", suffix="author-b")
+        self._install_file_message_stubs()
+        sent = []
+
+        class Event(object):
+            async def send(self, chain):
+                sent.append(chain)
+
+        ambiguous = json.loads(
+            await self.plugin.handle_webnovel_send_book(
+                "",
+                "缓存命中小说",
+                event=Event(),
+            )
+        )
+        selected = json.loads(
+            await self.plugin.handle_webnovel_send_book(
+                "",
+                "缓存命中小说",
+                "作者乙",
+                event=Event(),
+            )
+        )
+
+        self.assertEqual(ambiguous["status"], "cache_ambiguous")
+        self.assertEqual(
+            {item["job_id"] for item in ambiguous["cached_books"]},
+            {first["job_id"], second["job_id"]},
+        )
+        self.assertEqual(selected["status"], "sent")
+        self.assertEqual(selected["cached_book"]["job_id"], second["job_id"])
+        self.assertEqual(len(sent), 1)
+
+    async def test_download_reuses_and_sends_completed_cache(self):
+        cached = self._create_cached_book()
+        self._install_file_message_stubs()
+        record = self.plugin.search_cache.save_search(
+            "缓存命中小说",
+            {
+                "candidate_groups": [
+                    {
+                        "group_index": 0,
+                        "title": "缓存命中小说",
+                        "author": "缓存作者",
+                        "candidates": [],
+                    }
+                ]
+            },
+        )
+        sent = []
+
+        class Event(object):
+            unified_msg_origin = "aiocqhttp:FriendMessage:owner-1"
+            role = "member"
+
+            @staticmethod
+            def get_sender_id():
+                return "owner-1"
+
+            async def send(self, chain):
+                sent.append(chain)
+
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("cache hit must not create another download")
+
+        self.plugin.download_orchestrator.download_candidate_group = fail_download
+        result = json.loads(
+            await self.plugin.handle_webnovel_download_book(
+                record["search_id"],
+                "0",
+                event=Event(),
+            )
+        )
+
+        self.assertEqual(result["status"], "cache_hit_sent")
+        self.assertFalse(result["network_download_started"])
+        self.assertEqual(result["cached_book"]["job_id"], cached["job_id"])
+        self.assertEqual(len(sent), 1)
+
     async def test_llm_tool_accepts_runtime_call_without_event_argument(self):
         recorded = {}
 
-        async def fake_handle(keyword, author="", limit="", include_disabled=""):
+        async def fake_handle(
+            keyword,
+            author="",
+            limit="",
+            include_disabled="",
+            *,
+            event=None,
+        ):
             recorded["keyword"] = keyword
             recorded["author"] = author
             recorded["limit"] = limit
             recorded["include_disabled"] = include_disabled
+            recorded["event"] = event
             return "ok"
 
         self.plugin.handle_webnovel_search_books = fake_handle
@@ -453,6 +685,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "author": "",
                 "limit": "5",
                 "include_disabled": "",
+                "event": None,
             },
         )
 
@@ -636,7 +869,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         async def fake_wake(callback, status, text):
             sent.append(("wake", callback, status, text))
-            return False
+            return ""
 
         async def fake_direct(callback, text):
             sent.append(("direct", callback, {}, text))
@@ -654,9 +887,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(self.plugin._download_callback_path.read_text("utf-8"))
         self.assertEqual(payload["callbacks"], {})
 
-    async def test_download_finished_notification_prefers_llm_without_direct_fallback(
-        self,
-    ):
+    async def test_download_finished_notification_sends_llm_text_exactly_once(self):
         event = types.SimpleNamespace(
             unified_msg_origin="aiocqhttp:FriendMessage:42",
             role="member",
@@ -679,13 +910,14 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         async def fake_wake(callback, status, text):
             calls.append(("llm", callback["run_id"], status["state"], text))
+            return "LLM 格式化后的完成通知"
+
+        async def fake_direct(callback, text):
+            calls.append(("direct", callback["run_id"], text))
             return True
 
-        async def fail_direct(_callback, _text):
-            raise AssertionError("LLM wake 成功后不应调用 direct fallback")
-
         self.plugin._wake_llm_for_download_result = fake_wake
-        self.plugin._send_direct_download_notification = fail_direct
+        self.plugin._send_direct_download_notification = fake_direct
 
         await self.plugin._notify_download_finished(
             "job-llm-success", "run-llm-success"
@@ -694,7 +926,8 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             "job-llm-success", "run-llm-success"
         )
 
-        self.assertEqual([item[0] for item in calls], ["llm"])
+        self.assertEqual([item[0] for item in calls], ["llm", "direct"])
+        self.assertEqual(calls[-1][2], "LLM 格式化后的完成通知")
         payload = json.loads(self.plugin._download_callback_path.read_text("utf-8"))
         self.assertEqual(payload["callbacks"], {})
 
@@ -725,7 +958,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         async def fake_wake(*_args):
             calls.append("llm")
-            return False
+            return ""
 
         async def fake_direct(*_args):
             calls.append("direct")
@@ -745,7 +978,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             {"job-delivery-failed"}
         )["job-delivery-failed"]
         self.assertEqual(notification["state"], "delivery_failed")
-        self.assertIn("LLM wake", notification["failure_summary"])
+        self.assertIn("插件直接发送失败", notification["failure_summary"])
         rendered = self.plugin.renderer.render_status(
             self.plugin._attach_notification_status(
                 self.plugin.manager.get_status("job-delivery-failed")
@@ -758,7 +991,11 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
         recorded = {}
 
         class ToolSet(object):
+            def __init__(self):
+                self.tools = []
+
             def add_tool(self, tool):
+                self.tools.append(tool)
                 recorded["tool"] = tool
 
         class MainAgentBuildConfig(object):
@@ -774,7 +1011,6 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         class Runner(object):
             async def step_until_done(self, _limit):
-                await recorded["tool"].call(None)
                 yield None
 
             def get_final_llm_resp(self):
@@ -818,10 +1054,6 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             def _print_friendly_context(self):
                 return ""
 
-        class SendMessageToUserTool(object):
-            async def call(self, _context, **_kwargs):
-                return "Message sent to session aiocqhttp:FriendMessage:42"
-
         async def persist_agent_history(*_args, **kwargs):
             recorded["history_event"] = kwargs["event"]
 
@@ -844,9 +1076,6 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             "astrbot.core.provider.entities": types.SimpleNamespace(
                 ProviderRequest=ProviderRequest
             ),
-            "astrbot.core.tools.message_tools": types.SimpleNamespace(
-                SendMessageToUserTool=SendMessageToUserTool
-            ),
             "astrbot.core.utils.history_saver": types.SimpleNamespace(
                 persist_agent_history=persist_agent_history
             ),
@@ -857,7 +1086,7 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             conversation_manager=object(),
         )
 
-        delivered = await self.plugin._wake_llm_for_download_result(
+        generated_text = await self.plugin._wake_llm_for_download_result(
             {
                 "job_id": "job-real-wake",
                 "run_id": "run-real-wake",
@@ -874,10 +1103,13 @@ class PluginSmokeTest(unittest.IsolatedAsyncioTestCase):
             "下载完成",
         )
 
-        self.assertTrue(delivered)
-        self.assertIsInstance(recorded["tool"], SendMessageToUserTool)
-        self.assertIn("send_message_to_user", recorded["request"].prompt)
-        self.assertIn("session` argument empty", recorded["request"].prompt)
+        self.assertEqual(generated_text, "已通知")
+        self.assertIsInstance(recorded["request"].func_tool, ToolSet)
+        self.assertEqual(recorded["request"].func_tool.tools, [])
+        self.assertIn(
+            "Return only one concise final notification", recorded["request"].prompt
+        )
+        self.assertIn("Do not call any tool", recorded["request"].prompt)
         self.assertIs(recorded["conversation_event"], recorded["history_event"])
 
     async def test_download_notification_retries_same_job_with_new_run_id(self):

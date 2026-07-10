@@ -5,7 +5,7 @@ from astrbot.api.star import register
 
 from .base import JsonlNovelDownloaderPluginBase
 from .core.download_manager import ExtractionRules
-from .support import compat_admin_only, compat_llm_tool
+from .support import compat_admin_only, compat_llm_tool, compat_on_llm_request
 
 
 @register(
@@ -16,6 +16,22 @@ from .support import compat_admin_only, compat_llm_tool
     "https://github.com/dianhuaeven/astrbot_plugin_webnovel_downloader",
 )
 class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
+    @compat_on_llm_request()
+    async def webnovel_quiet_tool_policy(self, event, req) -> None:
+        del event
+        policy = (
+            "Webnovel tool-call exception: when using any `webnovel_*` tool, "
+            "call it without a pre-tool narration or progress message. Do not say "
+            "that you are about to search, inspect, download, check status, or send "
+            "a file. Speak before a tool call only when the user must provide missing "
+            "information or choose between genuinely ambiguous works. Do not poll a "
+            "download unless the user explicitly asks for its status. After the final "
+            "tool action, send at most one concise result message."
+        )
+        system_prompt = str(getattr(req, "system_prompt", "") or "")
+        if policy not in system_prompt:
+            req.system_prompt = f"{system_prompt}\n\n{policy}"
+
     @compat_llm_tool(name="webnovel_search_books")
     async def webnovel_search_books(
         self,
@@ -43,6 +59,7 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
             author,
             limit,
             include_disabled,
+            event=event,
         )
 
     @compat_llm_tool(name="webnovel_download_book")
@@ -96,6 +113,34 @@ class JsonlNovelDownloaderPlugin(JsonlNovelDownloaderPluginBase):
         """
         return await self.handle_webnovel_download_status(
             job_id, limit, offset, event=event
+        )
+
+    @compat_llm_tool(name="webnovel_send_book")
+    async def webnovel_send_book(
+        self,
+        event: AstrMessageEvent,
+        job_id: str = "",
+        book_name: str = "",
+        author: str = "",
+    ) -> str:
+        """
+        把插件缓存中已经下载完成的小说文件发送到当前会话。
+
+        这是发送小说文件的唯一工具，不依赖电脑使用能力，也不要求管理员权限。
+        用户要求下载明确作品时应优先静默调用本工具检查并发送缓存；只有返回
+        no_cache 后才能搜索和下载。用户说“发给我”时也直接调用，不要先解释。
+        本工具不会搜索书源、启动下载、读取任意宿主机文件或发送非小说文件。
+
+        Args:
+            job_id(string): 可选，已完成下载任务的 ID；已知时优先填写。
+            book_name(string): 可选，要发送的准确书名；job_id 未知时填写。
+            author(string): 可选，作者名；同名作品有歧义时必须填写。
+        """
+        return await self.handle_webnovel_send_book(
+            job_id,
+            book_name,
+            author,
+            event=event,
         )
 
     @compat_admin_only()
